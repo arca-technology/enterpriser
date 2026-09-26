@@ -1174,7 +1174,9 @@ async function loadAll() {
   cache = { users, companies, contacts, products, deals, projects, pipelines, conversations,
     activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [],
     companyById: byId(companies, pk("companies")), contactById: byId(contacts), productById: byId(products),
-    userById: byId(users), pipelineById: byId(pipelines), projectById };
+    userById: byId(users),
+    userByAuthId: Object.fromEntries(users.filter((user) => user.auth_user_id).map((user) => [user.auth_user_id, user])),
+    pipelineById: byId(pipelines), projectById };
   await migrateLocalOperationalData();
   await syncProductObjectives();
   await syncProductGoals();
@@ -1383,7 +1385,7 @@ function columns(tab, c) {
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
       { k: "lead_source", h: "Origem", cls: "muted" },
       { k: "amount", h: "Valor", num: true, fmt: brl, cls: "pos" },
-      { k: "owner_id", h: "Responsável", fmt: (v) => c.userById[v]?.full_name || c.userById[v]?.name || "—", cls: "muted" },
+      { k: "owner_id", h: "Responsável", fmt: (v) => userDisplayName(v, c, "—"), cls: "muted" },
       { k: "expected_close_date", h: "Previsão", fmt: dt }];
     case "projects": return [
       { k: "delivery_type", h: "TIPO" },
@@ -1437,23 +1439,34 @@ function columns(tab, c) {
 }
 
 function refOptions(ref, c) {
-  return (c[ref] || []).map((r) => ({ value: r[pk(ref)], label: r.name || r.legal_name || r.full_name || r.title || r[pk(ref)] }));
+  return (c[ref] || []).map((r) => ({ value: r[pk(ref)], label: r.name || r.legal_name || r.full_name || r.title || "Registro sem nome" }));
 }
 
 function companyRefOptions(c) {
   return (c.companies || []).map((company) => ({
     value: company.tax_id,
     label: company.trade_name || company.legal_name || company.tax_id,
+    detail: company.tax_id,
     search: [company.trade_name, company.legal_name, company.tax_id].filter(Boolean).join(" ")
   }));
 }
 
 function companyNames(ids, c = cache) {
-  return normalizeIdList(ids).map((id) => c?.companyById?.[id]?.trade_name || c?.companyById?.[id]?.legal_name || id).join(", ") || "—";
+  return normalizeIdList(ids).map((id) => c?.companyById?.[id]?.trade_name || c?.companyById?.[id]?.legal_name || "Empresa não encontrada").join(", ") || "—";
 }
 
 function contactNames(ids, c = cache) {
-  return normalizeIdList(ids).map((id) => c?.contactById?.[id]?.name || id).join(", ") || "—";
+  return normalizeIdList(ids).map((id) => c?.contactById?.[id]?.name || "Pessoa não encontrada").join(", ") || "—";
+}
+
+function userByReference(id, c = cache) {
+  if (!id) return null;
+  return c?.userById?.[id] || c?.userByAuthId?.[id] || null;
+}
+
+function userDisplayName(id, c = cache, missing = "Responsável não encontrado") {
+  const user = userByReference(id, c);
+  return user?.full_name || user?.name || user?.email || missing;
 }
 // Etapas do pipeline selecionado (ou o primeiro cadastrado, na falta de um).
 // Como agora são texto livre por pipeline, valor e rótulo da opção são o
@@ -1837,7 +1850,7 @@ function renderActivityKanban(c) {
   const columnsHtml = TASK_STATUS.map((status) => {
     const items = tasks.filter((task) => (task.status || "todo") === status.id);
     const cards = items.map((task) => {
-      const owner = c.userById[task.owner_id]?.full_name || c.userById[task.owner_id]?.name || "Sem responsável";
+      const owner = userDisplayName(task.owner_id, c, "Sem responsável");
       const blocked = taskIsBlocked(task);
       return `<div class="card${blocked ? " blocked" : ""}" data-id="${esc(task.id)}">
         <div class="t">${esc(activityDisplayName(task))}</div>
@@ -2187,7 +2200,7 @@ function renderMatrix(c) {
       const val = col.fmt ? col.fmt(r[col.k], r, c) : esc(r[col.k] ?? "—");
       return `<div class="line"><span class="muted">${esc(col.h)}</span><strong>${val}</strong></div>`;
     }).join("");
-    return `<div class="matrix-card"><h4>${esc(r.name || r.legal_name || r.title || r[pk(state.tab)])}</h4>${lines}</div>`;
+    return `<div class="matrix-card"><h4>${esc(r.name || r.legal_name || r.title || r.trade_name || "Registro sem nome")}</h4>${lines}</div>`;
   }).join("");
   document.getElementById("main").innerHTML = cards ? `<div class="matrix">${cards}</div>` : `<div class="empty">Nenhum registro.</div>`;
 }
@@ -2358,7 +2371,7 @@ function renderProductObjectives() {
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
   const activities = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const rows = objectives.map((item) => {
-    const owner = cache.userById[item.default_owner_id]?.full_name || cache.userById[item.default_owner_id]?.name || "—";
+    const owner = userDisplayName(item.default_owner_id, cache, "—");
     const activityCount = activities.filter((activity) => activity.objective_template_id === item.id).length;
     const dependencyObjectives = normalizeIdList(item.dependency_objective_template_ids)
       .map((id) => objectives.find((objective) => objective.id === id)?.name).filter(Boolean);
@@ -2511,7 +2524,7 @@ function renderProductGoals() {
     .filter((item) => item.product_id === productActivityState.productId)
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
   const rows = goals.map((item) => {
-    const owner = cache.userById[item.default_owner_id]?.full_name || cache.userById[item.default_owner_id]?.name || "—";
+    const owner = userDisplayName(item.default_owner_id, cache, "—");
     const target = `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value).toLocaleString("pt-BR")} ${item.unit || ""}`.trim();
     const dependencyGoals = normalizeIdList(item.dependency_goal_template_ids)
       .map((id) => goals.find((goal) => goal.id === id)?.name).filter(Boolean);
@@ -2889,7 +2902,7 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   const selectedDependencies = new Set(normalizeIdList(current.dependency_template_ids, current.depends_on_template_id));
   const dependencyOptions = templates.filter((item) => item.id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const selectedAssignees = new Set(normalizeIdList(current.default_assignee_ids, current.default_owner_id));
-  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: user.full_name || user.name || user.email || user.id }));
+  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) }));
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(
     loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).map((item) =>
@@ -3067,19 +3080,19 @@ const TASK_STATUS = [
 let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
 
 function userOptions(selected = "") {
-  return ['<option value="">Sem responsável</option>']
-    .concat((cache?.users || []).map((u) => {
-      const id = u.id;
-      const label = u.full_name || u.name || u.email || id;
-      return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(label)}</option>`;
-    })).join("");
+  const users = cache?.users || [];
+  const options = users.map((user) => {
+    const id = user.id;
+    return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(userDisplayName(id))}</option>`;
+  });
+  if (selected && !users.some((user) => user.id === selected)) {
+    options.unshift(`<option value="${esc(selected)}" selected>${esc(userDisplayName(selected))}</option>`);
+  }
+  return ['<option value="">Sem responsável</option>', ...options].join("");
 }
 
 function assigneeNames(ids, fallbackId = null) {
-  const names = normalizeIdList(ids, fallbackId).map((id) => {
-    const user = cache?.userById?.[id];
-    return user?.full_name || user?.name || user?.email || id;
-  });
+  const names = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
   return names.join(", ") || "—";
 }
 
@@ -3093,10 +3106,7 @@ function assigneeJobTitleOptions() {
 }
 
 function responsibilityNames(ids, fallbackId = null, jobTitles = []) {
-  const direct = normalizeIdList(ids, fallbackId).map((id) => {
-    const user = cache?.userById?.[id];
-    return user?.full_name || user?.name || user?.email || id;
-  });
+  const direct = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
   const roles = normalizeTextList(jobTitles).map((title) => {
     const eligible = (cache?.users || []).filter((user) =>
       user.status === "active" && String(user.job_title || "").trim().toLocaleLowerCase("pt-BR") === title.toLocaleLowerCase("pt-BR")
@@ -3113,7 +3123,7 @@ function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
 
 function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false) {
   const selected = new Set(selectedIds);
-  const rows = options.map((option) => `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.value].join(" "))}"${disabled ? " disabled" : ""}><span>${esc(option.label)}</span><small>${esc(option.value)}</small><b>✓</b></button>`).join("");
+  const rows = options.map((option) => `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}"${disabled ? " disabled" : ""}><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`).join("");
   return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}">
     <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
     <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div><div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
@@ -3179,7 +3189,7 @@ function wireMultiPicker(id) {
 
 function singleSearchPickerHtml(id, options, value, placeholder) {
   const selected = options.find((option) => String(option.value) === String(value || ""));
-  const rows = options.map((option) => `<button type="button" class="single-search-option" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.value].join(" "))}" hidden><span>${esc(option.label)}</span><small>${esc(option.value)}</small></button>`).join("");
+  const rows = options.map((option) => `<button type="button" class="single-search-option" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" hidden><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}</button>`).join("");
   return `<div class="single-search-picker" id="${esc(id)}">
     <input class="single-search-input" type="search" value="${esc(selected?.label || "")}" placeholder="${esc(placeholder || "Buscar...")}" autocomplete="off">
     <input type="hidden" data-k="${esc(id.replace(/^form-/, ""))}" value="${esc(value || "")}">
@@ -3325,10 +3335,10 @@ function openProjectBoard(projectId) {
     <button class="modal-header-tab" data-project-section="objectives" role="tab">Objetivos</button>
     <button class="modal-header-tab" data-project-section="goals" role="tab">Metas</button>
   </div>`;
-  shell(`Entrega · ${project.name || project.id}`, `<div id="project-board-root" class="full-body"></div>`, {
+  shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Entrega · ${esc(project.name || project.id)}</em></span>`
+    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Entrega · ${esc(project.name || "Sem nome")}</em></span>`
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
     projectBoardState.section = button.dataset.projectSection;
@@ -3950,7 +3960,7 @@ function openProjectViewMenu() {
 function openTaskDeliveryPicker() {
   const deliveries = cache?.projects || [];
   if (!deliveries.length) { toast("Cadastre uma entrega antes de criar tarefas.", true); return; }
-  const options = deliveries.map((project) => `<option value="${esc(project.id)}">${esc(project.name || project.client_name || project.id)}</option>`).join("");
+  const options = deliveries.map((project) => `<option value="${esc(project.id)}">${esc(project.name || project.client_name || "Entrega sem nome")}</option>`).join("");
   sidePanel("Nova tarefa", `<div class="form product-activity-form">
     <div class="field full"><label>Entrega *</label><select id="task-delivery-picker">${options}</select></div>
   </div><div class="modal-foot"><button class="btn" id="task-delivery-cancel">Cancelar</button><button class="btn primary" id="task-delivery-next">Continuar</button></div>`, { closeOnOverlay: true });
@@ -3979,7 +3989,7 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
   const selectedAssignees = new Set(normalizeIdList(current.assignee_ids, current.owner_id));
-  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: user.full_name || user.name || user.email || user.id }));
+  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) }));
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(objectives.map((item) =>
     `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
@@ -6032,7 +6042,7 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(dependencies)}</td><td>${esc(cache.userById[item.default_owner_id]?.full_name || cache.userById[item.default_owner_id]?.name || "—")}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" } })}</td></tr>`;
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(dependencies)}</td><td>${esc(userDisplayName(item.default_owner_id, cache, "—"))}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" } })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th>Depende de</th><th>Responsável padrão</th>", rows, 7);
   } else {
@@ -6043,7 +6053,7 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(cache.userById[item.default_owner_id]?.full_name || cache.userById[item.default_owner_id]?.name || "—")}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" } })}</td></tr>`;
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(userDisplayName(item.default_owner_id, cache, "—"))}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" } })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th>Depende de</th><th>Prazo sugerido</th><th>Responsável padrão</th>", rows, 7);
   }
@@ -8294,7 +8304,7 @@ function openAdminLog() {
   const rows = Object.entries(sources).flatMap(([key, type]) =>
     (cache[key] || []).map((item) => ({
       type,
-      name: item.name || item.title || item.trade_name || item.legal_name || item.full_name || item.contact_name || item.id || "Registro",
+      name: item.name || item.title || item.trade_name || item.legal_name || item.full_name || item.contact_name || "Registro sem nome",
       at: item.updated_at || item.created_at || ""
     }))
   ).filter((item) => item.at).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 100);
