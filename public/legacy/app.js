@@ -2884,24 +2884,24 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   const overlay = document.createElement("div");
   overlay.id = "product-activity-drawer-overlay";
   overlay.className = "activity-form-overlay";
-  overlay.innerHTML = `<aside class="activity-form-drawer">
+  overlay.innerHTML = `<aside class="activity-form-drawer task-form-drawer">
     <h3>${current.id ? (productActivityParentGroupId ? "Editar subtarefa" : "Editar tarefa") : cloneSource ? "Clonar tarefa" : productActivityParentGroupId ? "Nova subtarefa" : "Nova tarefa"}<button class="modal-close-x" id="pa-close" title="Fechar">✕</button></h3>
-    <div class="form product-activity-form">
-      ${requestedParent ? `<div class="field"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
-      <div class="field"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos")}</div>
+    <div class="form product-activity-form task-form-grid">
+      ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
+      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos")}</div>
       <div class="field"><label>Grupo</label><input id="pa-group" value="${esc(current.group || "")}"></div>
       <div class="field"><label>Setor</label><input id="pa-sector" value="${esc(current.sector || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
       <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
-      <div class="field"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
-      <div class="field"><label>Informação</label><textarea id="pa-information" rows="5" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
-      <div class="field"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
+      <div class="field task-form-wide"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+      <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
+      <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
       <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("pa-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
-      <div class="field"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
+      <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
     </div>
     <div class="modal-foot">${editing && !productActivityParentGroupId ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
@@ -3964,11 +3964,11 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   const overlay = document.createElement("div");
   overlay.id = "project-task-drawer-overlay";
   overlay.className = "activity-form-overlay";
-  overlay.innerHTML = `<aside class="activity-form-drawer"><h3>${editId ? (parentId ? "Editar subtarefa" : "Editar tarefa") : (parentId ? "Nova subtarefa" : "Nova tarefa")}<button class="modal-close-x" id="project-task-close" title="Fechar">✕</button></h3>
-    <div class="form product-activity-form">
+  overlay.innerHTML = `<aside class="activity-form-drawer task-form-drawer"><h3>${editId ? (parentId ? "Editar subtarefa" : "Editar tarefa") : (parentId ? "Nova subtarefa" : "Nova tarefa")}<button class="modal-close-x" id="project-task-close" title="Fechar">✕</button></h3>
+    <div class="form product-activity-form task-form-grid">
       <div class="field"><label>Origem</label><input value="${esc(parentTask ? `Subtarefa de ${activityDisplayName(parentTask)}` : current.source_template_id ? "Produto" : "Dia a dia")}" disabled></div>
       <div class="field"><label>${parentId ? "Subtarefa" : "Tarefa"} *</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
-      <div class="field"><label>Informação</label><textarea id="project-task-information" rows="4" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
+      <div class="field task-form-wide"><label>Informação</label><textarea id="project-task-information" rows="3" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
       <div class="field"><label>Grupo</label><input id="project-task-group" value="${esc(current.group || "")}"></div>
       <div class="field"><label>Setor</label><input id="project-task-sector" value="${esc(current.sector || "")}"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
@@ -3976,11 +3976,11 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
       <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
-      <div class="field"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
+      <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field"><label>Prazo</label><input id="project-task-due" type="date" value="${esc(current.due_date || "")}"></div>
-      <div class="field"><label>Notas</label><textarea id="project-task-notes" rows="4">${esc(current.notes || "")}</textarea></div>
+      <div class="field task-form-wide"><label>Notas</label><textarea id="project-task-notes" rows="3">${esc(current.notes || "")}</textarea></div>
       ${editId && !parentId ? `<div class="field full task-subtasks-editor"><label>Subtarefas</label><div class="task-subtask-list">${subtasks.map((subtask) => {
         const progress = checklistProgress(subtask.checklist);
         return `<button class="task-subtask-edit" data-id="${esc(subtask.id)}"><span>${esc(activityDisplayName(subtask))}</span><small>${progress.done}/${progress.total} no checklist</small></button>`;
