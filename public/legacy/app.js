@@ -334,8 +334,16 @@ async function api(path, opts = {}) {
 
 async function fetchTable(name) {
   if (!isLive()) return DEMO[name] || [];
-  const rows = await api(`${remoteTable(name)}?select=*`);
-  return Array.isArray(rows) ? rows.map((r) => fromRemoteRow(name, r)) : rows;
+  const pageSize = 1000;
+  const order = name === "contactCompanies" ? "contact_id.asc,company_id.asc" : `${pk(name)}.asc`;
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await api(`${remoteTable(name)}?select=*&order=${order}&offset=${offset}&limit=${pageSize}`);
+    if (!Array.isArray(page)) return page;
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows.map((row) => fromRemoteRow(name, row));
 }
 async function createRow(table, body) {
   if (!isLive()) {
@@ -347,6 +355,17 @@ async function createRow(table, body) {
   const r = await api(remoteTable(table), { method: "POST", headers: j, body: JSON.stringify(toRemoteBody(table, body)) });
   const row = Array.isArray(r) ? r[0] : r;
   return fromRemoteRow(table, row);
+}
+async function createActivityOrLoadExisting(body) {
+  try {
+    return await createRow("activities", body);
+  } catch (error) {
+    if (!isLive() || !String(error?.message || error).startsWith("409 ") || !body.source_template_id) throw error;
+    const rows = await api(`${remoteTable("activities")}?select=*&delivery_id=eq.${encodeURIComponent(body.project_id)}&source_template_id=eq.${encodeURIComponent(body.source_template_id)}&occurrence_index=eq.${encodeURIComponent(Number(body.occurrence_index || 0))}&limit=1`);
+    const existing = Array.isArray(rows) ? rows[0] : null;
+    if (!existing) throw error;
+    return fromRemoteRow("activities", existing);
+  }
 }
 async function updateRow(table, id, body) {
   const k = pk(table);
@@ -792,7 +811,7 @@ async function syncProductActivities() {
           due_date: dueDate, notes: "", status: "todo",
           created_at: now, updated_at: now
         };
-        const saved = isLive() ? await createRow("activities", body) : body;
+        const saved = isLive() ? await createActivityOrLoadExisting(body) : body;
         tasks.push(saved);
         existing.push(saved);
         changed = true;
