@@ -556,14 +556,11 @@
   .registration-task-toggle:hover{border-color:var(--cyan);color:var(--cyan)}
   .registration-subtask-count{display:inline-flex;min-width:18px;height:18px;align-items:center;justify-content:center;border-radius:9px;background:var(--blue);color:#fff;font-size:9px;font-weight:800}
   .registration-subtask-count:empty{display:none}
-  .registration-subtasks-container>td{padding:0!important;background:var(--bg)!important}
-  .registration-subtasks-list{display:grid;border-bottom:1px solid var(--border)}
-  .registration-subtask-item{display:grid;grid-template-columns:minmax(240px,1.4fr) minmax(180px,1fr) minmax(180px,1fr) 100px 72px;align-items:center;gap:12px;min-height:38px;padding:4px 8px 4px 52px;border-top:1px solid var(--border2);background:color-mix(in srgb,var(--panel2) 58%,var(--bg));box-sizing:border-box}
-  .registration-subtask-item>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .registration-subtask-name{display:flex;align-items:center;gap:7px}
+  .registration-subtask-row td{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
+  .registration-subtask-row .registration-subtask-name{display:flex;min-width:0;align-items:center;gap:7px;padding-left:22px}
+  .registration-subtask-row .registration-subtask-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .registration-subtask-name b{color:var(--cyan);font-size:16px}
-  .registration-subtask-item small{display:block;color:var(--muted);font-size:8px;font-weight:700;text-transform:uppercase}
-  .registration-subtask-item .tool-row-actions{display:flex;justify-content:flex-end;overflow:visible}
+  .registration-subtask-row .table-actions-cell{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
   .product-activity-list .pa-subtask-row td:first-child{border-left:3px solid var(--cyan)}
   .product-activity-list .pa-subtask-row td:nth-child(7){padding-left:22px}
   .registration-filter-strip{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:20px;height:20px;flex:0 0 20px;padding:1px 8px;background:var(--bg);border-bottom:1px solid var(--border2);box-sizing:border-box}
@@ -635,7 +632,7 @@
   .activity-form-drawer h3{flex:0 0 52px}
   .activity-form-drawer .product-activity-form{display:grid;grid-template-columns:1fr;padding:18px;overflow:auto;flex:1 1 auto;align-content:start}
   .activity-form-drawer .modal-foot{flex:0 0 auto}
-  .activity-form-drawer.task-form-drawer{width:25vw;min-width:420px}
+  .activity-form-drawer.task-form-drawer{width:25vw;min-width:420px;animation:none}
   .activity-form-drawer .task-form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 12px;padding:14px 16px}
   .activity-form-drawer .task-form-grid>.field{min-width:0}
   .activity-form-drawer .task-form-grid>.task-form-wide{grid-column:1 / -1}
@@ -662,6 +659,8 @@
   .multi-picker{position:relative;min-width:0}
   .multi-picker-control{min-height:38px;width:100%;display:flex;align-items:flex-start;gap:8px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);cursor:pointer}
   .multi-picker-control:focus,.multi-picker-control:focus-within{outline:none;border-color:var(--blue)}
+  .multi-picker.is-disabled .multi-picker-control{cursor:not-allowed;opacity:.72;background:color-mix(in srgb,var(--panel2) 72%,var(--bg))}
+  .multi-picker.is-disabled .multi-picker-chevron{display:none}
   .multi-picker-selection{display:flex;align-items:center;flex-wrap:wrap;gap:5px;flex:1 1 auto;min-width:0;overflow-x:hidden;padding-bottom:1px}
   .multi-picker-placeholder{color:var(--muted2);font-size:12px;white-space:nowrap}
   .multi-picker-chip{display:inline-flex;align-items:center;gap:5px;max-width:190px;min-height:25px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--row);color:var(--text);font-size:11px;cursor:pointer;white-space:nowrap}

@@ -2888,7 +2888,7 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
     <h3>${current.id ? (productActivityParentGroupId ? "Editar subtarefa" : "Editar tarefa") : cloneSource ? "Clonar tarefa" : productActivityParentGroupId ? "Nova subtarefa" : "Nova tarefa"}<button class="modal-close-x" id="pa-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form task-form-grid">
       ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
-      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos")}</div>
+      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent))}</div>
       <div class="field"><label>Grupo</label><input id="pa-group" value="${esc(current.group || "")}"></div>
       <div class="field"><label>Setor</label><input id="pa-sector" value="${esc(current.sector || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
@@ -2921,7 +2921,7 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   wireMultiPicker("pa-assignee-job-titles");
   wireMultiPicker("pa-dependencies");
   renderProductActivityChecklistEditor();
-  document.getElementById("pa-activity")?.focus();
+  document.getElementById("pa-activity")?.focus({ preventScroll: true });
 }
 
 function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
@@ -3092,11 +3092,11 @@ function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
   return names.join(", ") || "—";
 }
 
-function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false) {
+function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false) {
   const selected = new Set(selectedIds);
-  const rows = options.map((option) => `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.value].join(" "))}"><span>${esc(option.label)}</span><small>${esc(option.value)}</small><b>✓</b></button>`).join("");
-  return `<div class="multi-picker" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}">
-    <div class="multi-picker-control" role="button" tabindex="0" aria-expanded="false"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
+  const rows = options.map((option) => `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.value].join(" "))}"${disabled ? " disabled" : ""}><span>${esc(option.label)}</span><small>${esc(option.value)}</small><b>✓</b></button>`).join("");
+  return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}">
+    <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
     <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div><div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
   </div>`;
 }
@@ -3112,6 +3112,7 @@ function wireMultiPicker(id) {
   const menu = root.querySelector(".multi-picker-menu");
   const search = root.querySelector(".multi-picker-search");
   const searchOnly = root.dataset.searchOnly === "true";
+  const disabled = root.dataset.disabled === "true";
   const filterOptions = () => {
     const query = search.value.trim().toLocaleLowerCase("pt-BR");
     const queryDigits = query.replace(/\D/g, "");
@@ -3126,8 +3127,11 @@ function wireMultiPicker(id) {
   const drawSelection = () => {
     const active = [...root.querySelectorAll(".multi-picker-option.active")];
     root.querySelector(".multi-picker-selection").innerHTML = active.length
-      ? active.map((option) => `<button type="button" class="multi-picker-chip" data-value="${esc(option.dataset.value)}" title="Remover"><span>${esc(option.dataset.label)}</span><b>×</b></button>`).join("")
+      ? active.map((option) => disabled
+        ? `<span class="multi-picker-chip"><span>${esc(option.dataset.label)}</span></span>`
+        : `<button type="button" class="multi-picker-chip" data-value="${esc(option.dataset.value)}" title="Remover"><span>${esc(option.dataset.label)}</span><b>×</b></button>`).join("")
       : `<span class="multi-picker-placeholder">${esc(root.dataset.placeholder || "Selecione")}</span>`;
+    if (disabled) return;
     root.querySelectorAll(".multi-picker-chip").forEach((chip) => chip.addEventListener("click", (event) => {
       event.stopPropagation();
       root.querySelector(`.multi-picker-option[data-value="${CSS.escape(chip.dataset.value)}"]`)?.classList.remove("active");
@@ -3140,6 +3144,8 @@ function wireMultiPicker(id) {
     control.setAttribute("aria-expanded", String(!menu.hidden));
     if (!menu.hidden) { search.value = ""; filterOptions(); search.focus(); }
   };
+  drawSelection();
+  if (disabled) return;
   control.addEventListener("click", () => toggleMenu());
   control.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleMenu(); } });
   root.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); toggleMenu(false); control.focus(); } });
@@ -3150,7 +3156,6 @@ function wireMultiPicker(id) {
     const first = [...root.querySelectorAll(".multi-picker-option:not([hidden])")][0];
     if (first) { event.preventDefault(); first.click(); search.value = ""; filterOptions(); search.focus(); }
   });
-  drawSelection();
 }
 
 function singleSearchPickerHtml(id, options, value, placeholder) {
@@ -5973,23 +5978,31 @@ function renderRegistrationsSection() {
       const childRows = children.map((child) => {
         const childDetails = summary(child);
         const checklist = normalizeChecklist(child.item.checklist);
-        return `<div class="registration-subtask-item">
-          <span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong></span>
-          <span><small>Produtos</small>${esc(childDetails.products)}</span>
-          <span><small>Responsáveis</small>${esc(childDetails.owners)}</span>
-          <span><small>Checklist</small>${checklist.length} item(ns)</span>
-          ${tableActionButtons({
+        return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
+          <td><span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong></span></td>
+          <td>${esc(childDetails.products)}</td>
+          <td>${esc(child.item.group || "—")}</td>
+          <td>${esc(child.item.sector || "—")}</td>
+          <td>${esc(child.item.channel || "—")}</td>
+          <td>${esc(child.item.type || "—")}</td>
+          <td>${priorityBadge(child.item.priority)}</td>
+          <td>${esc(RECURRENCE_LABEL[child.item.recurrence] || "Única")}</td>
+          <td>${esc(child.item.information || "—")}</td>
+          <td>${checklist.length} item(ns)</td>
+          <td>${esc(childDetails.objectives)}</td>
+          <td>${esc(childDetails.owners)}</td>
+          <td>${esc(childDetails.dependencies)}</td>
+          <td class="act table-actions-cell">${tableActionButtons({
             edit: { className: "edit reg-template-edit", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Editar subtarefa" },
             clone: { className: "reg-template-clone", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Clonar subtarefa" }
-          })}
-        </div>`;
+          })}</td>
+        </tr>`;
       }).join("");
       return `<tr data-task-group="${esc(group.id)}"><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${esc(details.products)}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${priorityBadge(item.priority)}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${esc(item.information || "—")}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td>${esc(details.owners)}</td><td>${esc(details.dependencies)}</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
-      })}</td></tr>
-        <tr class="registration-subtasks-container" data-parent-group="${esc(group.id)}"${expanded ? "" : " hidden"}><td colspan="14"><div class="registration-subtasks-list">${childRows}</div></td></tr>`;
+      })}</td></tr>${childRows}`;
     }).join("");
     root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Tarefa", "<th>Produtos</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Prioridade</th><th>Recorrência</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Responsáveis padrão</th><th>Depende de</th>", rows, 14);
   } else if (section === "goals") {
@@ -6032,15 +6045,16 @@ function renderRegistrationsSection() {
   }));
   root.querySelectorAll(".registration-task-toggle").forEach((button) => button.addEventListener("click", () => {
     const groupId = button.dataset.group;
-    const container = root.querySelector(`.registration-subtasks-container[data-parent-group="${CSS.escape(groupId)}"]`);
+    const childRows = [...root.querySelectorAll(`.registration-subtask-row[data-parent-group="${CSS.escape(groupId)}"]`)];
     const rootRow = button.closest("tr");
-    if (!container || !rootRow) return;
+    if (!childRows.length || !rootRow) return;
     if (registrationExpandedTaskGroups.has(groupId)) registrationExpandedTaskGroups.delete(groupId);
     else registrationExpandedTaskGroups.add(groupId);
-    rootRow.after(container);
-    container.hidden = !registrationExpandedTaskGroups.has(groupId);
-    button.textContent = container.hidden ? "▸" : "▾";
-    button.title = container.hidden ? "Expandir subtarefas" : "Recolher subtarefas";
+    rootRow.after(...childRows);
+    const collapsed = !registrationExpandedTaskGroups.has(groupId);
+    childRows.forEach((row) => { row.hidden = collapsed; });
+    button.textContent = collapsed ? "▸" : "▾";
+    button.title = collapsed ? "Expandir subtarefas" : "Recolher subtarefas";
   }));
   root.querySelectorAll(".reg-template-open").forEach((button) => button.addEventListener("click", () =>
     root.querySelector(`.registration-task-toggle[data-group="${CSS.escape(button.dataset.group)}"]`)?.click()));
@@ -6058,8 +6072,10 @@ function registrationTableState() {
   return registrationsState.tables[registrationsState.section];
 }
 
-function registrationTableRows(table) {
-  return [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+function registrationTableRows(table, includeSubtasks = false) {
+  return [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1
+    && !row.querySelector(".empty")
+    && (includeSubtasks || !row.classList.contains("registration-subtask-row")));
 }
 
 function wireRegistrationTable() {
@@ -6085,7 +6101,7 @@ function wireRegistrationTable() {
     const key = `c${index}`;
     header.dataset.registrationKey = key;
     header.dataset.registrationLabel = header.textContent.trim();
-    registrationTableRows(table).forEach((row) => {
+    registrationTableRows(table, true).forEach((row) => {
       const cell = row.children[index];
       if (cell) cell.dataset.registrationKey = key;
     });
@@ -6169,7 +6185,7 @@ function applyRegistrationColumnPreferences(table) {
   const selectionHeader = fixedHeaders.find((cell) => cell.classList.contains("select-head"));
   if (selectionHeader) headRow.insertBefore(selectionHeader, headRow.firstChild);
   fixedHeaders.filter((cell) => cell !== selectionHeader).forEach((cell) => headRow.appendChild(cell));
-  registrationTableRows(table).forEach((row) => {
+  registrationTableRows(table, true).forEach((row) => {
     const cellByKey = Object.fromEntries([...row.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
     const fixedCells = [...row.cells].filter((cell) => !cell.dataset.registrationKey);
     ordered.forEach((col) => { if (cellByKey[col.k]) row.appendChild(cellByKey[col.k]); });
@@ -6180,7 +6196,7 @@ function applyRegistrationColumnPreferences(table) {
   ordered.forEach((col) => {
     const visible = prefs[col.k] !== false;
     headerByKey[col.k].hidden = !visible;
-    registrationTableRows(table).forEach((row) => {
+    registrationTableRows(table, true).forEach((row) => {
       const cell = registrationCell(row, col.k);
       if (cell) cell.hidden = !visible;
     });
@@ -6226,10 +6242,11 @@ function applyRegistrationTableState(table) {
     rows.forEach((row) => {
       const groupId = row.dataset.taskGroup;
       if (!groupId) return;
-      const container = table.querySelector(`.registration-subtasks-container[data-parent-group="${CSS.escape(groupId)}"]`);
-      if (!container) return;
-      row.after(container);
-      container.hidden = row.hidden || !registrationExpandedTaskGroups.has(groupId);
+      const childRows = [...table.querySelectorAll(`.registration-subtask-row[data-parent-group="${CSS.escape(groupId)}"]`)];
+      if (!childRows.length) return;
+      row.after(...childRows);
+      const hideChildren = row.hidden || !registrationExpandedTaskGroups.has(groupId);
+      childRows.forEach((childRow) => { childRow.hidden = hideChildren; });
     });
   }
   if (rows.length && !filteredRows.length) {
