@@ -531,6 +531,7 @@ function activityRemoteBody(task) {
     owner_id: task.owner_id || null,
     assignee_ids: normalizeIdList(task.assignee_ids, task.owner_id),
     assignee_job_titles: normalizeTextList(task.assignee_job_titles),
+    assign_to_client: Boolean(task.assign_to_client),
     priority: task.priority || "normal",
     due_date: task.due_date || null,
     notes: task.notes || null,
@@ -555,6 +556,7 @@ function productActivityRemoteBody(template) {
     default_owner_id: template.default_owner_id || null,
     default_assignee_ids: normalizeIdList(template.default_assignee_ids, template.default_owner_id),
     default_assignee_job_titles: normalizeTextList(template.default_assignee_job_titles),
+    assign_to_client: Boolean(template.assign_to_client),
     template_group_id: template.template_group_id || crypto.randomUUID(),
     priority: template.priority || "normal",
     objective_template_id: template.objective_template_id || null,
@@ -617,7 +619,12 @@ async function syncProductObjectives() {
         : null;
       if (current) {
         const updates = { ...structural };
-        if (!current.owner_id && template.default_owner_id) updates.owner_id = template.default_owner_id;
+        const defaultAssignees = normalizeIdList(template.default_assignee_ids, template.default_owner_id);
+        if (!normalizeIdList(current.assignee_ids, current.owner_id).length && defaultAssignees.length) {
+          updates.assignee_ids = defaultAssignees;
+          updates.owner_id = defaultAssignees[0];
+        }
+        if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
         if (!current.due_date && suggestedDue) updates.due_date = suggestedDue;
         if (Object.entries(updates).some(([key, value]) => current[key] !== value)) {
           Object.assign(current, updates, { updated_at: new Date().toISOString() });
@@ -629,7 +636,10 @@ async function syncProductObjectives() {
       const now = new Date().toISOString();
       const body = {
         id: crypto.randomUUID(), project_id: project.id, source_template_id: template.id,
-        ...structural, owner_id: template.default_owner_id || null, due_date: suggestedDue,
+        ...structural,
+        owner_id: normalizeIdList(template.default_assignee_ids, template.default_owner_id)[0] || null,
+        assignee_ids: normalizeIdList(template.default_assignee_ids, template.default_owner_id),
+        assign_to_client: Boolean(template.assign_to_client), due_date: suggestedDue,
         status: "todo", created_at: now, updated_at: now
       };
       const saved = isLive() ? await createRow("deliveryObjectives", body) : body;
@@ -693,7 +703,12 @@ async function syncProductGoals() {
         : null;
       if (current) {
         const updates = { ...structural };
-        if (!current.owner_id && template.default_owner_id) updates.owner_id = template.default_owner_id;
+        const defaultAssignees = normalizeIdList(template.default_assignee_ids, template.default_owner_id);
+        if (!normalizeIdList(current.assignee_ids, current.owner_id).length && defaultAssignees.length) {
+          updates.assignee_ids = defaultAssignees;
+          updates.owner_id = defaultAssignees[0];
+        }
+        if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
         if (!current.due_date && suggestedDue) updates.due_date = suggestedDue;
         if (Object.entries(updates).some(([key, value]) => current[key] !== value)) {
           Object.assign(current, updates, { updated_at: new Date().toISOString() });
@@ -705,7 +720,10 @@ async function syncProductGoals() {
       const now = new Date().toISOString();
       const body = {
         id: crypto.randomUUID(), project_id: project.id, source_template_id: template.id,
-        ...structural, current_value: 0, owner_id: template.default_owner_id || null,
+        ...structural, current_value: 0,
+        owner_id: normalizeIdList(template.default_assignee_ids, template.default_owner_id)[0] || null,
+        assignee_ids: normalizeIdList(template.default_assignee_ids, template.default_owner_id),
+        assign_to_client: Boolean(template.assign_to_client),
         due_date: suggestedDue, status: "todo", created_at: now, updated_at: now
       };
       const saved = isLive() ? await createRow("deliveryGoals", body) : body;
@@ -791,6 +809,7 @@ async function syncProductActivities() {
           if (!normalizeTextList(current.assignee_job_titles).length && defaultJobTitles.length) {
             updates.assignee_job_titles = defaultJobTitles;
           }
+          if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
           if (dueDate && (!current.due_date || recurrenceChanged)) updates.due_date = dueDate;
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
@@ -808,6 +827,7 @@ async function syncProductActivities() {
           owner_id: normalizeIdList(template.default_assignee_ids, template.default_owner_id)[0] || null,
           assignee_ids: normalizeIdList(template.default_assignee_ids, template.default_owner_id),
           assignee_job_titles: normalizeTextList(template.default_assignee_job_titles),
+          assign_to_client: Boolean(template.assign_to_client),
           due_date: dueDate, notes: "", status: "todo",
           created_at: now, updated_at: now
         };
@@ -1419,7 +1439,7 @@ function columns(tab, c) {
         return `<button class="btn checklist-open${complete ? " complete" : ""}" data-id="${esc(row.id)}" title="Abrir checklist">${progress.done}/${progress.total}</button>`;
       } },
       { k: "objective_name", h: "OBJETIVO" },
-      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => esc(responsibilityNames(v, row.owner_id, row.assignee_job_titles)) },
+      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => esc(responsibilityNames(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)) },
       { k: "due_date", h: "PRAZO", fmt: (v, row) => `<input class="inline-due-date" type="date" data-id="${esc(row.id)}" value="${esc(v || "")}" title="Alterar prazo">` },
       { k: "status", h: "STATUS", fmt: (v) => badge(v === "done" ? "won" : v === "doing" ? "negotiation" : "lead", TASK_STATUS.find((s) => s.id === v)?.label || "A fazer") },
       { k: "notes", h: "NOTAS", cls: "muted" }];
@@ -2305,7 +2325,7 @@ function renderProductActivities() {
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
     <td>${priorityBadge(item.priority)}</td>
-    <td>${esc(responsibilityNames(item.default_assignee_ids, item.default_owner_id, item.default_assignee_job_titles))}</td>
+    <td>${esc(responsibilityNames(item.default_assignee_ids, item.default_owner_id, item.default_assignee_job_titles, item.assign_to_client))}</td>
     <td>${esc(dependencyNames(item.dependency_template_ids, item.depends_on_template_id, templates))}</td>
     <td class="act table-actions-cell">${tableActionButtons({
       edit: { className: "pa-edit", attrs: { "data-id": item.id }, title: item.parent_template_id ? "Editar subtarefa" : "Editar tarefa" },
@@ -2371,7 +2391,7 @@ function renderProductObjectives() {
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
   const activities = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const rows = objectives.map((item) => {
-    const owner = userDisplayName(item.default_owner_id, cache, "—");
+    const owner = assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const activityCount = activities.filter((activity) => activity.objective_template_id === item.id).length;
     const dependencyObjectives = normalizeIdList(item.dependency_objective_template_ids)
       .map((id) => objectives.find((objective) => objective.id === id)?.name).filter(Boolean);
@@ -2387,6 +2407,7 @@ function renderProductObjectives() {
       <td>${activityCount}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "po-edit", attrs: { "data-id": item.id }, title: "Editar objetivo" },
+        clone: { className: "po-clone", attrs: { "data-id": item.id }, title: "Clonar objetivo" },
         delete: { className: "po-delete", attrs: { "data-id": item.id }, title: "Excluir objetivo" }
       })}</td>
     </tr>`;
@@ -2397,14 +2418,17 @@ function renderProductObjectives() {
     </tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
+  document.querySelectorAll(".po-clone").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(null, button.dataset.id)));
   document.querySelectorAll(".po-delete").forEach((button) => button.addEventListener("click", () => deleteProductObjective(button.dataset.id)));
 }
 
-function openProductObjectiveDrawer(editId = null) {
+function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   closeProductActivityDrawer();
   productActivityState.objectiveEditId = editId;
   const objectives = loadProductObjectives().filter((item) => item.product_id === productActivityState.productId);
-  const current = objectives.find((item) => item.id === editId) || {};
+  const cloneSource = objectives.find((item) => item.id === cloneSourceId);
+  const current = objectives.find((item) => item.id === editId) || cloneSource || {};
+  const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const objectiveDependencyOptions = objectives
     .filter((item) => item.id !== editId)
     .map((item) => ({ value: item.id, label: item.name }));
@@ -2415,22 +2439,23 @@ function openProductObjectiveDrawer(editId = null) {
   overlay.id = "product-activity-drawer-overlay";
   overlay.className = "activity-form-overlay";
   overlay.innerHTML = `<aside class="activity-form-drawer">
-    <h3>${current.id ? "Editar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
+    <h3>${editId ? "Editar objetivo" : cloneSource ? "Clonar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
-      <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
+      <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
-      <div class="field"><label>Responsável padrão</label><select id="po-owner">${userOptions(current.default_owner_id || "")}</select></div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="po-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 30"></div>
       <div class="field"><label>Depende de objetivos</label>${multiPickerHtml("po-objective-dependencies", objectiveDependencyOptions, new Set(normalizeIdList(current.dependency_objective_template_ids)), "Selecionar objetivos")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("po-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
     </div>
-    <div class="modal-foot"><button class="btn" id="po-cancel">Cancelar</button><button class="btn primary" id="po-save">${current.id ? "Salvar" : "Criar"}</button></div>
+    <div class="modal-foot"><button class="btn" id="po-cancel">Cancelar</button><button class="btn primary" id="po-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProductActivityDrawer(); });
   document.getElementById("po-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-save").addEventListener("click", saveProductObjective);
+  wireMultiPicker("po-assignees");
   wireMultiPicker("po-objective-dependencies");
   wireMultiPicker("po-activity-dependencies");
   document.getElementById("po-name")?.focus();
@@ -2457,6 +2482,7 @@ async function saveProductObjective() {
   const recordId = current?.id || crypto.randomUUID();
   const dependencyObjectiveIds = multiPickerValues("po-objective-dependencies");
   const dependencyActivityIds = multiPickerValues("po-activity-dependencies");
+  const assignees = assigneePickerValue("po-assignees");
   if (createsObjectiveDependencyCycle(rows, recordId, dependencyObjectiveIds)) {
     toast("Essa dependência criaria um ciclo entre os objetivos.", true);
     return;
@@ -2467,7 +2493,9 @@ async function saveProductObjective() {
     product_id: productActivityState.productId,
     name,
     completion_criteria: document.getElementById("po-criteria").value.trim(),
-    default_owner_id: document.getElementById("po-owner").value || null,
+    default_owner_id: assignees.ids[0] || null,
+    default_assignee_ids: assignees.ids,
+    assign_to_client: assignees.assignToClient,
     dependency_objective_template_ids: dependencyObjectiveIds,
     dependency_activity_template_ids: dependencyActivityIds,
     target_days: targetValue === "" ? null : Number(targetValue),
@@ -2524,7 +2552,7 @@ function renderProductGoals() {
     .filter((item) => item.product_id === productActivityState.productId)
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
   const rows = goals.map((item) => {
-    const owner = userDisplayName(item.default_owner_id, cache, "—");
+    const owner = assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const target = `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value).toLocaleString("pt-BR")} ${item.unit || ""}`.trim();
     const dependencyGoals = normalizeIdList(item.dependency_goal_template_ids)
       .map((id) => goals.find((goal) => goal.id === id)?.name).filter(Boolean);
@@ -2540,6 +2568,7 @@ function renderProductGoals() {
       <td>${esc(owner)}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "pg-edit", attrs: { "data-id": item.id }, title: "Editar meta" },
+        clone: { className: "pg-clone", attrs: { "data-id": item.id }, title: "Clonar meta" },
         delete: { className: "pg-delete", attrs: { "data-id": item.id }, title: "Excluir meta" }
       })}</td>
     </tr>`;
@@ -2550,13 +2579,17 @@ function renderProductGoals() {
   </tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
+  document.querySelectorAll(".pg-clone").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(null, button.dataset.id)));
   document.querySelectorAll(".pg-delete").forEach((button) => button.addEventListener("click", () => deleteProductGoal(button.dataset.id)));
 }
 
-function openProductGoalDrawer(editId = null) {
+function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   closeProductActivityDrawer();
   productActivityState.goalEditId = editId;
-  const current = loadProductGoals().find((item) => item.id === editId) || {};
+  const goals = loadProductGoals();
+  const cloneSource = goals.find((item) => item.id === cloneSourceId);
+  const current = goals.find((item) => item.id === editId) || cloneSource || {};
+  const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const comparisonOptions = Object.entries(GOAL_COMPARISON_LABEL).map(([value, label]) =>
     `<option value="${value}"${value === (current.comparison || "at_least") ? " selected" : ""}>${label}</option>`).join("");
   const goalDependencyOptions = loadProductGoals()
@@ -2569,25 +2602,26 @@ function openProductGoalDrawer(editId = null) {
   overlay.id = "product-activity-drawer-overlay";
   overlay.className = "activity-form-overlay";
   overlay.innerHTML = `<aside class="activity-form-drawer">
-    <h3>${current.id ? "Editar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
+    <h3>${editId ? "Editar meta" : cloneSource ? "Clonar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
-      <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
+      <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
       <div class="field"><label>Unidade</label><input id="pg-unit" value="${esc(current.unit || "")}" placeholder="Ex.: pedidos/mês, %, R$"></div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="pg-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 90"></div>
-      <div class="field"><label>Responsável padrão</label><select id="pg-owner">${userOptions(current.default_owner_id || "")}</select></div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pg-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Depende de metas</label>${multiPickerHtml("pg-goal-dependencies", goalDependencyOptions, new Set(normalizeIdList(current.dependency_goal_template_ids)), "Selecionar metas")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("pg-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
     </div>
-    <div class="modal-foot"><button class="btn" id="pg-cancel">Cancelar</button><button class="btn primary" id="pg-save">${current.id ? "Salvar" : "Criar"}</button></div>
+    <div class="modal-foot"><button class="btn" id="pg-cancel">Cancelar</button><button class="btn primary" id="pg-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
   overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProductActivityDrawer(); });
   document.getElementById("pg-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-save").addEventListener("click", saveProductGoal);
+  wireMultiPicker("pg-assignees");
   wireMultiPicker("pg-goal-dependencies");
   wireMultiPicker("pg-activity-dependencies");
   document.getElementById("pg-name")?.focus();
@@ -2616,6 +2650,7 @@ async function saveProductGoal() {
   const recordId = current?.id || crypto.randomUUID();
   const dependencyGoalIds = multiPickerValues("pg-goal-dependencies");
   const dependencyActivityIds = multiPickerValues("pg-activity-dependencies");
+  const assignees = assigneePickerValue("pg-assignees");
   if (createsGoalDependencyCycle(rows, recordId, dependencyGoalIds)) {
     toast("Essa dependência criaria um ciclo entre as metas.", true);
     return;
@@ -2630,7 +2665,9 @@ async function saveProductGoal() {
     target_value: Number(targetValue),
     unit: document.getElementById("pg-unit").value.trim(),
     target_days: targetDays === "" ? null : Number(targetDays),
-    default_owner_id: document.getElementById("pg-owner").value || null,
+    default_owner_id: assignees.ids[0] || null,
+    default_assignee_ids: assignees.ids,
+    assign_to_client: assignees.assignToClient,
     dependency_goal_template_ids: dependencyGoalIds,
     dependency_activity_template_ids: dependencyActivityIds,
     sort_order: current?.sort_order ?? (Math.max(-1, ...productRows.map((item) => Number(item.sort_order || 0))) + 1),
@@ -2882,7 +2919,8 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
       objective_template_id: requestedParent.objective_template_id || null,
       default_owner_id: requestedParent.default_owner_id || null,
       default_assignee_ids: normalizeIdList(requestedParent.default_assignee_ids, requestedParent.default_owner_id),
-      default_assignee_job_titles: normalizeTextList(requestedParent.default_assignee_job_titles)
+      default_assignee_job_titles: normalizeTextList(requestedParent.default_assignee_job_titles),
+      assign_to_client: Boolean(requestedParent.assign_to_client)
     });
   }
   productActivityParentGroupId = requestedParent ? (requestedParent.template_group_id || requestedParent.id) : null;
@@ -2901,8 +2939,8 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   productActivityChecklistDraft = normalizeChecklist(current.checklist || requestedParent?.checklist).map((item) => ({ ...item, checked: false }));
   const selectedDependencies = new Set(normalizeIdList(current.dependency_template_ids, current.depends_on_template_id));
   const dependencyOptions = templates.filter((item) => item.id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
-  const selectedAssignees = new Set(normalizeIdList(current.default_assignee_ids, current.default_owner_id));
-  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) }));
+  const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
+  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(
     loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).map((item) =>
@@ -2976,7 +3014,7 @@ async function saveProductActivity() {
   const current = rows.find((item) => item.id === productActivityState.editId);
   const recordId = current?.id || crypto.randomUUID();
   const dependencyIds = multiPickerValues("pa-dependencies");
-  const assigneeIds = multiPickerValues("pa-assignees");
+  const assignees = assigneePickerValue("pa-assignees");
   const assigneeJobTitles = multiPickerValues("pa-assignee-job-titles");
   const selectedProductIds = multiPickerValues("pa-products");
   if (!selectedProductIds.length) { toast("Selecione pelo menos um produto.", true); return; }
@@ -3004,9 +3042,10 @@ async function saveProductActivity() {
     checklist: productActivityChecklistDraft
       .map((item) => ({ id: item.id || crypto.randomUUID(), text: item.text.trim(), checked: false }))
       .filter((item) => item.text),
-    default_owner_id: assigneeIds[0] || null,
-    default_assignee_ids: assigneeIds,
+    default_owner_id: assignees.ids[0] || null,
+    default_assignee_ids: assignees.ids,
     default_assignee_job_titles: assigneeJobTitles,
+    assign_to_client: assignees.assignToClient,
     template_group_id: productActivityDraftGroupId || crypto.randomUUID(),
     updated_at: new Date().toISOString()
   };
@@ -3077,7 +3116,29 @@ const TASK_STATUS = [
   { id: "doing", label: "Em andamento" },
   { id: "done", label: "Concluído" }
 ];
+const CLIENT_ASSIGNEE_VALUE = "__client__";
 let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
+
+function assigneePickerOptions() {
+  return [
+    ...(cache?.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
+    { value: CLIENT_ASSIGNEE_VALUE, label: "Cliente", detail: "Responsável da empresa" }
+  ];
+}
+
+function assigneePickerSelection(ids, fallbackId = null, assignToClient = false) {
+  const selected = new Set(normalizeIdList(ids, fallbackId));
+  if (assignToClient) selected.add(CLIENT_ASSIGNEE_VALUE);
+  return selected;
+}
+
+function assigneePickerValue(id) {
+  const values = multiPickerValues(id);
+  return {
+    ids: values.filter((value) => value !== CLIENT_ASSIGNEE_VALUE),
+    assignToClient: values.includes(CLIENT_ASSIGNEE_VALUE)
+  };
+}
 
 function userOptions(selected = "") {
   const users = cache?.users || [];
@@ -3091,8 +3152,9 @@ function userOptions(selected = "") {
   return ['<option value="">Sem responsável</option>', ...options].join("");
 }
 
-function assigneeNames(ids, fallbackId = null) {
+function assigneeNames(ids, fallbackId = null, assignToClient = false) {
   const names = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
+  if (assignToClient) names.push("Cliente");
   return names.join(", ") || "—";
 }
 
@@ -3105,8 +3167,9 @@ function assigneeJobTitleOptions() {
     })).values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }));
 }
 
-function responsibilityNames(ids, fallbackId = null, jobTitles = []) {
+function responsibilityNames(ids, fallbackId = null, jobTitles = [], assignToClient = false) {
   const direct = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
+  if (assignToClient) direct.push("Cliente");
   const roles = normalizeTextList(jobTitles).map((title) => {
     const eligible = (cache?.users || []).filter((user) =>
       user.status === "active" && String(user.job_title || "").trim().toLocaleLowerCase("pt-BR") === title.toLocaleLowerCase("pt-BR")
@@ -3165,6 +3228,7 @@ function wireMultiPicker(id) {
       event.stopPropagation();
       root.querySelector(`.multi-picker-option[data-value="${CSS.escape(chip.dataset.value)}"]`)?.classList.remove("active");
       drawSelection();
+      root.dispatchEvent(new CustomEvent("multi-picker-change"));
     }));
   };
   const toggleMenu = (open) => {
@@ -3178,7 +3242,11 @@ function wireMultiPicker(id) {
   control.addEventListener("click", () => toggleMenu());
   control.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleMenu(); } });
   root.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); toggleMenu(false); control.focus(); } });
-  root.querySelectorAll(".multi-picker-option").forEach((option) => option.addEventListener("click", () => { option.classList.toggle("active"); drawSelection(); }));
+  root.querySelectorAll(".multi-picker-option").forEach((option) => option.addEventListener("click", () => {
+    option.classList.toggle("active");
+    drawSelection();
+    root.dispatchEvent(new CustomEvent("multi-picker-change"));
+  }));
   search.addEventListener("input", filterOptions);
   search.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
@@ -3265,7 +3333,7 @@ function taskIsBlocked(task, tasks = loadProjectTasks()) {
 
 function taskCardHtml(task) {
   const allTasks = loadProjectTasks();
-  const owners = assigneeNames(task.assignee_ids, task.owner_id);
+  const owners = assigneeNames(task.assignee_ids, task.owner_id, task.assign_to_client);
   const objective = cache.deliveryObjectiveById?.[task.objective_id];
   const dependencies = taskDependencies(task, allTasks);
   const blocked = taskIsBlocked(task, allTasks);
@@ -3389,7 +3457,7 @@ function renderTaskTable(tasks) {
       <td>${terminal ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}">${checklist.done}/${checklist.total}</button>` : '<span class="muted">Nas subtarefas</span>'}</td>
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
-      <td>${esc(responsibilityNames(task.assignee_ids, task.owner_id, task.assignee_job_titles))}</td>
+      <td>${esc(responsibilityNames(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
       <td>${esc(task.due_date ? dt(task.due_date) : "—")}</td>
       <td>${esc(status)}</td>
       <td class="muted">${esc(task.notes || "—")}</td>
@@ -3463,7 +3531,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
       <td>${esc(objective.completion_criteria || "—")}</td>
       <td>${done}/${linked.length} · ${progress}%</td>
       <td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td><select class="objective-control delivery-objective-owner">${userOptions(objective.owner_id || "")}</select></td>
+      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-objective-due" type="date" value="${esc(objective.due_date || "")}"></td>
       <td><select class="objective-control delivery-objective-status">${taskStatusOptions(objective.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
@@ -3536,7 +3604,7 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
       <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
       <td>${esc(targetLabel)}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td><select class="objective-control delivery-goal-owner">${userOptions(goal.owner_id || "")}</select></td>
+      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-goal-due" type="date" value="${esc(goal.due_date || "")}"></td>
       <td><select class="objective-control delivery-goal-status">${taskStatusOptions(goal.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
@@ -3619,7 +3687,7 @@ function projectSectionValues(item, tasks = []) {
       subtasks.total ? "Nas subtarefas" : `${checklist.done}/${checklist.total}`,
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
-      responsibilityNames(item.assignee_ids, item.owner_id, item.assignee_job_titles),
+      responsibilityNames(item.assignee_ids, item.owner_id, item.assignee_job_titles, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer",
       item.notes || "—"
@@ -3631,7 +3699,7 @@ function projectSectionValues(item, tasks = []) {
     const progress = linked.length ? Math.round(done / linked.length * 100) : 0;
     return [
       item.name || "—", item.completion_criteria || "—", `${done}/${linked.length} · ${progress}%`,
-      deliveryObjectiveDependencyLabel(item), assigneeNames([], item.owner_id),
+      deliveryObjectiveDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
     ];
@@ -3642,7 +3710,7 @@ function projectSectionValues(item, tasks = []) {
     item.name || "—", item.metric || "—", current.toLocaleString("pt-BR"),
     `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(),
     `${target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0}%`,
-    deliveryGoalDependencyLabel(item), assigneeNames([], item.owner_id),
+    deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
     item.due_date ? dt(item.due_date) : "—",
     TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
   ];
@@ -3753,8 +3821,15 @@ async function updateDeliveryObjective(objectiveId, patch) {
 function wireDeliveryObjectives(projectId) {
   document.querySelectorAll("#project-board-root tr[data-objective-id]").forEach((row) => {
     const objectiveId = row.dataset.objectiveId;
-    row.querySelector(".delivery-objective-owner")?.addEventListener("change", async (event) => {
-      await updateDeliveryObjective(objectiveId, { owner_id: event.target.value || null });
+    const assigneePickerId = `delivery-objective-assignees-${objectiveId}`;
+    wireMultiPicker(assigneePickerId);
+    row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
+      const assignees = assigneePickerValue(assigneePickerId);
+      await updateDeliveryObjective(objectiveId, {
+        owner_id: assignees.ids[0] || null,
+        assignee_ids: assignees.ids,
+        assign_to_client: assignees.assignToClient
+      });
     });
     row.querySelector(".delivery-objective-due")?.addEventListener("change", async (event) => {
       await updateDeliveryObjective(objectiveId, { due_date: event.target.value || null });
@@ -3796,6 +3871,16 @@ async function updateDeliveryGoal(goalId, patch) {
 function wireDeliveryGoals(projectId) {
   document.querySelectorAll("#project-board-root tr[data-goal-id]").forEach((row) => {
     const goalId = row.dataset.goalId;
+    const assigneePickerId = `delivery-goal-assignees-${goalId}`;
+    wireMultiPicker(assigneePickerId);
+    row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
+      const assignees = assigneePickerValue(assigneePickerId);
+      await updateDeliveryGoal(goalId, {
+        owner_id: assignees.ids[0] || null,
+        assignee_ids: assignees.ids,
+        assign_to_client: assignees.assignToClient
+      });
+    });
     row.querySelector(".delivery-goal-current")?.addEventListener("change", async (event) => {
       const goal = loadDeliveryGoals().find((item) => item.id === goalId);
       const currentValue = Number(event.target.value || 0);
@@ -3804,8 +3889,6 @@ function wireDeliveryGoals(projectId) {
       await updateDeliveryGoal(goalId, { current_value: currentValue, status });
       renderProjectBoard(projectId);
     });
-    row.querySelector(".delivery-goal-owner")?.addEventListener("change", async (event) =>
-      updateDeliveryGoal(goalId, { owner_id: event.target.value || null }));
     row.querySelector(".delivery-goal-due")?.addEventListener("change", async (event) =>
       updateDeliveryGoal(goalId, { due_date: event.target.value || null }));
     row.querySelector(".delivery-goal-status")?.addEventListener("change", async (event) => {
@@ -3988,8 +4071,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   const objectives = loadDeliveryObjectives().filter((item) => item.project_id === projectId);
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
-  const selectedAssignees = new Set(normalizeIdList(current.assignee_ids, current.owner_id));
-  const assigneeOptions = (cache.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) }));
+  const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
+  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(objectives.map((item) =>
     `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
@@ -4037,7 +4120,7 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
     const title = document.getElementById("project-task-title").value.trim();
     if (!title) { toast("Informe a tarefa.", true); return; }
     const dependencyIds = multiPickerValues("project-task-dependencies");
-    const assigneeIds = multiPickerValues("project-task-assignees");
+    const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
     if (createsTaskDependencyCycle(tasks, editId, dependencyIds)) { toast("Essa dependência criaria um ciclo entre as tarefas.", true); return; }
     const now = new Date().toISOString();
@@ -4057,9 +4140,10 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       objective_id: document.getElementById("project-task-objective").value || null,
       depends_on_activity_id: dependencyIds[0] || null,
       dependency_ids: dependencyIds,
-      owner_id: assigneeIds[0] || null,
-      assignee_ids: assigneeIds,
+      owner_id: assignees.ids[0] || null,
+      assignee_ids: assignees.ids,
       assignee_job_titles: assigneeJobTitles,
+      assign_to_client: assignees.assignToClient,
       due_date: document.getElementById("project-task-due").value || null,
       notes: document.getElementById("project-task-notes").value.trim(),
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
@@ -5992,7 +6076,7 @@ function renderRegistrationsSection() {
       const { linked, item } = group;
       const products = [...new Set(linked.map((candidate) => registrationProductName(candidate.product_id)))].join(", ");
       const owners = [...new Set(linked.map((candidate) => responsibilityNames(
-        candidate.default_assignee_ids, candidate.default_owner_id, candidate.default_assignee_job_titles
+        candidate.default_assignee_ids, candidate.default_owner_id, candidate.default_assignee_job_titles, candidate.assign_to_client
       )).filter((value) => value !== "—"))].join(", ") || "—";
       const objectives = [...new Set(linked.map((candidate) => loadProductObjectives().find((objective) => objective.id === candidate.objective_template_id)?.name).filter(Boolean))].join(", ") || "—";
       const dependencies = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.dependency_template_ids, candidate.depends_on_template_id)).map((id) => activityDisplayName(items.find((other) => other.id === id))).filter((name) => name !== "—"))].join(", ") || "—";
@@ -6042,7 +6126,10 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(dependencies)}</td><td>${esc(userDisplayName(item.default_owner_id, cache, "—"))}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" } })}</td></tr>`;
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(dependencies)}</td><td>${esc(assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+        edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
+        clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
+      })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th>Depende de</th><th>Responsável padrão</th>", rows, 7);
   } else {
@@ -6053,7 +6140,10 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(userDisplayName(item.default_owner_id, cache, "—"))}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" } })}</td></tr>`;
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+        edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
+        clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
+      })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th>Depende de</th><th>Prazo sugerido</th><th>Responsável padrão</th>", rows, 7);
   }
@@ -6090,6 +6180,14 @@ function renderRegistrationsSection() {
   root.querySelectorAll(".reg-template-clone").forEach((button) => button.addEventListener("click", () => {
     productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "activities" };
     openProductActivityDrawer(null, button.dataset.id);
+  }));
+  root.querySelectorAll(".reg-goal-clone").forEach((button) => button.addEventListener("click", () => {
+    productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "goals" };
+    openProductGoalDrawer(null, button.dataset.id);
+  }));
+  root.querySelectorAll(".reg-objective-clone").forEach((button) => button.addEventListener("click", () => {
+    productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "objectives" };
+    openProductObjectiveDrawer(null, button.dataset.id);
   }));
   wireRegistrationTable();
 }
