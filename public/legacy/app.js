@@ -7865,12 +7865,7 @@ function documentBlockMarkup(block, { editable = false } = {}) {
 }
 
 function documentPageMarkup(documentItem, page, index, total, { editable = false } = {}) {
-  const systemName = documentItem.system_name || "ENTERPRISER CRM";
-  const moduleName = documentItem.module_name || documentItem.category || "GERAL";
-  const subject = page.subject || page.title || `Página ${index + 1}`;
-  return `<header class="documentation-page-header"><strong class="documentation-system">${esc(systemName)}</strong><span class="documentation-module">${esc(moduleName)}</span></header>
-    <div class="documentation-context-bar">${editable ? `<input id="document-page-subject" value="${esc(subject)}" placeholder="Assunto da página">` : `<strong>${esc(subject)}</strong>`}</div>
-    <div class="documentation-body-grid">${page.blocks.map((block) => documentBlockMarkup(block, { editable })).join("")}</div>
+  return `<div class="documentation-body-grid">${page.blocks.map((block) => documentBlockMarkup(block, { editable })).join("")}</div>
     <footer class="documentation-page-footer">${editable ? `<input id="document-page-breadcrumb" value="${esc(documentPageBreadcrumb(documentItem, page))}" placeholder="Sistema > Módulo > Assunto">` : `<span>${esc(documentPageBreadcrumb(documentItem, page))}</span>`}<b>${String(index + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}</b></footer>`;
 }
 
@@ -8161,6 +8156,7 @@ function openToolDocumentForm(id = null) {
       <input id="tool-document-title" value="${esc(current.title || "")}" placeholder="Nome da documentação">
       <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CRM")}" placeholder="Sistema">
       <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
+      <input id="tool-document-page-subject" value="${esc(state.pages[0]?.subject || "")}" placeholder="Assunto da página">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
@@ -8325,7 +8321,7 @@ function persistDocumentationEditorPage() {
   const state = documentationEditorState;
   const page = state?.pages[state.activeIndex];
   if (!page) return;
-  page.subject = document.getElementById("document-page-subject")?.value.trim() || `Página ${state.activeIndex + 1}`;
+  page.subject = document.getElementById("tool-document-page-subject")?.value.trim() || `Página ${state.activeIndex + 1}`;
   page.title = page.subject;
   page.breadcrumb = document.getElementById("document-page-breadcrumb")?.value.trim() || "";
   document.querySelectorAll("#document-editor-page [data-block-id]").forEach((element) => {
@@ -8360,6 +8356,8 @@ function renderDocumentationEditor() {
     <div class="document-group-slides"${state.collapsedGroups.has(group.name) ? " hidden" : ""}>${group.items.map(({ slide, index }) => `<button class="document-slide-thumb${index === state.activeIndex ? " active" : ""}" data-index="${index}"><span>${index + 1}</span><b>${esc(slide.subject)}</b></button>`).join("")}</div>
   </section>`).join("");
   const stage = document.getElementById("document-editor-page");
+  const subjectInput = document.getElementById("tool-document-page-subject");
+  if (subjectInput) subjectInput.value = page.subject;
   stage.style.background = page.background;
   stage.innerHTML = documentPageMarkup(documentationEditorDocument(), page, state.activeIndex, state.pages.length, { editable: true });
   const backgroundInput = document.getElementById("document-background-color");
@@ -8377,12 +8375,32 @@ function wireDocumentationEditorPage() {
     state.activeIndex = Number(button.dataset.index);
     renderDocumentationEditor();
   }));
-  document.querySelectorAll("#document-editor-list .document-group-toggle").forEach((button) => button.addEventListener("click", () => {
-    persistDocumentationEditorPage();
-    const group = button.dataset.group;
-    if (state.collapsedGroups.has(group)) state.collapsedGroups.delete(group); else state.collapsedGroups.add(group);
-    renderDocumentationEditor();
-  }));
+  document.querySelectorAll("#document-editor-list .document-group-toggle").forEach((button) => {
+    let clickTimer = null;
+    button.addEventListener("click", () => {
+      if (clickTimer) window.clearTimeout(clickTimer);
+      clickTimer = window.setTimeout(() => {
+        persistDocumentationEditorPage();
+        const group = button.dataset.group;
+        if (state.collapsedGroups.has(group)) state.collapsedGroups.delete(group); else state.collapsedGroups.add(group);
+        renderDocumentationEditor();
+      }, 220);
+    });
+    button.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      if (clickTimer) window.clearTimeout(clickTimer);
+      persistDocumentationEditorPage();
+      const currentName = button.dataset.group;
+      const nextName = window.prompt("Renomear grupo:", currentName)?.trim();
+      if (!nextName || nextName === currentName) return;
+      if (state.pages.some((item) => item.group !== currentName && item.group.toLocaleLowerCase("pt-BR") === nextName.toLocaleLowerCase("pt-BR"))) {
+        toast("Já existe um grupo com esse nome.", true); return;
+      }
+      state.pages.forEach((item) => { if (item.group === currentName) item.group = nextName; });
+      if (state.collapsedGroups.delete(currentName)) state.collapsedGroups.add(nextName);
+      renderDocumentationEditor();
+    });
+  });
   document.querySelectorAll("#document-editor-list .document-group-up").forEach((button) => button.addEventListener("click", () => documentationEditorMoveGroup(button.dataset.group, -1)));
   document.querySelectorAll("#document-editor-list .document-group-down").forEach((button) => button.addEventListener("click", () => documentationEditorMoveGroup(button.dataset.group, 1)));
   document.querySelectorAll("#document-editor-list .document-slide-group").forEach((groupElement) => {
