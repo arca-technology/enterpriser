@@ -7848,24 +7848,23 @@ function documentPageBreadcrumb(documentItem, page) {
   return page.breadcrumb || [documentItem.system_name || "ENTERPRISER CRM", documentItem.module_name, page.subject].filter(Boolean).join(" > ");
 }
 
-function documentBlockMarkup(block, { editable = false } = {}) {
+function documentBlockMarkup(block, { editable = false, selectedBlockId = null } = {}) {
   const label = DOCUMENT_BLOCK_TYPES[block.type] || DOCUMENT_BLOCK_TYPES.text;
   const semantic = ["note", "rule", "warning", "example"].includes(block.type);
-  const controls = editable ? `<div class="documentation-block-controls">
-    <select class="documentation-block-type" data-id="${esc(block.id)}" title="Tipo do bloco">${Object.entries(DOCUMENT_BLOCK_TYPES).map(([value, text]) => `<option value="${value}"${block.type === value ? " selected" : ""}>${text}</option>`).join("")}</select>
-    <select class="documentation-block-span" data-id="${esc(block.id)}" title="Largura no grid">${[1, 2, 3, 4, 5, 6].map((span) => `<option value="${span}"${block.span === span ? " selected" : ""}>Largura ${span}/6</option>`).join("")}</select>
-    <button class="tool-icon-btn documentation-block-up" data-id="${esc(block.id)}" title="Mover para cima">↑</button>
-    <button class="tool-icon-btn documentation-block-down" data-id="${esc(block.id)}" title="Mover para baixo">↓</button>
-    <button class="tool-icon-btn documentation-block-delete" data-id="${esc(block.id)}" title="Excluir bloco">×</button>
-  </div>` : "";
-  return `<section class="documentation-block documentation-block-${esc(block.type)}${editable ? " is-editing" : ""}" data-block-id="${esc(block.id)}" style="grid-column:span ${block.span}">
-    ${controls}${semantic ? `<div class="documentation-block-label">${esc(label)}</div>` : ""}
+  const selected = editable && block.id === selectedBlockId;
+  return `<section class="documentation-block documentation-block-${esc(block.type)}${editable ? " is-editing" : ""}${selected ? " is-selected" : ""}" data-block-id="${esc(block.id)}" style="grid-column:span ${block.span}">
+    ${semantic ? `<div class="documentation-block-label">${esc(label)}</div>` : ""}
     <div class="documentation-block-content"${editable ? ' contenteditable="true" data-placeholder="Digite o conteúdo do bloco..."' : ""}>${sanitizeDocumentHtml(block.html)}</div>
   </section>`;
 }
 
-function documentPageMarkup(documentItem, page, index, total, { editable = false } = {}) {
-  return `<div class="documentation-body-grid">${page.blocks.map((block) => documentBlockMarkup(block, { editable })).join("")}</div>
+function documentPageMarkup(documentItem, page, index, total, { editable = false, selectedBlockId = null } = {}) {
+  const systemName = documentItem.system_name || "ENTERPRISER CRM";
+  const moduleName = documentItem.module_name || documentItem.category || "GERAL";
+  const subject = page.subject || page.title || `Página ${index + 1}`;
+  return `<header class="documentation-page-header"><strong class="documentation-system">${esc(systemName)}</strong><span class="documentation-module">${esc(moduleName)}</span></header>
+    <div class="documentation-context-bar">${editable ? `<input id="document-page-subject" value="${esc(subject)}" placeholder="Assunto da página">` : `<strong>${esc(subject)}</strong>`}</div>
+    <div class="documentation-body-grid">${page.blocks.map((block) => documentBlockMarkup(block, { editable, selectedBlockId })).join("")}</div>
     <footer class="documentation-page-footer">${editable ? `<input id="document-page-breadcrumb" value="${esc(documentPageBreadcrumb(documentItem, page))}" placeholder="Sistema > Módulo > Assunto">` : `<span>${esc(documentPageBreadcrumb(documentItem, page))}</span>`}<b>${String(index + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}</b></footer>`;
 }
 
@@ -8146,6 +8145,7 @@ function openToolDocumentForm(id = null) {
     slideFormat: documentSlideFormat(current),
     collapsedGroups: new Set(),
     activeEditable: null,
+    selectedBlockId: null,
     closePanel: null
   };
   const state = documentationEditorState;
@@ -8156,7 +8156,6 @@ function openToolDocumentForm(id = null) {
       <input id="tool-document-title" value="${esc(current.title || "")}" placeholder="Nome da documentação">
       <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CRM")}" placeholder="Sistema">
       <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
-      <input id="tool-document-page-subject" value="${esc(state.pages[0]?.subject || "")}" placeholder="Assunto da página">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
@@ -8176,6 +8175,9 @@ function openToolDocumentForm(id = null) {
       <span class="documentation-toolbar-spacer"></span>
       <select id="document-new-block-type" title="Tipo do novo bloco">${blockOptions}</select>
       <select id="document-new-block-span" title="Largura do novo bloco">${[1, 2, 3, 4, 5, 6].map((span) => `<option value="${span}"${span === 6 ? " selected" : ""}>${span}/6</option>`).join("")}</select>
+      <button class="tool-icon-btn" id="document-block-up" type="button" title="Mover bloco para cima">↑</button>
+      <button class="tool-icon-btn" id="document-block-down" type="button" title="Mover bloco para baixo">↓</button>
+      <button class="tool-icon-btn" id="document-block-delete" type="button" title="Excluir bloco">×</button>
       <button class="btn primary" id="document-add-block" type="button">+ Bloco</button>
     </div>
     <div class="document-editor-workspace">
@@ -8189,6 +8191,27 @@ function openToolDocumentForm(id = null) {
 }
 
 let documentationEditorState = null;
+
+function selectedDocumentationBlock() {
+  const state = documentationEditorState;
+  const page = state?.pages[state.activeIndex];
+  if (!page) return { page: null, block: null, index: -1 };
+  const index = page.blocks.findIndex((item) => item.id === state.selectedBlockId);
+  return { page, block: page.blocks[index] || null, index };
+}
+
+function syncDocumentationBlockToolbar() {
+  const { page, block, index } = selectedDocumentationBlock();
+  const typeSelect = document.getElementById("document-new-block-type");
+  const spanSelect = document.getElementById("document-new-block-span");
+  if (block) {
+    typeSelect.value = block.type;
+    spanSelect.value = String(block.span);
+  }
+  document.getElementById("document-block-up").disabled = !block || index === 0;
+  document.getElementById("document-block-down").disabled = !block || index === page.blocks.length - 1;
+  document.getElementById("document-block-delete").disabled = !block || page.blocks.length === 1;
+}
 
 function wireDocumentationEditorShell() {
   const state = documentationEditorState;
@@ -8233,11 +8256,45 @@ function wireDocumentationEditorShell() {
     state.pages[state.activeIndex].background = event.target.value;
     document.getElementById("document-editor-page").style.background = event.target.value;
   });
+  document.getElementById("document-new-block-type").addEventListener("change", (event) => {
+    const { block } = selectedDocumentationBlock();
+    if (!block) return;
+    persistDocumentationEditorPage();
+    block.type = event.target.value;
+    renderDocumentationEditor();
+  });
+  document.getElementById("document-new-block-span").addEventListener("change", (event) => {
+    const { block } = selectedDocumentationBlock();
+    if (!block) return;
+    persistDocumentationEditorPage();
+    block.span = Number(event.target.value);
+    renderDocumentationEditor();
+  });
+  const moveSelectedBlock = (direction) => {
+    persistDocumentationEditorPage();
+    const { page, index } = selectedDocumentationBlock();
+    const target = index + direction;
+    if (!page || index < 0 || target < 0 || target >= page.blocks.length) return;
+    [page.blocks[index], page.blocks[target]] = [page.blocks[target], page.blocks[index]];
+    renderDocumentationEditor();
+  };
+  document.getElementById("document-block-up").addEventListener("click", () => moveSelectedBlock(-1));
+  document.getElementById("document-block-down").addEventListener("click", () => moveSelectedBlock(1));
+  document.getElementById("document-block-delete").addEventListener("click", () => {
+    persistDocumentationEditorPage();
+    const { page, index } = selectedDocumentationBlock();
+    if (!page || index < 0 || page.blocks.length === 1) return;
+    page.blocks.splice(index, 1);
+    state.selectedBlockId = page.blocks[Math.min(index, page.blocks.length - 1)]?.id || null;
+    renderDocumentationEditor();
+  });
   document.getElementById("document-add-block").addEventListener("click", () => {
     persistDocumentationEditorPage();
     const type = document.getElementById("document-new-block-type").value;
     const span = Number(document.getElementById("document-new-block-span").value);
-    state.pages[state.activeIndex].blocks.push(normalizeDocumentBlock({ type, span, html: documentBlockStarterHtml(type) }));
+    const block = normalizeDocumentBlock({ type, span, html: documentBlockStarterHtml(type) });
+    state.pages[state.activeIndex].blocks.push(block);
+    state.selectedBlockId = block.id;
     renderDocumentationEditor();
   });
   document.getElementById("document-add-page").addEventListener("click", () => {
@@ -8245,6 +8302,7 @@ function wireDocumentationEditorShell() {
     const group = state.pages[state.activeIndex]?.group || "Geral";
     state.pages.push(normalizeDocumentSlides([{ title: `Página ${state.pages.length + 1}`, group, blocks: [{ type: "text", span: 6, html: "" }] }])[0]);
     state.activeIndex = state.pages.length - 1;
+    state.selectedBlockId = null;
     renderDocumentationEditor();
   });
   document.getElementById("document-add-group").addEventListener("click", () => {
@@ -8256,12 +8314,14 @@ function wireDocumentationEditorShell() {
     }
     state.pages.push(normalizeDocumentSlides([{ title: `Página ${state.pages.length + 1}`, group: name, blocks: [{ type: "text", span: 6, html: "" }] }])[0]);
     state.activeIndex = state.pages.length - 1;
+    state.selectedBlockId = null;
     renderDocumentationEditor();
   });
   document.getElementById("document-delete-page").addEventListener("click", () => {
     if (state.pages.length === 1 || !window.confirm("Excluir esta página?")) return;
     state.pages.splice(state.activeIndex, 1);
     state.activeIndex = Math.max(0, state.activeIndex - 1);
+    state.selectedBlockId = null;
     renderDocumentationEditor();
   });
 }
@@ -8321,7 +8381,7 @@ function persistDocumentationEditorPage() {
   const state = documentationEditorState;
   const page = state?.pages[state.activeIndex];
   if (!page) return;
-  page.subject = document.getElementById("tool-document-page-subject")?.value.trim() || `Página ${state.activeIndex + 1}`;
+  page.subject = document.getElementById("document-page-subject")?.value.trim() || `Página ${state.activeIndex + 1}`;
   page.title = page.subject;
   page.breadcrumb = document.getElementById("document-page-breadcrumb")?.value.trim() || "";
   document.querySelectorAll("#document-editor-page [data-block-id]").forEach((element) => {
@@ -8356,14 +8416,14 @@ function renderDocumentationEditor() {
     <div class="document-group-slides"${state.collapsedGroups.has(group.name) ? " hidden" : ""}>${group.items.map(({ slide, index }) => `<button class="document-slide-thumb${index === state.activeIndex ? " active" : ""}" data-index="${index}"><span>${index + 1}</span><b>${esc(slide.subject)}</b></button>`).join("")}</div>
   </section>`).join("");
   const stage = document.getElementById("document-editor-page");
-  const subjectInput = document.getElementById("tool-document-page-subject");
-  if (subjectInput) subjectInput.value = page.subject;
+  if (!page.blocks.some((block) => block.id === state.selectedBlockId)) state.selectedBlockId = page.blocks[0]?.id || null;
   stage.style.background = page.background;
-  stage.innerHTML = documentPageMarkup(documentationEditorDocument(), page, state.activeIndex, state.pages.length, { editable: true });
+  stage.innerHTML = documentPageMarkup(documentationEditorDocument(), page, state.activeIndex, state.pages.length, { editable: true, selectedBlockId: state.selectedBlockId });
   const backgroundInput = document.getElementById("document-background-color");
   if (backgroundInput) backgroundInput.value = /^#[0-9a-f]{6}$/i.test(page.background) ? page.background : "#ffffff";
   applyDocumentSlideDimensions(stage, state.orientation, state.slideFormat);
   document.getElementById("document-delete-page").disabled = state.pages.length === 1;
+  syncDocumentationBlockToolbar();
   wireDocumentationEditorPage();
 }
 
@@ -8373,6 +8433,7 @@ function wireDocumentationEditorPage() {
   document.querySelectorAll("#document-editor-list .document-slide-thumb").forEach((button) => button.addEventListener("click", () => {
     persistDocumentationEditorPage();
     state.activeIndex = Number(button.dataset.index);
+    state.selectedBlockId = null;
     renderDocumentationEditor();
   }));
   document.querySelectorAll("#document-editor-list .document-group-toggle").forEach((button) => {
@@ -8424,36 +8485,15 @@ function wireDocumentationEditorPage() {
     });
   });
   document.querySelectorAll("#document-editor-page .documentation-block-content").forEach((content) => {
-    content.addEventListener("focus", () => { state.activeEditable = content; });
+    content.addEventListener("focus", () => {
+      state.activeEditable = content;
+      state.selectedBlockId = content.closest("[data-block-id]")?.dataset.blockId || null;
+      document.querySelectorAll("#document-editor-page [data-block-id]").forEach((element) => {
+        element.classList.toggle("is-selected", element.dataset.blockId === state.selectedBlockId);
+      });
+      syncDocumentationBlockToolbar();
+    });
   });
-  document.querySelectorAll("#document-editor-page .documentation-block-type").forEach((select) => select.addEventListener("change", () => {
-    persistDocumentationEditorPage();
-    const block = page.blocks.find((item) => item.id === select.dataset.id);
-    if (block) block.type = select.value;
-    renderDocumentationEditor();
-  }));
-  document.querySelectorAll("#document-editor-page .documentation-block-span").forEach((select) => select.addEventListener("change", () => {
-    persistDocumentationEditorPage();
-    const block = page.blocks.find((item) => item.id === select.dataset.id);
-    if (block) block.span = Number(select.value);
-    renderDocumentationEditor();
-  }));
-  const moveBlock = (id, direction) => {
-    persistDocumentationEditorPage();
-    const from = page.blocks.findIndex((item) => item.id === id);
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= page.blocks.length) return;
-    [page.blocks[from], page.blocks[to]] = [page.blocks[to], page.blocks[from]];
-    renderDocumentationEditor();
-  };
-  document.querySelectorAll("#document-editor-page .documentation-block-up").forEach((button) => button.addEventListener("click", () => moveBlock(button.dataset.id, -1)));
-  document.querySelectorAll("#document-editor-page .documentation-block-down").forEach((button) => button.addEventListener("click", () => moveBlock(button.dataset.id, 1)));
-  document.querySelectorAll("#document-editor-page .documentation-block-delete").forEach((button) => button.addEventListener("click", () => {
-    if (page.blocks.length === 1) { toast("A página precisa ter ao menos um bloco.", true); return; }
-    persistDocumentationEditorPage();
-    page.blocks = page.blocks.filter((item) => item.id !== button.dataset.id);
-    renderDocumentationEditor();
-  }));
 }
 
 async function deleteToolDocument(id) {
