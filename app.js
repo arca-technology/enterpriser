@@ -5626,7 +5626,7 @@ function helpContentHtml() {
 
     <section class="help-section" id="help-start"><h4>Acesso e navegação</h4>
       <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CRM. O tema claro ou escuro fica salvo neste navegador.</p></div>
-      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS e ATUALIZAÇÕES.</p></div></div>
+      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
       <p class="help-note">Notificações ainda não possuem automação ativa. O LOG aparece apenas para administradores.</p>
     </section>
 
@@ -6063,6 +6063,7 @@ function openRegistrationsModal(section = "products") {
     <button class="foot-btn" disabled>AJUDA</button>
     <button class="foot-btn" disabled>CADASTROS</button>
     <button class="foot-btn" disabled>FERRAMENTAS</button>
+    <button class="foot-btn" disabled>SOCIAL</button>
     <button class="foot-btn" disabled>ATUALIZAÇÕES</button>
   </div>`;
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
@@ -7086,6 +7087,7 @@ function toolsDisabledFooter() {
     <button class="foot-btn" disabled>AJUDA</button>
     <button class="foot-btn" disabled>CADASTROS</button>
     <button class="foot-btn" disabled>FERRAMENTAS</button>
+    <button class="foot-btn" disabled>SOCIAL</button>
     <button class="foot-btn" disabled>ATUALIZAÇÕES</button>
   </div>`;
 }
@@ -7196,6 +7198,89 @@ function renderToolsSection() {
   else if (toolsState.section === "processes") renderToolProcesses(root);
   else if (toolsState.section === "documents") renderToolDocuments(root);
   else renderToolFolders(root);
+}
+
+const SOCIAL_MODULE_LABELS = {
+  facebook: "Facebook",
+  instagram: "Instagram",
+  linkedin: "LinkedIn",
+  reddit: "Reddit",
+  tiktok: "TikTok",
+  youtube: "YouTube"
+};
+const SOCIAL_COLUMN_DEFS = [
+  { k: "profile", h: "Perfil" },
+  { k: "status", h: "Status" },
+  { k: "details", h: "Detalhes" },
+  { k: "updated_at", h: "Atualizado em" }
+];
+let socialState = { section: "facebook", search: "", tables: {} };
+
+function socialTableState(section = socialState.section) {
+  if (!socialState.tables[section]) {
+    socialState.tables[section] = { sortKey: null, sortDir: 1, filters: {}, page: 1, pageSize: TOOLS_PAGE_SIZE };
+  }
+  return socialState.tables[section];
+}
+
+function visibleSocialColumns(section = socialState.section) {
+  const prefs = secondaryColumnPrefs(`social:${section}`);
+  return orderedColumnDefinitions(SOCIAL_COLUMN_DEFS, prefs).filter((column) => prefs[column.k] !== false);
+}
+
+function openSocialModal(section = "facebook") {
+  socialState.section = SOCIAL_MODULE_LABELS[section] ? section : "facebook";
+  socialState.search = "";
+  const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Social">
+    ${Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
+  </div>`;
+  shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
+    cls: "full registrations-modal",
+    headerCenter,
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Social</em></span>'
+  });
+  document.querySelectorAll("[data-social-tab]").forEach((button) => button.addEventListener("click", () => {
+    socialState.section = button.dataset.socialTab;
+    socialState.search = "";
+    socialTableState().page = 1;
+    document.querySelectorAll("[data-social-tab]").forEach((tab) => tab.classList.toggle("active", tab === button));
+    renderSocialSection();
+  }));
+  renderSocialSection();
+}
+
+function renderSocialSection() {
+  const root = document.getElementById("social-root");
+  if (!root) return;
+  const columns = visibleSocialColumns();
+  const tableState = socialTableState();
+  root.innerHTML = `<div class="tools-toolbar">
+      <div class="registration-toolbar-left"><span class="muted">0 item(ns)</span></div>
+      <div class="registration-toolbar-center"><input class="search registration-toolbar-search social-search" placeholder="Buscar..." value="${esc(socialState.search)}"><button class="btn primary plus" type="button" disabled title="Cadastro será definido">+</button></div>
+      <div class="registration-toolbar-right"><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+    </div>
+    <div class="registration-filter-strip tools-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
+    <div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-social-key="${esc(column.k)}" title="Clique para ordenar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody><tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum registro em ${esc(SOCIAL_MODULE_LABELS[socialState.section])}.</td></tr></tbody></table></div>
+    <div class="table-pagination tools-pagination"><span>0 registros</span><div><button class="btn" disabled>‹</button><span>Página 1 de 1</span><button class="btn" disabled>›</button></div></div>`;
+  root.querySelector(".social-search")?.addEventListener("input", (event) => {
+    socialState.search = event.target.value;
+  });
+  root.querySelector(".social-cols-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openSecondaryColumnManager({
+      scope: `social:${socialState.section}`,
+      label: SOCIAL_MODULE_LABELS[socialState.section],
+      definitions: SOCIAL_COLUMN_DEFS,
+      onChange: renderSocialSection
+    });
+  });
+  root.querySelectorAll("th[data-social-key]").forEach((header) => header.addEventListener("click", () => {
+    const key = header.dataset.socialKey;
+    if (tableState.sortKey === key) tableState.sortDir *= -1;
+    else { tableState.sortKey = key; tableState.sortDir = 1; }
+    renderSocialSection();
+  }));
+  wireSecondaryTableSelection(root.querySelector("table"), `social:${socialState.section}`);
 }
 
 const TOOL_FILE_STATUS_LABEL = { active: "Ativo", inactive: "Inativo", downloaded: "Baixado" };
@@ -7689,6 +7774,17 @@ function documentSlideFormatLabel(documentItem) {
   return documentSlideFormat(documentItem) === "standard" ? "Padrão 4:3" : "Widescreen 16:9";
 }
 
+function applyDocumentSlideDimensions(stage, orientation, slideFormat) {
+  if (!stage) return;
+  const portrait = orientation === "portrait";
+  const standard = slideFormat === "standard";
+  stage.style.aspectRatio = portrait
+    ? (standard ? "3 / 4" : "9 / 16")
+    : (standard ? "4 / 3" : "16 / 9");
+  stage.style.width = portrait ? "auto" : (standard ? "min(780px, 100%)" : "min(1040px, 100%)");
+  stage.style.height = portrait ? "min(74vh, 900px)" : "auto";
+}
+
 function openToolDocumentPresentation(documentItem, slides, startIndex = 0) {
   let activeIndex = Math.max(0, Math.min(startIndex, slides.length - 1));
   const orientation = documentOrientation(documentItem);
@@ -7859,12 +7955,14 @@ function openToolDocumentForm(id = null) {
     });
   };
   drawEditor();
+  applyDocumentSlideDimensions(document.getElementById("document-editor-slide"), orientation, slideFormat);
   document.querySelectorAll(".document-orientation button").forEach((button) => button.addEventListener("click", () => {
     orientation = button.dataset.orientation;
     document.querySelectorAll(".document-orientation button").forEach((item) => item.classList.toggle("active", item === button));
     const stage = document.getElementById("document-editor-slide");
     stage.classList.toggle("landscape", orientation === "landscape");
     stage.classList.toggle("portrait", orientation === "portrait");
+    applyDocumentSlideDimensions(stage, orientation, slideFormat);
   }));
   document.querySelectorAll(".document-slide-format button").forEach((button) => button.addEventListener("click", () => {
     slideFormat = button.dataset.slideFormat;
@@ -7872,6 +7970,7 @@ function openToolDocumentForm(id = null) {
     const stage = document.getElementById("document-editor-slide");
     stage.classList.toggle("widescreen", slideFormat === "widescreen");
     stage.classList.toggle("standard", slideFormat === "standard");
+    applyDocumentSlideDimensions(stage, orientation, slideFormat);
   }));
   document.getElementById("document-slide-title").addEventListener("input", (event) => {
     slides[activeIndex].title = event.target.value;
@@ -8526,6 +8625,7 @@ function handleAction(action) {
   if (action === "help") { openHelpModal(); return; }
   if (action === "log") { openAdminLog(); return; }
   if (action === "tools" || action === "files") { openToolsModal(); return; }
+  if (action === "social") { openSocialModal(); return; }
   if (action === "updates") { openUpdatesModal(); return; }
   if (action === "pipeline") { openPipelinesModal(); return; }
   if (action === "registrations") { if (requireCurrentUserAdmin("Cadastros")) openRegistrationsModal(); return; }

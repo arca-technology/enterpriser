@@ -523,8 +523,9 @@
   .document-slide.portrait{width:auto;height:min(74vh,900px);max-width:100%}
   .document-slide.widescreen.landscape{aspect-ratio:16/9}
   .document-slide.widescreen.portrait{aspect-ratio:9/16}
-  .document-slide.standard.landscape{aspect-ratio:4/3}
+  .document-slide.standard.landscape{width:min(780px,100%);aspect-ratio:4/3}
   .document-slide.standard.portrait{aspect-ratio:3/4}
+  .document-meta.standard.landscape{width:min(780px,100%)}
   .document-slide h2{margin:0 0 4%;font-size:clamp(22px,3vw,42px);letter-spacing:0}
   .document-slide-body{min-height:0;flex:1 1 auto;font-size:clamp(14px,1.55vw,24px);line-height:1.5;outline:0}
   .document-slide-body div,.document-slide-body p{margin:0 0 .55em}
@@ -857,7 +858,7 @@
     .home-panel .task-table-wrap th,.home-panel .task-table-wrap td{padding:7px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
     footer{height:38px;flex:0 0 38px;justify-content:center;padding:0 8px}
-    .foot-left,footer [data-action="log"],footer [data-action="registrations"],footer [data-action="tools"],footer [data-action="updates"]{display:none!important}
+    .foot-left,footer [data-action="log"],footer [data-action="registrations"],footer [data-action="tools"],footer [data-action="social"],footer [data-action="updates"]{display:none!important}
     .foot-right{width:100%;justify-content:center}
     .foot-btn{min-width:108px;height:30px}
 
@@ -1025,6 +1026,7 @@
       <button class="foot-btn" data-action="help">AJUDA</button>
       <button class="foot-btn" data-action="registrations">CADASTROS</button>
       <button class="foot-btn" data-action="tools">FERRAMENTAS</button>
+      <button class="foot-btn" data-action="social">SOCIAL</button>
       <button class="foot-btn" data-action="updates">ATUALIZAÇÕES</button>
     </div>
   </footer>
