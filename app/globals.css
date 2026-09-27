@@ -545,6 +545,49 @@
   .document-slideshow .document-slide.portrait{height:min(82vh,980px)}
   .document-slideshow-controls{position:absolute;right:0;bottom:10px;left:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#fff}
   .document-slideshow-controls span{min-width:64px;text-align:center;font-size:11px;font-weight:700}
+  .documentation-page{padding:0;background:#fff;color:#182033;font-family:Inter,Arial,sans-serif;overflow:auto}
+  .documentation-page-header{display:flex;min-height:46px;flex:0 0 46px;align-items:center;justify-content:space-between;gap:18px;padding:0 28px;border-bottom:1px solid #dbe2ec}
+  .documentation-system{color:#1f5fbf;font-size:12px;font-weight:800}
+  .documentation-module{color:#44516a;font-size:10px;font-weight:700;text-transform:uppercase}
+  .documentation-context-bar{display:flex;min-height:42px;flex:0 0 42px;align-items:center;padding:0 28px;background:#f1f5fa;border-bottom:1px solid #dbe2ec;color:#26334d;font-size:12px}
+  .documentation-context-bar input,.documentation-page-footer input{width:100%;border:0;background:transparent;color:inherit;font:inherit;font-weight:700;outline:0}
+  .documentation-body-grid{display:grid;min-height:0;flex:1 1 auto;grid-template-columns:repeat(6,minmax(0,1fr));align-content:start;gap:16px;padding:24px 28px;overflow:auto}
+  .documentation-block{min-width:0;align-self:start}
+  .documentation-block-content{font-size:11px;line-height:1.5}
+  .documentation-block-content:empty::before{content:attr(data-placeholder);color:#9aa4b5}
+  .documentation-block-content h1{margin:0 0 16px;color:#1f5fbf;font-size:24px;line-height:1.2}
+  .documentation-block-content h2{margin:0 0 12px;color:#243653;font-size:18px;line-height:1.3}
+  .documentation-block-content h3{margin:0 0 8px;color:#243653;font-size:14px;line-height:1.35}
+  .documentation-block-content p{margin:0 0 8px}
+  .documentation-block-heading .documentation-block-content{color:#1f5fbf;font-size:18px;font-weight:700;line-height:1.3}
+  .documentation-block-content ul,.documentation-block-content ol{margin:0;padding-left:20px}
+  .documentation-block-content table{width:100%;border-collapse:collapse;font-size:10.5px}
+  .documentation-block-content th,.documentation-block-content td{padding:7px 8px;border-bottom:1px solid #dbe2ec;text-align:left}
+  .documentation-block-content th{background:#f1f5fa;color:#31415f;font-weight:700}
+  .documentation-block-code .documentation-block-content,.documentation-block-link .documentation-block-content{padding:10px 12px;background:#f3f5f8;font-family:"Courier New",monospace;font-size:10px;white-space:pre-wrap}
+  .documentation-block-link .documentation-block-content{color:#1f5fbf;text-decoration:underline}
+  .documentation-block-note,.documentation-block-rule,.documentation-block-warning,.documentation-block-example{padding:12px 14px;border-left:3px solid #2f6bd8;background:#f4f7fc}
+  .documentation-block-rule{border-left-color:#21a366;background:#f1faf5}
+  .documentation-block-warning{border-left-color:#d89a19;background:#fff9eb}
+  .documentation-block-example{border-left-color:#7c5ce0;background:#f7f4ff}
+  .documentation-block-label{margin-bottom:6px;color:#526078;font-size:8.5px;font-weight:800;text-transform:uppercase}
+  .documentation-page-footer{display:flex;min-height:38px;flex:0 0 38px;align-items:center;justify-content:space-between;gap:16px;padding:0 28px;border-top:1px solid #dbe2ec;color:#657189;font-size:9px}
+  .documentation-page-footer span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .documentation-page-footer b{flex:0 0 auto;color:#34425c}
+  .documentation-page-edit{overflow:hidden}
+  .documentation-page-edit .documentation-body-grid{padding-top:16px}
+  .documentation-block.is-editing{position:relative;padding-top:32px;border:1px dashed #bdc8d8;border-radius:4px}
+  .documentation-block.is-editing>.documentation-block-content{min-height:48px;padding:8px 10px;outline:0}
+  .documentation-block.is-editing.documentation-block-note,.documentation-block.is-editing.documentation-block-rule,.documentation-block.is-editing.documentation-block-warning,.documentation-block.is-editing.documentation-block-example{padding:32px 14px 12px}
+  .documentation-block-controls{position:absolute;top:0;right:0;left:0;display:flex;height:28px;align-items:center;gap:3px;padding:2px 4px;border-bottom:1px solid #dbe2ec;background:#eef3f9}
+  .documentation-block-controls select{min-width:0;height:23px;flex:1 1 auto;border:1px solid #c8d2e0;border-radius:3px;background:#fff;color:#34425c;font-size:8.5px}
+  .documentation-block-controls .tool-icon-btn{width:23px;height:23px;color:#34425c}
+  .documentation-editor .document-editor-info{grid-template-columns:repeat(4,minmax(140px,1fr))}
+  .documentation-editor .document-editor-info select,.documentation-editor-toolbar select{min-width:0;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);padding:7px 9px;font:inherit}
+  .documentation-toolbar-spacer{flex:1 1 auto}
+  .documentation-editor-toolbar select{height:28px;padding:0 7px;font-size:9px}
+  .documentation-editor-toolbar #document-add-block{height:28px}
+  .documentation-reading-mode .documentation-page{box-shadow:0 6px 28px rgba(0,0,0,.35)}
   .registrations-root .product-activity-list td:first-child strong{color:var(--text)}
   .registrations-product{display:grid;gap:3px}
   .registrations-product small{color:var(--muted);font-size:10.5px}
@@ -789,6 +832,7 @@
     .home-grid{grid-template-columns:1fr}
     .document-editor-info{grid-template-columns:minmax(220px,1.5fr) minmax(140px,1fr)}
     .document-orientation{min-height:32px}
+    .documentation-editor .document-editor-info{grid-template-columns:repeat(2,minmax(180px,1fr))}
     .data-table-wrap{height:100%;margin:0}
     thead th,tbody td{padding-left:11px;padding-right:11px}
   }
@@ -798,6 +842,13 @@
     .help-content{padding:18px 16px}
     .help-columns{grid-template-columns:1fr}
     .help-intro{align-items:flex-start;flex-direction:column;gap:2px}
+    .document-presentation,.document-editor-workspace{grid-template-columns:1fr}
+    .document-slide-list{display:none}
+    .documentation-page{width:100%!important;height:auto!important;min-height:100%;aspect-ratio:auto!important}
+    .documentation-body-grid{grid-template-columns:1fr}
+    .documentation-block{grid-column:1!important}
+    .documentation-page-header,.documentation-context-bar,.documentation-page-footer{padding-left:16px;padding-right:16px}
+    .documentation-body-grid{padding:18px 16px}
   }
   @media(max-width:767px){
     body{font-size:12px;overflow:hidden}
