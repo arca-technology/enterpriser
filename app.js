@@ -2230,6 +2230,8 @@ let productActivityChecklistDraft = [];
 let productActivityRelatedIds = [];
 let productActivityDraftGroupId = null;
 let productActivityParentGroupId = null;
+let productObjectiveSavePending = false;
+let productGoalSavePending = false;
 const registrationExpandedTaskGroups = new Set();
 
 function productTemplateSubtasks(templateId, templates = loadProductActivities()) {
@@ -2475,10 +2477,15 @@ function createsObjectiveDependencyCycle(rows, currentId, dependencyIds) {
 }
 
 async function saveProductObjective() {
+  if (productObjectiveSavePending) return;
   const name = document.getElementById("po-name").value.trim();
   if (!name) { toast("Informe o objetivo.", true); return; }
   const rows = loadProductObjectives();
   const current = rows.find((item) => item.id === productActivityState.objectiveEditId);
+  const duplicate = rows.find((item) => item.id !== current?.id
+    && item.product_id === productActivityState.productId
+    && String(item.name || "").trim().toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
+  if (duplicate) { toast("Já existe um objetivo com este nome neste produto.", true); return; }
   const recordId = current?.id || crypto.randomUUID();
   const dependencyObjectiveIds = multiPickerValues("po-objective-dependencies");
   const dependencyActivityIds = multiPickerValues("po-activity-dependencies");
@@ -2502,6 +2509,10 @@ async function saveProductObjective() {
     sort_order: current?.sort_order ?? (Math.max(-1, ...productRows.map((item) => Number(item.sort_order || 0))) + 1),
     updated_at: new Date().toISOString()
   };
+  const saveButton = document.getElementById("po-save");
+  const saveButtonLabel = saveButton?.textContent || "Salvar";
+  productObjectiveSavePending = true;
+  if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
     if (current) {
       const saved = isLive() ? await updateRow("productObjectives", current.id, body) : { ...current, ...body };
@@ -2520,6 +2531,10 @@ async function saveProductObjective() {
     else renderProductObjectives();
     toast("Objetivo do produto salvo.");
   } catch (err) { toast("Erro ao salvar objetivo · " + err.message, true); }
+  finally {
+    productObjectiveSavePending = false;
+    if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
+  }
 }
 
 async function deleteProductObjective(objectiveId) {
@@ -2641,12 +2656,17 @@ function createsGoalDependencyCycle(rows, currentId, dependencyIds) {
 }
 
 async function saveProductGoal() {
+  if (productGoalSavePending) return;
   const name = document.getElementById("pg-name").value.trim();
   const metric = document.getElementById("pg-metric").value.trim();
   const targetValue = document.getElementById("pg-target").value;
   if (!name || !metric || targetValue === "") { toast("Informe a meta, o indicador e o valor-alvo.", true); return; }
   const rows = loadProductGoals();
   const current = rows.find((item) => item.id === productActivityState.goalEditId);
+  const duplicate = rows.find((item) => item.id !== current?.id
+    && item.product_id === productActivityState.productId
+    && String(item.name || "").trim().toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
+  if (duplicate) { toast("Já existe uma meta com este nome neste produto.", true); return; }
   const recordId = current?.id || crypto.randomUUID();
   const dependencyGoalIds = multiPickerValues("pg-goal-dependencies");
   const dependencyActivityIds = multiPickerValues("pg-activity-dependencies");
@@ -2673,6 +2693,10 @@ async function saveProductGoal() {
     sort_order: current?.sort_order ?? (Math.max(-1, ...productRows.map((item) => Number(item.sort_order || 0))) + 1),
     updated_at: new Date().toISOString()
   };
+  const saveButton = document.getElementById("pg-save");
+  const saveButtonLabel = saveButton?.textContent || "Salvar";
+  productGoalSavePending = true;
+  if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
     if (current) {
       const saved = isLive() ? await updateRow("productGoals", current.id, body) : { ...current, ...body };
@@ -2690,6 +2714,10 @@ async function saveProductGoal() {
     else renderProductGoals();
     toast("Meta do produto salva.");
   } catch (err) { toast("Erro ao salvar meta · " + err.message, true); }
+  finally {
+    productGoalSavePending = false;
+    if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
+  }
 }
 
 async function deleteProductGoal(goalId) {
@@ -5679,6 +5707,10 @@ function openHelpModal() {
 // substituiria o modal-root inteiro e a lista se perderia.
 let pmState = { mode: "list" };
 function openPipelinesModal(editId = null, returnToRegistrations = false) {
+  if (returnToRegistrations) {
+    openPipelineDrawer(editId);
+    return;
+  }
   const pipeline = editId && editId !== "new" ? cache.pipelines.find((item) => item.id === editId) : null;
   pmState = editId
     ? { mode: "form", editId: pipeline?.id || null, name: pipeline?.name || "", stages: pipeline ? [...pipeline.stages] : [""] }
@@ -5688,6 +5720,39 @@ function openPipelinesModal(editId = null, returnToRegistrations = false) {
     onClose: returnToRegistrations ? () => openRegistrationsModal("pipelines") : null
   });
   renderPipelinesModal();
+}
+function closePipelineDrawer() {
+  document.getElementById("pipeline-drawer-overlay")?.remove();
+}
+function openPipelineDrawer(editId = "new") {
+  closePipelineDrawer();
+  const pipeline = editId && editId !== "new" ? cache.pipelines.find((item) => item.id === editId) : null;
+  pmState = { mode: "form", editId: pipeline?.id || null, name: pipeline?.name || "", stages: pipeline ? [...pipeline.stages] : [""] };
+  const overlay = document.createElement("div");
+  overlay.id = "pipeline-drawer-overlay";
+  overlay.className = "activity-form-overlay";
+  overlay.innerHTML = `<aside class="activity-form-drawer">
+    <h3>${pmState.editId ? "Editar pipeline" : "Novo pipeline"}<button class="modal-close-x" id="pipeline-drawer-close" title="Fechar">✕</button></h3>
+    <div id="pipeline-drawer-body"></div>
+  </aside>`;
+  document.querySelector("#ov .modal.full")?.appendChild(overlay);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) closePipelineDrawer(); });
+  document.getElementById("pipeline-drawer-close")?.addEventListener("click", closePipelineDrawer);
+  renderPipelineDrawer();
+}
+function renderPipelineDrawer() {
+  const body = document.getElementById("pipeline-drawer-body");
+  if (!body) return;
+  body.innerHTML = pipelineFormHtml();
+  wirePipelineForm({
+    rerender: renderPipelineDrawer,
+    onCancel: closePipelineDrawer,
+    onSaved: () => {
+      closePipelineDrawer();
+      renderRegistrationsSection();
+    }
+  });
+  document.getElementById("pipeline-name")?.focus();
 }
 function renderPipelinesModal() {
   const el = document.getElementById("pm-body");
@@ -5749,29 +5814,42 @@ function wirePipelinesModal() {
         try { await deleteRow("pipelines", b.dataset.id); await init(); renderPipelinesModal(); toast("Pipeline excluído."); }
         catch (err) { toast("Erro ao excluir · " + err.message, true); }
       }));
-  } else {
-    document.getElementById("cancel-form")?.addEventListener("click", () => { pmState = { mode: "list" }; renderPipelinesModal(); });
-    document.getElementById("add-stage")?.addEventListener("click", () => { pmState.stages.push(""); renderPipelinesModal(); });
-    document.querySelectorAll("#pm-body .del-stage").forEach((b) =>
-      b.addEventListener("click", () => { pmState.stages.splice(Number(b.dataset.i), 1); renderPipelinesModal(); }));
-    document.querySelectorAll("#pm-body .stage-input").forEach((inp) =>
-      inp.addEventListener("input", () => { pmState.stages[Number(inp.dataset.i)] = inp.value; }));
-    document.getElementById("pipeline-name")?.addEventListener("input", (e) => { pmState.name = e.target.value; });
-    document.getElementById("save-pipeline")?.addEventListener("click", async () => {
-      const name = document.getElementById("pipeline-name").value.trim();
-      const stages = pmState.stages.map((s) => s.trim()).filter(Boolean);
-      if (!name) { toast("Dê um nome ao pipeline.", true); return; }
-      if (!stages.length) { toast("Adicione ao menos uma etapa.", true); return; }
-      try {
-        if (pmState.editId) await updateRow("pipelines", pmState.editId, { name, stages });
-        else await createRow("pipelines", { name, stages });
-        toast("Pipeline salvo.");
-        await init();
-        pmState = { mode: "list" };
-        renderPipelinesModal();
-      } catch (err) { toast("Erro ao salvar pipeline · " + err.message, true); }
-    });
-  }
+  } else wirePipelineForm({
+    rerender: renderPipelinesModal,
+    onCancel: () => { pmState = { mode: "list" }; renderPipelinesModal(); },
+    onSaved: () => { pmState = { mode: "list" }; renderPipelinesModal(); }
+  });
+}
+function wirePipelineForm({ rerender, onCancel, onSaved }) {
+  document.getElementById("cancel-form")?.addEventListener("click", onCancel);
+  document.getElementById("add-stage")?.addEventListener("click", () => { pmState.stages.push(""); rerender(); });
+  document.querySelectorAll(".stage-input").forEach((input) =>
+    input.addEventListener("input", () => { pmState.stages[Number(input.dataset.i)] = input.value; }));
+  document.querySelectorAll(".del-stage").forEach((button) =>
+    button.addEventListener("click", () => { pmState.stages.splice(Number(button.dataset.i), 1); rerender(); }));
+  document.getElementById("pipeline-name")?.addEventListener("input", (event) => { pmState.name = event.target.value; });
+  document.getElementById("save-pipeline")?.addEventListener("click", async () => {
+    const saveButton = document.getElementById("save-pipeline");
+    if (saveButton?.disabled) return;
+    const name = document.getElementById("pipeline-name").value.trim();
+    const stages = pmState.stages.map((stage) => stage.trim()).filter(Boolean);
+    if (!name) { toast("Dê um nome ao pipeline.", true); return; }
+    if (!stages.length) { toast("Adicione ao menos uma etapa.", true); return; }
+    if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
+    try {
+      const saved = pmState.editId
+        ? await updateRow("pipelines", pmState.editId, { name, stages })
+        : await createRow("pipelines", { name, stages });
+      if (pmState.editId) cache.pipelines = cache.pipelines.map((pipeline) => pipeline.id === pmState.editId ? saved : pipeline);
+      else cache.pipelines.push(saved);
+      cache.pipelineById = Object.fromEntries(cache.pipelines.map((pipeline) => [pipeline.id, pipeline]));
+      toast("Pipeline salvo.");
+      onSaved(saved);
+    } catch (err) {
+      toast("Erro ao salvar pipeline · " + err.message, true);
+      if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = pmState.editId ? "Salvar" : "Criar"; }
+    }
+  });
 }
 
 // ---------- Usuários (responsáveis pelos negócios) ----------
