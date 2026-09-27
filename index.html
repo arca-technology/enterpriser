@@ -519,18 +519,22 @@
   .document-meta{display:flex;width:min(1040px,100%);align-items:center;justify-content:space-between;gap:10px}
   .document-meta.portrait{width:min(620px,100%)}
   .document-slide{display:flex;width:min(1040px,100%);aspect-ratio:16/9;flex:0 0 auto;box-sizing:border-box;flex-direction:column;padding:7%;color:#111827;box-shadow:0 3px 18px rgba(0,0,0,.22);overflow:auto}
-  .document-slide.landscape{width:min(1040px,100%);aspect-ratio:16/9}
-  .document-slide.portrait{width:auto;height:min(74vh,900px);max-width:100%;aspect-ratio:9/16}
+  .document-slide.landscape{width:min(1040px,100%);height:auto}
+  .document-slide.portrait{width:auto;height:min(74vh,900px);max-width:100%}
+  .document-slide.widescreen.landscape{aspect-ratio:16/9}
+  .document-slide.widescreen.portrait{aspect-ratio:9/16}
+  .document-slide.standard.landscape{aspect-ratio:4/3}
+  .document-slide.standard.portrait{aspect-ratio:3/4}
   .document-slide h2{margin:0 0 4%;font-size:clamp(22px,3vw,42px);letter-spacing:0}
   .document-slide-body{min-height:0;flex:1 1 auto;font-size:clamp(14px,1.55vw,24px);line-height:1.5;outline:0}
   .document-slide-body div,.document-slide-body p{margin:0 0 .55em}
   .document-editor{display:flex;min-height:0;flex:1 1 auto;flex-direction:column;background:var(--bg)}
-  .document-editor-info{display:grid;grid-template-columns:minmax(240px,2fr) minmax(150px,1fr) minmax(200px,1.4fr) auto;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel)}
+  .document-editor-info{display:grid;grid-template-columns:minmax(220px,2fr) minmax(130px,1fr) minmax(180px,1.3fr) auto auto;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--panel)}
   .document-editor-info input{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);padding:7px 9px;font:inherit}
-  .document-orientation{display:flex;align-items:center;border:1px solid var(--border);border-radius:4px;overflow:hidden}
-  .document-orientation button{height:100%;padding:0 12px;border:0;border-left:1px solid var(--border);background:var(--panel2);color:var(--muted);font:inherit;font-size:9px;font-weight:700;text-transform:uppercase}
-  .document-orientation button:first-child{border-left:0}
-  .document-orientation button.active{background:var(--blue);color:#fff}
+  .document-choice{display:flex;align-items:center;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+  .document-choice button{height:100%;padding:0 12px;border:0;border-left:1px solid var(--border);background:var(--panel2);color:var(--muted);font:inherit;font-size:9px;font-weight:700;text-transform:uppercase;white-space:nowrap}
+  .document-choice button:first-child{border-left:0}
+  .document-choice button.active{background:var(--blue);color:#fff}
   .document-editor-toolbar{display:flex;min-height:38px;align-items:center;gap:5px;padding:4px 12px;border-bottom:1px solid var(--border);background:var(--panel)}
   .document-editor-toolbar label{display:flex;height:28px;align-items:center;gap:5px;padding:0 7px;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:9px;font-weight:700;text-transform:uppercase}
   .document-editor-toolbar input[type="color"]{width:22px;height:22px;padding:0;border:0;background:transparent}

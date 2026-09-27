@@ -1778,19 +1778,19 @@ function renderTable(c) {
       if (state.pages[state.tab]) state.pages[state.tab] = 1;
       render();
     }));
-  document.querySelectorAll(".rowbtn.edit").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.edit").forEach((b) =>
     b.addEventListener("click", () => openForm(state.tab, b.dataset.id)));
-  document.querySelectorAll(".rowbtn.del").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.del").forEach((b) =>
     b.addEventListener("click", () => confirmDelete(state.tab, b.dataset.id)));
-  document.querySelectorAll(".rowbtn.convert").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.convert").forEach((b) =>
     b.addEventListener("click", () => convertImportToDeal(b.dataset.id)));
-  document.querySelectorAll(".rowbtn.del-import").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.del-import").forEach((b) =>
     b.addEventListener("click", () => deleteImport(b.dataset.id)));
-  document.querySelectorAll(".rowbtn.open-chat").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.open-chat").forEach((b) =>
     b.addEventListener("click", () => openConversationPopup(b.dataset.id)));
-  document.querySelectorAll(".rowbtn.project-board-btn").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.project-board-btn").forEach((b) =>
     b.addEventListener("click", () => openProjectBoard(b.dataset.id)));
-  document.querySelectorAll(".rowbtn.product-activities-btn").forEach((b) =>
+  document.querySelectorAll("#main .rowbtn.product-activities-btn").forEach((b) =>
     b.addEventListener("click", () => openProductActivities(b.dataset.id)));
   document.querySelectorAll(".inline-due-date").forEach((input) => input.addEventListener("change", async () => {
     try {
@@ -6110,12 +6110,20 @@ function renderRegistrationsSection() {
     const pipelines = cache.pipelines || [];
     const rows = pipelines.map((pipeline) => {
       const stages = Array.isArray(pipeline.stages) ? pipeline.stages : [];
-      return `<tr><td><strong>${esc(pipeline.name || "—")}</strong></td><td>${stages.length}</td><td>${esc(stages.join(" → ") || "—")}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-pipeline-edit", attrs: { "data-id": pipeline.id }, title: "Editar pipeline" } })}</td></tr>`;
+      return `<tr><td><strong>${esc(pipeline.name || "—")}</strong></td><td>${stages.length}</td><td>${esc(stages.join(" → ") || "—")}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "reg-pipeline-edit", attrs: { "data-id": pipeline.id }, title: "Editar pipeline" } })}</td></tr>`;
     }).join("");
     root.innerHTML = `<div class="modal-toolbar"><span class="muted">${pipelines.length}/${MAX_PIPELINES} pipeline(s)</span><button class="btn primary" id="registration-add"${pipelines.length >= MAX_PIPELINES ? " disabled" : ""}>+ Pipeline</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Pipeline</th><th>Etapas</th><th>Fluxo</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum pipeline cadastrado.</td></tr>'}</tbody></table></div>`;
-    document.getElementById("registration-add")?.addEventListener("click", () => openPipelinesModal("new", true));
-    root.querySelectorAll(".reg-pipeline-edit").forEach((button) => button.addEventListener("click", () => openPipelinesModal(button.dataset.id, true)));
+    document.getElementById("registration-add")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPipelinesModal("new", true);
+    });
+    root.querySelectorAll(".reg-pipeline-edit").forEach((button) => button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openPipelinesModal(button.dataset.id, true);
+    }));
     wireRegistrationTable();
     return;
   }
@@ -7673,11 +7681,20 @@ function documentOrientation(documentItem) {
   return documentItem?.orientation === "portrait" ? "portrait" : "landscape";
 }
 
+function documentSlideFormat(documentItem) {
+  return documentItem?.slide_format === "standard" ? "standard" : "widescreen";
+}
+
+function documentSlideFormatLabel(documentItem) {
+  return documentSlideFormat(documentItem) === "standard" ? "Padrão 4:3" : "Widescreen 16:9";
+}
+
 function openToolDocumentPresentation(documentItem, slides, startIndex = 0) {
   let activeIndex = Math.max(0, Math.min(startIndex, slides.length - 1));
   const orientation = documentOrientation(documentItem);
+  const slideFormat = documentSlideFormat(documentItem);
   const content = `<div class="document-slideshow">
-    <main class="document-slideshow-stage"><article class="document-slide ${orientation}" id="document-slideshow-slide"></article></main>
+    <main class="document-slideshow-stage"><article class="document-slide ${orientation} ${slideFormat}" id="document-slideshow-slide"></article></main>
     <div class="document-slideshow-controls"><button class="btn" id="document-slideshow-prev" title="Slide anterior">‹</button><span id="document-slideshow-count"></span><button class="btn" id="document-slideshow-next" title="Próximo slide">›</button></div>
   </div>`;
   let keyHandler;
@@ -7716,9 +7733,10 @@ function openToolDocument(id) {
   if (!documentItem) return;
   const slides = normalizeDocumentSlides(documentItem.slides, documentItem.content, documentItem.title);
   const orientation = documentOrientation(documentItem);
+  const slideFormat = documentSlideFormat(documentItem);
   const content = `<div class="document-presentation">
     <aside class="document-slide-list" id="document-viewer-list"></aside>
-    <main class="document-stage-wrap"><div class="document-meta ${orientation}"><div class="process-detail-meta"><span>${esc(documentItem.category || "Sem categoria")}</span><span>${orientation === "portrait" ? "Retrato" : "Paisagem"}</span><span>${slides.length} slide(s)</span><span>${esc(toolDocumentValue(documentItem, "updated_at"))}</span></div>${normalizeTextList(documentItem.tags).length ? `<div class="tool-tags">${normalizeTextList(documentItem.tags).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("")}</div>` : ""}</div><article class="document-slide ${orientation}" id="document-viewer-slide"></article></main>
+    <main class="document-stage-wrap"><div class="document-meta ${orientation} ${slideFormat}"><div class="process-detail-meta"><span>${esc(documentItem.category || "Sem categoria")}</span><span>${esc(documentSlideFormatLabel(documentItem))} · ${orientation === "portrait" ? "Retrato" : "Paisagem"}</span><span>${slides.length} slide(s)</span><span>${esc(toolDocumentValue(documentItem, "updated_at"))}</span></div>${normalizeTextList(documentItem.tags).length ? `<div class="tool-tags">${normalizeTextList(documentItem.tags).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("")}</div>` : ""}</div><article class="document-slide ${orientation} ${slideFormat}" id="document-viewer-slide"></article></main>
   </div><div class="modal-foot"><button class="btn" id="tool-document-close">Fechar</button><button class="btn" id="tool-document-present">Apresentar</button>${currentUserIsAdmin() ? '<button class="btn primary" id="tool-document-detail-edit">Editar</button>' : ""}</div>`;
   const closePanel = nestedCenterModal(documentItem.title, content, { cls: "full document-viewer-modal", closeOnOverlay: true });
   let activeIndex = 0;
@@ -7751,12 +7769,14 @@ function openToolDocumentForm(id = null) {
   let slides = normalizeDocumentSlides(current.slides, current.content, current.title);
   let activeIndex = 0;
   let orientation = documentOrientation(current);
+  let slideFormat = documentSlideFormat(current);
   const content = `<div class="document-editor">
     <div class="document-editor-info">
       <input id="tool-document-title" value="${esc(current.title || "")}" placeholder="Nome da documentação">
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags separadas por vírgula">
-      <div class="document-orientation" role="group" aria-label="Orientação do documento"><button class="${orientation === "landscape" ? "active" : ""}" data-orientation="landscape" type="button">Paisagem</button><button class="${orientation === "portrait" ? "active" : ""}" data-orientation="portrait" type="button">Retrato</button></div>
+      <div class="document-choice document-slide-format" role="group" aria-label="Formato do documento"><button class="${slideFormat === "widescreen" ? "active" : ""}" data-slide-format="widescreen" type="button">Widescreen 16:9</button><button class="${slideFormat === "standard" ? "active" : ""}" data-slide-format="standard" type="button">Padrão 4:3</button></div>
+      <div class="document-choice document-orientation" role="group" aria-label="Orientação do documento"><button class="${orientation === "landscape" ? "active" : ""}" data-orientation="landscape" type="button">Paisagem</button><button class="${orientation === "portrait" ? "active" : ""}" data-orientation="portrait" type="button">Retrato</button></div>
     </div>
     <div class="document-editor-toolbar" role="toolbar" aria-label="Formatação de texto">
       <button class="tool-icon-btn document-format" data-command="bold" title="Negrito"><b>B</b></button>
@@ -7770,7 +7790,7 @@ function openToolDocumentForm(id = null) {
     </div>
     <div class="document-editor-workspace">
       <aside class="document-slide-list"><div id="document-editor-list"></div><div class="document-slide-list-actions"><button class="btn document-add-slide" id="document-add-slide">+ Slide</button><button class="btn document-add-slide" id="document-add-group">+ Grupo</button></div></aside>
-      <main class="document-stage-wrap"><div class="document-slide document-slide-edit ${orientation}" id="document-editor-slide"><input id="document-slide-title" placeholder="Título do slide"><div id="document-slide-body" class="document-slide-body" contenteditable="true" data-placeholder="Digite o conteúdo do slide..."></div></div></main>
+      <main class="document-stage-wrap"><div class="document-slide document-slide-edit ${orientation} ${slideFormat}" id="document-editor-slide"><input id="document-slide-title" placeholder="Título do slide"><div id="document-slide-body" class="document-slide-body" contenteditable="true" data-placeholder="Digite o conteúdo do slide..."></div></div></main>
     </div>
   </div><div class="modal-foot"><button class="btn danger" id="document-delete-slide">Excluir slide</button><button class="btn" id="tool-document-cancel">Cancelar</button><button class="btn primary" id="tool-document-save">Salvar</button></div>`;
   const closePanel = nestedCenterModal(id ? "Editar documentação" : "Nova documentação", content, { cls: "full document-editor-modal", closeOnOverlay: true });
@@ -7846,6 +7866,13 @@ function openToolDocumentForm(id = null) {
     stage.classList.toggle("landscape", orientation === "landscape");
     stage.classList.toggle("portrait", orientation === "portrait");
   }));
+  document.querySelectorAll(".document-slide-format button").forEach((button) => button.addEventListener("click", () => {
+    slideFormat = button.dataset.slideFormat;
+    document.querySelectorAll(".document-slide-format button").forEach((item) => item.classList.toggle("active", item === button));
+    const stage = document.getElementById("document-editor-slide");
+    stage.classList.toggle("widescreen", slideFormat === "widescreen");
+    stage.classList.toggle("standard", slideFormat === "standard");
+  }));
   document.getElementById("document-slide-title").addEventListener("input", (event) => {
     slides[activeIndex].title = event.target.value;
     document.querySelector(`#document-editor-list .document-slide-thumb[data-index="${activeIndex}"] b`).textContent = event.target.value || `Slide ${activeIndex + 1}`;
@@ -7902,6 +7929,7 @@ function openToolDocumentForm(id = null) {
       content: contentValue,
       slides,
       orientation,
+      slide_format: slideFormat,
       updated_at: new Date().toISOString()
     };
     try {
