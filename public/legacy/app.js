@@ -207,6 +207,62 @@ function checklistProgress(value) {
 }
 const ENTITY_LABEL = { home: "Home", contacts: "Pessoas", companies: "Empresas", conversations: "Conversas", deals: "Negócios", products: "Produtos", projects: "Entregas", activities: "Tarefas" };
 const SINGULAR = { contacts: "pessoa", companies: "empresa", conversations: "conversa", deals: "negócio", products: "produto", projects: "entrega" };
+const PERMISSION_ACTIONS = [
+  { id: "view", label: "Ver" }, { id: "create", label: "Cadastrar" },
+  { id: "edit", label: "Editar" }, { id: "clone", label: "Clonar" },
+  { id: "delete", label: "Excluir" }, { id: "operate", label: "Operar" }
+];
+const PERMISSION_GROUPS = [
+  { label: "CRM", modules: [
+    ["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"],
+    ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]
+  ] },
+  { label: "Cadastros", modules: [
+    ["products", "Produtos"], ["pipelines", "Pipeline"], ["users", "Usuários"],
+    ["activityTemplates", "Tarefas"], ["goalTemplates", "Metas"], ["objectiveTemplates", "Objetivos"]
+  ] },
+  { label: "Ferramentas", modules: [
+    ["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"],
+    ["documents", "Documentação"], ["tables", "Tabelas"]
+  ] },
+  { label: "Social", modules: [
+    ["facebook", "Facebook"], ["instagram", "Instagram"], ["linkedin", "LinkedIn"],
+    ["reddit", "Reddit"], ["tiktokshop", "TikTokShop"], ["youtube", "YouTube"]
+  ] }
+];
+const REGISTRATION_PERMISSION_MODULE = {
+  products: "products", pipelines: "pipelines", users: "users",
+  activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates"
+};
+function defaultUserPermissions() {
+  const permissions = {};
+  PERMISSION_GROUPS.forEach((group) => group.modules.forEach(([moduleId]) => {
+    const isMain = ["contacts", "companies", "conversations", "deals", "projects", "activities"].includes(moduleId);
+    const isToolsOrSocial = ["files", "emails", "processes", "documents", "tables", "facebook", "instagram", "linkedin", "reddit", "tiktokshop", "youtube"].includes(moduleId);
+    permissions[moduleId] = Object.fromEntries(PERMISSION_ACTIONS.map(({ id }) => [id, isMain || (isToolsOrSocial && id === "view")]));
+    if (moduleId === "activities") permissions[moduleId].operate = true;
+  }));
+  return permissions;
+}
+function normalizeUserPermissions(value) {
+  const defaults = defaultUserPermissions();
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  Object.keys(defaults).forEach((moduleId) => {
+    const moduleValue = source[moduleId];
+    if (!moduleValue || typeof moduleValue !== "object") return;
+    PERMISSION_ACTIONS.forEach(({ id }) => {
+      if (typeof moduleValue[id] === "boolean") defaults[moduleId][id] = moduleValue[id];
+    });
+  });
+  return defaults;
+}
+function modulePermissionLabel(moduleId) {
+  for (const group of PERMISSION_GROUPS) {
+    const module = group.modules.find(([id]) => id === moduleId);
+    if (module) return module[1];
+  }
+  return ENTITY_LABEL[moduleId] || moduleId;
+}
 // Abas cujo formulário de cadastro abre em painel lateral (vindo da direita).
 const SIDE_PANEL_TABS = new Set(["deals", "products", "projects", "contacts", "companies"]);
 
@@ -234,6 +290,26 @@ const REMOTE_TABLE = {
   contactCompanies: "contact_companies"
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
+const DATA_PERMISSION_MODULE = {
+  users: "users", products: "products", pipelines: "pipelines",
+  productActivities: "activityTemplates", productObjectives: "objectiveTemplates", productGoals: "goalTemplates",
+  deliveryObjectives: "projects", deliveryGoals: "projects",
+  files: "files", processes: "processes", documents: "documents", customTables: "tables"
+};
+function dataPermissionModule(table) {
+  return DATA_PERMISSION_MODULE[table] || table;
+}
+function requireDataPermission(table, action) {
+  const moduleId = dataPermissionModule(table);
+  const allowed = action === "create"
+    ? currentUserCan(moduleId, "create") || currentUserCan(moduleId, "clone")
+    : action === "edit" && moduleId === "activities"
+      ? currentUserCan(moduleId, "edit") || currentUserCan(moduleId, "operate")
+      : currentUserCan(moduleId, action);
+  if (allowed) return true;
+  toast(`Sem permissão para ${PERMISSION_ACTIONS.find((item) => item.id === action)?.label.toLocaleLowerCase("pt-BR") || action} em ${modulePermissionLabel(moduleId)}.`, true);
+  return false;
+}
 const FIELD_REMAP = {
   deals: { amount: "value" },
   activities: { project_id: "delivery_id", group: "group_name", type: "activity_type" },
@@ -349,6 +425,7 @@ async function fetchTable(name) {
   return rows.map((row) => fromRemoteRow(name, row));
 }
 async function createRow(table, body) {
+  if (!requireDataPermission(table, "create")) throw new Error("Operação não permitida para este usuário.");
   if (!isLive()) {
     const row = PK_COLUMN[table] ? { ...body } : { id: crypto.randomUUID(), ...body };
     DEMO[table].push(row);
@@ -371,6 +448,7 @@ async function createActivityOrLoadExisting(body) {
   }
 }
 async function updateRow(table, id, body) {
+  if (!requireDataPermission(table, "edit")) throw new Error("Operação não permitida para este usuário.");
   const k = pk(table);
   if (!isLive()) { const r = DEMO[table].find((x) => x[k] === id); Object.assign(r, body); return r; }
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
@@ -379,6 +457,7 @@ async function updateRow(table, id, body) {
   return fromRemoteRow(table, row);
 }
 async function deleteRow(table, id) {
+  if (!requireDataPermission(table, "delete")) throw new Error("Operação não permitida para este usuário.");
   const k = pk(table);
   if (!isLive()) { DEMO[table] = DEMO[table].filter((x) => x[k] !== id); return; }
   return api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -386,6 +465,8 @@ async function deleteRow(table, id) {
 
 async function emailAccountsRequest(method = "GET", body = null) {
   if (APP_VARIANT !== "web" || !isLive()) throw new Error("A criação automática de e-mail está disponível na versão web conectada.");
+  const permissionAction = method === "GET" ? "view" : method === "DELETE" ? "delete" : body?.action === "update-metadata" ? "edit" : "create";
+  if (!requireCurrentUserPermission("emails", permissionAction, "Emails")) throw new Error("Operação não permitida para este usuário.");
   const c = getCfg();
   const token = await getAccessToken();
   if (!token) throw new Error("Sua sessão expirou. Entre novamente.");
@@ -1200,10 +1281,12 @@ async function loadAll() {
     userById: byId(users),
     userByAuthId: Object.fromEntries(users.filter((user) => user.auth_user_id).map((user) => [user.auth_user_id, user])),
     pipelineById: byId(pipelines), projectById };
-  await migrateLocalOperationalData();
-  await syncProductObjectives();
-  await syncProductGoals();
-  await syncProductActivities();
+  if (!isLive()) {
+    await migrateLocalOperationalData();
+    await syncProductObjectives();
+    await syncProductGoals();
+    await syncProductActivities();
+  }
   refreshActivityCache();
   return cache;
 }
@@ -1734,34 +1817,34 @@ function renderTable(c) {
     }).join("");
     if (state.tab === "conversations") {
       return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
-        open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa" },
-        delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa" }
+        open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
+        delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "projects") {
       return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
-        open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega" },
-        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega" },
-        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega" }
+        open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega", enabled: currentUserCan("projects", "view") },
+        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega", enabled: currentUserCan("projects", "edit") },
+        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega", enabled: currentUserCan("projects", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "activities") {
       const checklist = normalizeChecklist(r.checklist);
       return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
-        open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist" } : null,
-        edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa" } : null
+        open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
+        edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
     if (state.tab === "products") {
       return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
-        open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto" },
-        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto" },
-        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto" }
+        open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
+        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto", enabled: currentUserCan("products", "edit") },
+        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
     return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
-      edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro" },
-      delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro" }
+      edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
+      delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
     })}</td></tr>`;
   }).join("");
 
@@ -2173,13 +2256,14 @@ function renderHome(c) {
   const activeProjects = (c.projects || []).filter((project) => project.status === "in_progress" || project.status === "planned");
   const revenue = (c.deals || []).filter((deal) => deal.status === "won").reduce((sum, deal) => sum + Number(deal.amount || 0), 0);
   const metrics = [
-    ["Pessoas", c.contacts.length],
-    ["Empresas", c.companies.length],
-    ["Negócios abertos", openDeals.length],
-    ["Entregas ativas", activeProjects.length],
-    ["Tarefas pendentes", pending.length],
-    ["Receita ganha", brl(revenue)]
-  ].map(([label, value]) => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div></div>`).join("");
+    ["contacts", "Pessoas", c.contacts.length],
+    ["companies", "Empresas", c.companies.length],
+    ["deals", "Negócios abertos", openDeals.length],
+    ["projects", "Entregas ativas", activeProjects.length],
+    ["activities", "Tarefas pendentes", pending.length],
+    ["deals", "Receita ganha", brl(revenue)]
+  ].filter(([moduleId]) => currentUserCan(moduleId, "view"))
+    .map(([, label, value]) => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div></div>`).join("");
 
   const upcoming = [...pending]
     .sort((a, b) => (a.due_date || "9999-12-31").localeCompare(b.due_date || "9999-12-31"))
@@ -2196,18 +2280,19 @@ function renderHome(c) {
     return `<div class="home-status-row"><span>${esc(PROJECT_STATUS_LABEL[status])}</span><strong>${count}</strong></div>`;
   }).join("");
 
-  document.getElementById("main").innerHTML = `<div class="home">
-    <div class="home-metrics">${metrics}</div>
-    <div class="home-grid">
-      <section class="home-panel">
+  const tasksPanel = currentUserCan("activities", "view") ? `<section class="home-panel">
         <h3>Próximas tarefas</h3>
         <div class="task-table-wrap"><table><thead><tr><th>Tarefa</th><th>Cliente</th><th>Entrega</th><th>Prazo</th><th>Status</th></tr></thead>
         <tbody>${activityRows || '<tr><td colspan="5" class="empty">Nenhuma tarefa pendente.</td></tr>'}</tbody></table></div>
-      </section>
-      <section class="home-panel">
+      </section>` : "";
+  const projectsPanel = currentUserCan("projects", "view") ? `<section class="home-panel">
         <h3>Entregas por status</h3>
-        <div class="home-status-list">${projectStatuses}<div class="home-status-row"><span>Tarefas atrasadas</span><strong class="neg">${overdue.length}</strong></div></div>
-      </section>
+        <div class="home-status-list">${projectStatuses}${currentUserCan("activities", "view") ? `<div class="home-status-row"><span>Tarefas atrasadas</span><strong class="neg">${overdue.length}</strong></div>` : ""}</div>
+      </section>` : "";
+  document.getElementById("main").innerHTML = `<div class="home">
+    <div class="home-metrics">${metrics}</div>
+    <div class="home-grid">
+      ${tasksPanel}${projectsPanel}
     </div>
   </div>`;
   document.querySelectorAll(".home-project-btn").forEach((button) =>
@@ -2280,6 +2365,7 @@ function renderProductActivityChecklistEditor() {
 }
 
 function openProductActivities(productId, opts = {}) {
+  if (!requireCurrentUserPermission("products", "view", "Produtos")) return;
   const product = cache.productById[productId];
   if (!product) return;
   productActivityState = { productId, editId: null, objectiveEditId: null, goalEditId: null, tab: "activities" };
@@ -2428,6 +2514,7 @@ function renderProductObjectives() {
 }
 
 function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
+  if (!requireCurrentUserPermission("objectiveTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Objetivos")) return;
   closeProductActivityDrawer();
   productActivityState.objectiveEditId = editId;
   const objectives = loadProductObjectives().filter((item) => item.product_id === productActivityState.productId);
@@ -2480,6 +2567,7 @@ function createsObjectiveDependencyCycle(rows, currentId, dependencyIds) {
 }
 
 async function saveProductObjective() {
+  if (productActivityState.objectiveEditId ? !requireCurrentUserPermission("objectiveTemplates", "edit", "Objetivos") : !(currentUserCan("objectiveTemplates", "create") || currentUserCan("objectiveTemplates", "clone"))) { if (!productActivityState.objectiveEditId) toast("Sem permissão para cadastrar objetivos.", true); return; }
   if (productObjectiveSavePending) return;
   const name = document.getElementById("po-name").value.trim();
   if (!name) { toast("Informe o objetivo.", true); return; }
@@ -2541,6 +2629,7 @@ async function saveProductObjective() {
 }
 
 async function deleteProductObjective(objectiveId) {
+  if (!requireCurrentUserPermission("objectiveTemplates", "delete", "Objetivos")) return;
   const linked = loadProductActivities().filter((item) => item.objective_template_id === objectiveId).length;
   const detail = linked ? ` ${linked} tarefa(s) ficarão sem objetivo.` : "";
   if (!window.confirm(`Excluir este objetivo?${detail}`)) return;
@@ -2602,6 +2691,7 @@ function renderProductGoals() {
 }
 
 function openProductGoalDrawer(editId = null, cloneSourceId = null) {
+  if (!requireCurrentUserPermission("goalTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Metas")) return;
   closeProductActivityDrawer();
   productActivityState.goalEditId = editId;
   const goals = loadProductGoals();
@@ -2659,6 +2749,7 @@ function createsGoalDependencyCycle(rows, currentId, dependencyIds) {
 }
 
 async function saveProductGoal() {
+  if (productActivityState.goalEditId ? !requireCurrentUserPermission("goalTemplates", "edit", "Metas") : !(currentUserCan("goalTemplates", "create") || currentUserCan("goalTemplates", "clone"))) { if (!productActivityState.goalEditId) toast("Sem permissão para cadastrar metas.", true); return; }
   if (productGoalSavePending) return;
   const name = document.getElementById("pg-name").value.trim();
   const metric = document.getElementById("pg-metric").value.trim();
@@ -2724,6 +2815,7 @@ async function saveProductGoal() {
 }
 
 async function deleteProductGoal(goalId) {
+  if (!requireCurrentUserPermission("goalTemplates", "delete", "Metas")) return;
   if (!window.confirm("Excluir esta meta do produto?")) return;
   try {
     if (isLive()) await deleteRow("productGoals", goalId);
@@ -2927,6 +3019,7 @@ function closeProductActivityDrawer() {
 }
 
 function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTemplateId = null) {
+  if (!requireCurrentUserPermission("activityTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Tarefas")) return;
   closeProductActivityDrawer();
   productActivityState.editId = editId;
   const allTemplates = loadProductActivities();
@@ -3039,6 +3132,7 @@ function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
 }
 
 async function saveProductActivity() {
+  if (productActivityState.editId ? !requireCurrentUserPermission("activityTemplates", "edit", "Tarefas") : !(currentUserCan("activityTemplates", "create") || currentUserCan("activityTemplates", "clone"))) { if (!productActivityState.editId) toast("Sem permissão para cadastrar tarefas.", true); return; }
   const activity = document.getElementById("pa-activity").value.trim();
   if (!activity) { toast("Informe a tarefa.", true); return; }
   const rows = loadProductActivities();
@@ -3426,6 +3520,7 @@ async function deleteDeliveryTask(projectId, id) {
 }
 
 function openProjectBoard(projectId) {
+  if (!requireCurrentUserPermission("projects", "view", "Entregas")) return;
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!project) return;
   projectBoardState = { projectId, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
@@ -3930,6 +4025,7 @@ function wireDeliveryGoals(projectId) {
 }
 
 async function updateProjectTask(taskId, patch) {
+  if (!requireCurrentUserPermission("activities", "operate", "Tarefas")) return;
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
@@ -3978,13 +4074,14 @@ function renderActivityChecklistPanel(taskId) {
   }
   const items = normalizeChecklist(task.checklist);
   const progress = checklistProgress(items);
+  const canOperate = currentUserCan("activities", "operate");
   body.innerHTML = `<div class="checklist-panel-summary"><span>${progress.done} de ${progress.total} concluído(s)</span><strong>${progress.total ? Math.round(progress.done / progress.total * 100) : 0}%</strong></div>
     <div>${items.map((item) => `<div class="checklist-item${item.checked ? " done" : ""}" data-id="${esc(item.id)}">
-      <input class="activity-check-toggle" type="checkbox"${item.checked ? " checked" : ""} title="Marcar como concluído">
-      <input class="activity-check-text" type="text" value="${esc(item.text)}" aria-label="Item do checklist">
-      <button class="rowbtn activity-check-remove" type="button" title="Remover item">✕</button>
+      <input class="activity-check-toggle" type="checkbox"${item.checked ? " checked" : ""}${canOperate ? "" : " disabled"} title="Marcar como concluído">
+      <input class="activity-check-text" type="text" value="${esc(item.text)}" aria-label="Item do checklist"${canOperate ? "" : " readonly"}>
+      <button class="rowbtn activity-check-remove" type="button" title="Remover item"${canOperate ? "" : " disabled"}>✕</button>
     </div>`).join("") || '<div class="empty" style="padding:28px 8px">Nenhum item no checklist.</div>'}</div>
-    <div class="checklist-new"><input id="activity-check-new" placeholder="Novo item"><button class="btn primary" id="activity-check-add">Adicionar</button></div>`;
+    ${canOperate ? '<div class="checklist-new"><input id="activity-check-new" placeholder="Novo item"><button class="btn primary" id="activity-check-add">Adicionar</button></div>' : ""}`;
   const persist = async (nextItems) => {
     try {
       await updateProjectTask(taskId, { checklist: normalizeChecklist(nextItems) });
@@ -4016,6 +4113,7 @@ function renderActivityChecklistPanel(taskId) {
 }
 
 function openActivityChecklist(taskId) {
+  if (!requireCurrentUserPermission("activities", "view", "Tarefas")) return;
   const task = loadProjectTasks().find((item) => item.id === taskId);
   if (!task) return;
   if (taskSubtasks(taskId).length) {
@@ -4089,6 +4187,7 @@ function openTaskDeliveryPicker() {
 }
 
 function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
+  if (!requireCurrentUserPermission("activities", editId ? "edit" : "create", "Tarefas")) return;
   document.getElementById("project-task-drawer-overlay")?.remove();
   const tasks = projectTasks(projectId);
   const current = tasks.find((task) => task.id === editId) || {};
@@ -5103,9 +5202,13 @@ async function createDealFromSelectedConversations() {
 
 function render() {
   if (!cache) return;
+  if (state.tab !== "home" && !currentUserCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
-  document.querySelector('[data-action="registrations"]')?.toggleAttribute("disabled", !currentUserIsAdmin());
+  document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !currentUserCan(tab.dataset.tab, "view")));
+  document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.values(REGISTRATION_PERMISSION_MODULE)));
+  document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(["files", "emails", "processes", "documents", "tables"]));
+  document.querySelector('[data-action="social"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.keys(SOCIAL_MODULE_LABELS)));
   const hasConversationSelection = state.selectedConversations.size > 0;
   const isHome = state.tab === "home";
   document.querySelector(".subbar")?.classList.toggle("home-hidden", isHome);
@@ -5126,7 +5229,7 @@ function render() {
   viewMenuButton.classList.toggle("active", !isHome);
   document.getElementById("view-menu-label").textContent = activeMode.label.toLocaleUpperCase("pt-BR");
   document.getElementById("search").disabled = isHome;
-  document.getElementById("new").disabled = isHome;
+  document.getElementById("new").disabled = isHome || !currentUserCan(state.tab, "create");
   document.getElementById("cols-btn").disabled = isHome;
   document.getElementById("data-btn").disabled = isHome;
   document.getElementById("filter-strip").classList.toggle("home-hidden", isHome);
@@ -5268,6 +5371,8 @@ function nestedCenterModal(title, inner, opts = {}) {
 }
 
 function openForm(tab, id, opts = {}) {
+  const permissionAction = id ? "edit" : "create";
+  if (!requireCurrentUserPermission(tab, permissionAction, ENTITY_LABEL[tab] || modulePermissionLabel(tab))) return;
   const c = cache;
   const record = id ? c[tab].find((r) => r[pk(tab)] === id) : null;
   const fs = fields(tab, c);
@@ -5475,6 +5580,7 @@ async function replaceContactCompanyLinks({ contactId = null, companyId = null, 
 }
 
 async function saveForm(tab, id, fs, opts = {}) {
+  if (!requireCurrentUserPermission(tab, id ? "edit" : "create", ENTITY_LABEL[tab] || modulePermissionLabel(tab))) return;
   const body = {};
   const form = document.querySelector("#modal-root .form");
   const saveButton = document.getElementById("save");
@@ -5551,6 +5657,7 @@ async function saveForm(tab, id, fs, opts = {}) {
 }
 
 function confirmDelete(tab, id) {
+  if (!requireCurrentUserPermission(tab, "delete", ENTITY_LABEL[tab] || modulePermissionLabel(tab))) return;
   const rec = cache[tab].find((r) => r[pk(tab)] === id);
   const nome = rec?.name || rec?.legal_name || rec?.title || "este registro";
   shell("Excluir", `<div class="panel-list">Excluir <b>${esc(nome)}</b>? Esta ação não pode ser desfeita.</div>
@@ -5718,6 +5825,7 @@ function openHelpModal() {
 // substituiria o modal-root inteiro e a lista se perderia.
 let pmState = { mode: "list" };
 function openPipelinesModal(editId = null, returnToRegistrations = false) {
+  if (!requireCurrentUserPermission("pipelines", "view", "Pipeline")) return;
   if (returnToRegistrations) {
     openPipelineDrawer(editId);
     return;
@@ -5736,6 +5844,7 @@ function closePipelineDrawer() {
   document.getElementById("pipeline-drawer-overlay")?.remove();
 }
 function openPipelineDrawer(editId = "new") {
+  if (!requireCurrentUserPermission("pipelines", editId && editId !== "new" ? "edit" : "create", "Pipeline")) return;
   closePipelineDrawer();
   const pipeline = editId && editId !== "new" ? cache.pipelines.find((item) => item.id === editId) : null;
   pmState = { mode: "form", editId: pipeline?.id || null, name: pipeline?.name || "", stages: pipeline ? [...pipeline.stages] : [""] };
@@ -5892,8 +6001,8 @@ function openUsersModal(editId = null, returnToRegistrations = false) {
   if (!requireCurrentUserAdmin("Usuários")) return;
   const user = editId && editId !== "new" ? cache.users.find((item) => item.id === editId) : null;
   umReturnToRegistrations = returnToRegistrations;
-  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: user.role || "user", function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id) };
-  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
+  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: user.role || "user", function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id), permissions: normalizeUserPermissions(user.permissions) };
+  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultUserPermissions() };
   else umState = { mode: "list" };
   const title = user ? "Editar usuário" : editId === "new" ? "Novo usuário" : "Usuários · Responsáveis";
   const nestedRegistration = Boolean(returnToRegistrations && document.getElementById("registrations-root"));
@@ -5938,6 +6047,34 @@ function usersListHtml() {
     </div>
     <div class="entity-list">${rows || '<div class="empty">Nenhum usuário cadastrado.</div>'}</div>`;
 }
+function permissionsMatrixHtml() {
+  const permissions = normalizeUserPermissions(umState.permissions);
+  const admin = umState.role === "admin";
+  return `<div class="field full user-permissions-field"><label>Permissões por módulo</label>
+    <div class="permissions-matrix${admin ? " is-admin" : ""}">
+      <div class="permissions-row permissions-head"><strong>Módulo</strong>${PERMISSION_ACTIONS.map((action) => `<span>${esc(action.label)}</span>`).join("")}</div>
+      ${PERMISSION_GROUPS.map((group) => `<div class="permissions-group-title">${esc(group.label)}</div>${group.modules.map(([moduleId, label]) => {
+        const values = permissions[moduleId] || {};
+        return `<div class="permissions-row" data-permission-module="${esc(moduleId)}"><strong>${esc(label)}</strong>${PERMISSION_ACTIONS.map((action) => {
+          const checked = admin || values[action.id];
+          const unavailable = moduleId === "users" && !admin;
+          return `<label class="permission-check${unavailable ? " unavailable" : ""}" title="${esc(action.label)} · ${esc(label)}"><input type="checkbox" data-permission-action="${action.id}"${checked ? " checked" : ""}${admin || unavailable ? " disabled" : ""}><span></span></label>`;
+        }).join("")}</div>`;
+      }).join("")}`).join("")}
+    </div>
+    <small class="muted">Operar permite executar tarefas, atualizar status, prazos e checklist sem liberar alterações estruturais.</small>
+  </div>`;
+}
+function readPermissionsMatrix() {
+  const permissions = normalizeUserPermissions(umState.permissions);
+  document.querySelectorAll("#um-body [data-permission-module]").forEach((row) => {
+    const moduleId = row.dataset.permissionModule;
+    row.querySelectorAll("[data-permission-action]").forEach((input) => {
+      permissions[moduleId][input.dataset.permissionAction] = input.checked;
+    });
+  });
+  return permissions;
+}
 function userFormHtml() {
   return `<div class="form">
       <div class="field full"><label>Nome completo</label><input id="u-name" value="${esc(umState.full_name)}"></div>
@@ -5953,6 +6090,7 @@ function userFormHtml() {
         <option value="active"${umState.status === "active" ? " selected" : ""}>Ativo</option>
         <option value="inactive"${umState.status === "inactive" ? " selected" : ""}>Inativo</option>
       </select></div>
+      ${permissionsMatrixHtml()}
       <div class="field full"><label>${umState.hasAccess ? "Nova senha (deixe em branco para manter a atual)" : "Senha de acesso"}</label>
         <div class="input-action-row"><input id="u-password" type="text" value="${esc(umState.password)}" readonly placeholder="Gere uma senha segura">
           <button class="btn" type="button" id="generate-password">Gerar</button><button class="btn" type="button" id="copy-password"${umState.password ? "" : " disabled"}>Copiar</button></div>
@@ -5977,14 +6115,14 @@ function userCredentialsHtml() {
 function wireUsersModal() {
   if (umState.mode === "list") {
     document.getElementById("new-user")?.addEventListener("click", () => {
-      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
+      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultUserPermissions() };
       renderUsersModal();
     });
     document.querySelectorAll("#um-body .rowbtn.edit").forEach((b) =>
       b.addEventListener("click", () => {
         const u = cache.users.find((x) => x.id === b.dataset.id);
         if (!u) return;
-        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: u.role || "user", function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id) };
+        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: u.role || "user", function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id), permissions: normalizeUserPermissions(u.permissions) };
         renderUsersModal();
       }));
     document.querySelectorAll("#um-body .rowbtn.del").forEach((b) =>
@@ -6005,6 +6143,11 @@ function wireUsersModal() {
       closeUsersModal();
     });
   } else {
+    document.getElementById("u-role")?.addEventListener("change", (event) => {
+      umState.permissions = readPermissionsMatrix();
+      umState.role = event.target.value;
+      document.querySelector("#um-body .user-permissions-field")?.replaceWith(document.createRange().createContextualFragment(permissionsMatrixHtml()));
+    });
     document.getElementById("cancel-form")?.addEventListener("click", () => {
       closeUsersModal();
     });
@@ -6033,7 +6176,8 @@ function wireUsersModal() {
         function_name: document.getElementById("u-function").value.trim() || null,
         job_title: document.getElementById("u-job-title").value.trim() || null,
         password,
-        status: document.getElementById("u-status").value
+        status: document.getElementById("u-status").value,
+        permissions: document.getElementById("u-role").value === "admin" ? {} : readPermissionsMatrix()
       };
       try {
         if (isLive()) await callUserAdmin("save-user", { profile_id: umState.editId, ...body });
@@ -6066,10 +6210,12 @@ const REGISTRATION_LABEL = {
 let registrationsState = { section: "products", tables: {} };
 
 function openRegistrationsModal(section = "products") {
-  if (!requireCurrentUserAdmin("Cadastros")) return;
+  const available = Object.keys(REGISTRATION_LABEL).filter((id) => currentUserCan(REGISTRATION_PERMISSION_MODULE[id], "view"));
+  if (!available.length) { toast("Você não possui acesso aos Cadastros.", true); return; }
+  if (!available.includes(section)) section = available[0];
   registrationsState = { section, tables: {} };
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Cadastros">
-    ${Object.entries(REGISTRATION_LABEL).map(([id, label]) => `<button class="modal-header-tab${id === section ? " active" : ""}" data-registration-tab="${id}" role="tab">${label}</button>`).join("")}
+    ${Object.entries(REGISTRATION_LABEL).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === section ? " active" : ""}" data-registration-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   const disabledFooter = `<div class="registrations-footer" aria-disabled="true">
     ${currentUserIsAdmin() ? '<button class="foot-btn" disabled>LOG</button>' : ""}
@@ -6101,6 +6247,19 @@ function renderRegistrationsSection() {
   const root = document.getElementById("registrations-root");
   if (!root) return;
   const section = registrationsState.section;
+  const permissionModule = REGISTRATION_PERMISSION_MODULE[section];
+  if (!currentUserCan(permissionModule, "view")) {
+    root.innerHTML = '<div class="empty">Você não possui acesso a este cadastro.</div>';
+    return;
+  }
+  queueMicrotask(() => {
+    const currentRoot = document.getElementById("registrations-root");
+    if (!currentRoot) return;
+    const addButton = currentRoot.querySelector("#registration-add");
+    if (addButton && !currentUserCan(permissionModule, "create")) addButton.disabled = true;
+    if (!currentUserCan(permissionModule, "edit")) currentRoot.querySelectorAll(".reg-product-edit,.reg-pipeline-edit,.reg-template-edit,.reg-user-edit").forEach((button) => { button.disabled = true; });
+    if (!currentUserCan(permissionModule, "clone")) currentRoot.querySelectorAll(".reg-template-clone").forEach((button) => { button.disabled = true; });
+  });
   if (section === "products") {
     const rows = cache.products.map((product) => `<tr>
       <td><div class="registrations-product"><strong>${esc(product.name || "—")}</strong><small>${esc(product.description || "Sem descrição")}</small></div></td>
@@ -7084,6 +7243,23 @@ function currentUserIsAdmin() {
   return !isLive() || currentProfile?.role === "admin";
 }
 
+function currentUserCan(moduleId, action = "view") {
+  if (currentUserIsAdmin()) return true;
+  if (!currentProfile || currentProfile.status !== "active") return false;
+  return Boolean(normalizeUserPermissions(currentProfile.permissions)[moduleId]?.[action]);
+}
+
+function requireCurrentUserPermission(moduleId, action = "view", area = modulePermissionLabel(moduleId)) {
+  if (currentUserCan(moduleId, action)) return true;
+  const actionLabel = PERMISSION_ACTIONS.find((item) => item.id === action)?.label || action;
+  toast(`Sem permissão para ${actionLabel.toLocaleLowerCase("pt-BR")} em ${area}.`, true);
+  return false;
+}
+
+function hasAnyModuleAccess(moduleIds) {
+  return moduleIds.some((moduleId) => currentUserCan(moduleId, "view"));
+}
+
 function currentSessionLabel() {
   const session = readAuthSession();
   return currentProfile?.full_name || currentProfile?.email || session?.user?.email || "conta não identificada";
@@ -7221,14 +7397,13 @@ function toolsDisabledFooter() {
 }
 
 function openToolsModal(section = "files") {
+  const available = ["files", "emails", "processes", "documents", "tables"].filter((id) => currentUserCan(id, "view"));
+  if (!available.length) { toast("Você não possui acesso às Ferramentas.", true); return; }
+  if (!available.includes(section)) section = available[0];
   if (toolsState.section !== section) toolsState.search = "";
   toolsState.section = section;
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Ferramentas">
-    <button class="modal-header-tab${section === "files" ? " active" : ""}" data-tools-tab="files" role="tab">Arquivos</button>
-    <button class="modal-header-tab${section === "emails" ? " active" : ""}" data-tools-tab="emails" role="tab">Emails</button>
-    <button class="modal-header-tab${section === "processes" ? " active" : ""}" data-tools-tab="processes" role="tab">Processos</button>
-    <button class="modal-header-tab${section === "documents" ? " active" : ""}" data-tools-tab="documents" role="tab">Documentação</button>
-    <button class="modal-header-tab${section === "tables" ? " active" : ""}" data-tools-tab="tables" role="tab">Tabelas</button>
+    ${[["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${section === id ? " active" : ""}" data-tools-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
@@ -7406,7 +7581,7 @@ function customTableSheetFromMatrix(matrix, name, index = 0) {
 }
 
 async function importCustomTableFile(file) {
-  if (!requireCurrentUserAdmin("Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "create", "Tabelas")) return;
   const parser = globalThis.XLSX;
   if (!parser?.read || !parser?.utils?.sheet_to_json) {
     toast("O leitor de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true);
@@ -7478,10 +7653,12 @@ function visibleSocialColumns(section = socialState.section) {
 }
 
 function openSocialModal(section = "home") {
-  socialState.section = section === "home" || SOCIAL_MODULE_LABELS[section] ? section : "home";
+  const available = Object.keys(SOCIAL_MODULE_LABELS).filter((id) => currentUserCan(id, "view"));
+  if (!available.length) { toast("Você não possui acesso ao Social.", true); return; }
+  socialState.section = section === "home" || available.includes(section) ? section : "home";
   socialState.search = "";
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Social">
-    ${Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
+    ${Object.entries(SOCIAL_MODULE_LABELS).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
@@ -7505,7 +7682,7 @@ function openSocialModal(section = "home") {
 }
 
 function renderSocialHome(root) {
-  root.innerHTML = `<div class="social-home-grid">${Object.entries(SOCIAL_CHANNEL_CONFIG).map(([channel, config]) => {
+  root.innerHTML = `<div class="social-home-grid">${Object.entries(SOCIAL_CHANNEL_CONFIG).filter(([channel]) => currentUserCan(channel, "view")).map(([channel, config]) => {
     const username = socialChannelProfiles[channel] || "";
     const url = socialProfileUrl(channel, username);
     return `<section class="social-home-module">
@@ -7644,11 +7821,11 @@ function renderToolFolders(root) {
     }).join("")}
     <td class="table-actions-cell">${tableActionButtons({
       open: safeHttpUrl(file.file_reference) ? { className: "tool-folder-open", attrs: { "data-id": file.id }, title: "Abrir arquivo" } : null,
-      edit: currentUserIsAdmin() ? { className: "tool-folder-edit", attrs: { "data-id": file.id }, title: "Editar arquivo" } : null,
-      delete: currentUserIsAdmin() ? { className: "tool-folder-delete", attrs: { "data-id": file.id }, title: "Excluir arquivo" } : null
+      edit: { className: "tool-folder-edit", attrs: { "data-id": file.id }, title: "Editar arquivo", enabled: currentUserCan("files", "edit") },
+      delete: { className: "tool-folder-delete", attrs: { "data-id": file.id }, title: "Excluir arquivo", enabled: currentUserCan("files", "delete") }
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum arquivo cadastrado.</td></tr>`;
-  root.innerHTML = `${toolsToolbarHtml(files.length, "Adicionar arquivo", "tool-folder-add", currentUserIsAdmin(), "Buscar empresa...")}${toolFilterStrip("files", tableState, { loading: remoteToolFilesLoading, error: remoteToolFilesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(files.length, "files")}`;
+  root.innerHTML = `${toolsToolbarHtml(files.length, "Adicionar arquivo", "tool-folder-add", currentUserCan("files", "create"), "Buscar empresa...")}${toolFilterStrip("files", tableState, { loading: remoteToolFilesLoading, error: remoteToolFilesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(files.length, "files")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "files");
   wireToolsLoadRetry(root, "files");
@@ -7683,7 +7860,7 @@ function closeToolFilePanel(closePanel) {
 }
 
 function openToolFolderForm(id = null) {
-  if (!requireCurrentUserAdmin("Arquivos")) return;
+  if (!requireCurrentUserPermission("files", id ? "edit" : "create", "Arquivos")) return;
   const current = toolFileRows().find((item) => item.id === id) || {};
   const companyPicker = singleSearchPickerHtml("tool-file-company", companyRefOptions(cache), current.company_id, "Buscar por nome ou CNPJ");
   const content = `<div class="form">
@@ -7742,7 +7919,7 @@ function openToolFolderForm(id = null) {
 }
 
 async function deleteToolFolder(id) {
-  if (!requireCurrentUserAdmin("Arquivos")) return;
+  if (!requireCurrentUserPermission("files", "delete", "Arquivos")) return;
   const rows = toolFileRows();
   const file = rows.find((item) => item.id === id);
   if (!file || !window.confirm(`Excluir o arquivo "${file.file_reference}"?`)) return;
@@ -7865,11 +8042,11 @@ function renderToolProcesses(root) {
     }).join("")}
     <td class="table-actions-cell">${tableActionButtons({
       open: { className: "tool-process-flow", attrs: { "data-id": process.id }, title: "Abrir fluxo visual" },
-      edit: currentUserIsAdmin() ? { className: "tool-process-edit", attrs: { "data-id": process.id }, title: "Editar processo" } : null,
-      delete: currentUserIsAdmin() ? { className: "tool-process-delete", attrs: { "data-id": process.id }, title: "Excluir processo" } : null
+      edit: { className: "tool-process-edit", attrs: { "data-id": process.id }, title: "Editar processo", enabled: currentUserCan("processes", "edit") },
+      delete: { className: "tool-process-delete", attrs: { "data-id": process.id }, title: "Excluir processo", enabled: currentUserCan("processes", "delete") }
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum processo cadastrado.</td></tr>`;
-  root.innerHTML = `${toolsToolbarHtml(processes.length, "Adicionar processo", "tool-process-add", currentUserIsAdmin())}${toolFilterStrip("processes", tableState, { loading: remoteToolProcessesLoading, error: remoteToolProcessesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(processes.length, "processes")}`;
+  root.innerHTML = `${toolsToolbarHtml(processes.length, "Adicionar processo", "tool-process-add", currentUserCan("processes", "create"))}${toolFilterStrip("processes", tableState, { loading: remoteToolProcessesLoading, error: remoteToolProcessesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(processes.length, "processes")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "processes");
   wireToolsLoadRetry(root, "processes");
@@ -8081,12 +8258,12 @@ function renderToolDocuments(root) {
     }).join("")}
     <td class="table-actions-cell">${tableActionButtons({
       open: { className: "tool-document-open", attrs: { "data-id": documentItem.id }, title: "Abrir documentação" },
-      edit: currentUserIsAdmin() ? { className: "tool-document-edit", attrs: { "data-id": documentItem.id }, title: "Editar documentação" } : null,
-      clone: currentUserIsAdmin() ? { className: "tool-document-clone", attrs: { "data-id": documentItem.id }, title: "Clonar documentação" } : null,
-      delete: currentUserIsAdmin() ? { className: "tool-document-delete", attrs: { "data-id": documentItem.id }, title: "Excluir documentação" } : null
+      edit: { className: "tool-document-edit", attrs: { "data-id": documentItem.id }, title: "Editar documentação", enabled: currentUserCan("documents", "edit") },
+      clone: { className: "tool-document-clone", attrs: { "data-id": documentItem.id }, title: "Clonar documentação", enabled: currentUserCan("documents", "clone") },
+      delete: { className: "tool-document-delete", attrs: { "data-id": documentItem.id }, title: "Excluir documentação", enabled: currentUserCan("documents", "delete") }
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
-  root.innerHTML = `${toolsToolbarHtml(documents.length, "Adicionar documentação", "tool-document-add", currentUserIsAdmin())}${toolFilterStrip("documents", tableState, { loading: remoteToolDocumentsLoading, error: remoteToolDocumentsError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(documents.length, "documents")}`;
+  root.innerHTML = `${toolsToolbarHtml(documents.length, "Adicionar documentação", "tool-document-add", currentUserCan("documents", "create"))}${toolFilterStrip("documents", tableState, { loading: remoteToolDocumentsLoading, error: remoteToolDocumentsError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(documents.length, "documents")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "documents");
   wireToolsLoadRetry(root, "documents");
@@ -8225,12 +8402,12 @@ function renderToolCustomTables(root) {
       : `<td>${esc(toolCustomTableValue(item, column.k))}</td>`).join("")}
     <td class="table-actions-cell">${tableActionButtons({
       open: { className: "tool-custom-table-open", attrs: { "data-id": item.id }, title: "Abrir tabela" },
-      edit: currentUserIsAdmin() ? { className: "tool-custom-table-edit", attrs: { "data-id": item.id }, title: "Editar tabela" } : null,
-      clone: currentUserIsAdmin() ? { className: "tool-custom-table-clone", attrs: { "data-id": item.id }, title: "Clonar tabela" } : null,
-      delete: currentUserIsAdmin() ? { className: "tool-custom-table-delete", attrs: { "data-id": item.id }, title: "Excluir tabela" } : null
+      edit: { className: "tool-custom-table-edit", attrs: { "data-id": item.id }, title: "Editar tabela", enabled: currentUserCan("tables", "edit") },
+      clone: { className: "tool-custom-table-clone", attrs: { "data-id": item.id }, title: "Clonar tabela", enabled: currentUserCan("tables", "clone") },
+      delete: { className: "tool-custom-table-delete", attrs: { "data-id": item.id }, title: "Excluir tabela", enabled: currentUserCan("tables", "delete") }
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma tabela cadastrada.</td></tr>`;
-  root.innerHTML = `${toolsToolbarHtml(tables.length, "Adicionar tabela", "tool-custom-table-add", currentUserIsAdmin(), "Buscar tabela...")}${toolFilterStrip("tables", tableState, { loading: remoteToolTablesLoading, error: remoteToolTablesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-tool-key="${esc(column.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(tables.length, "tables")}`;
+  root.innerHTML = `${toolsToolbarHtml(tables.length, "Adicionar tabela", "tool-custom-table-add", currentUserCan("tables", "create"), "Buscar tabela...")}${toolFilterStrip("tables", tableState, { loading: remoteToolTablesLoading, error: remoteToolTablesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-tool-key="${esc(column.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(tables.length, "tables")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "tables");
   wireToolsLoadRetry(root, "tables");
@@ -8262,7 +8439,7 @@ function updateToolCustomTableCache(saved) {
 }
 
 function openToolCustomTableEditor(id = null, readOnly = false) {
-  if (!readOnly && !requireCurrentUserAdmin("Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", readOnly ? "view" : id ? "edit" : "create", "Tabelas")) return;
   const source = toolCustomTableRows().find((item) => item.id === id);
   if (id && !source) return;
   const draft = normalizeCustomTable(source || {
@@ -8524,7 +8701,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
 }
 
 async function cloneToolCustomTable(id) {
-  if (!requireCurrentUserAdmin("Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "clone", "Tabelas")) return;
   const source = toolCustomTableRows().find((item) => item.id === id);
   if (!source) return;
   const sheets = source.sheets.map((sourceSheet) => {
@@ -8553,7 +8730,7 @@ async function cloneToolCustomTable(id) {
 }
 
 async function deleteToolCustomTable(id) {
-  if (!requireCurrentUserAdmin("Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "delete", "Tabelas")) return;
   const item = toolCustomTableRows().find((table) => table.id === id);
   if (!item || !window.confirm(`Excluir a tabela "${item.name}"?`)) return;
   try {
@@ -8754,7 +8931,7 @@ function openToolDocument(id) {
 }
 
 function openLegacyToolDocumentForm(id = null) {
-  if (!requireCurrentUserAdmin("Documentação")) return;
+  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentação")) return;
   const current = toolDocumentRows().find((item) => item.id === id) || {};
   let slides = normalizeDocumentSlides(current.slides, current.content, current.title);
   let activeIndex = 0;
@@ -8945,7 +9122,7 @@ function openLegacyToolDocumentForm(id = null) {
 }
 
 function openToolDocumentForm(id = null) {
-  if (!requireCurrentUserAdmin("Documentação")) return;
+  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentação")) return;
   const current = toolDocumentRows().find((item) => item.id === id) || {};
   documentationEditorState = {
     id,
@@ -9401,7 +9578,7 @@ function wireDocumentationEditorPage() {
 }
 
 async function cloneToolDocument(id) {
-  if (!requireCurrentUserAdmin("Documentação")) return;
+  if (!requireCurrentUserPermission("documents", "clone", "Documentação")) return;
   const source = toolDocumentRows().find((item) => item.id === id);
   if (!source) return;
   const slides = normalizeDocumentSlides(source.slides, source.content, source.title).map((page) => ({
@@ -9438,7 +9615,7 @@ async function cloneToolDocument(id) {
 }
 
 async function deleteToolDocument(id) {
-  if (!requireCurrentUserAdmin("Documentação")) return;
+  if (!requireCurrentUserPermission("documents", "delete", "Documentação")) return;
   const documentItem = toolDocumentRows().find((item) => item.id === id);
   if (!documentItem || !window.confirm(`Excluir a documentação "${documentItem.title}"?`)) return;
   try {
@@ -9614,7 +9791,7 @@ function emptyProcessStep() {
 }
 
 function openToolProcessForm(id = null) {
-  if (!requireCurrentUserAdmin("Processos")) return;
+  if (!requireCurrentUserPermission("processes", id ? "edit" : "create", "Processos")) return;
   const current = toolProcessRows().find((item) => item.id === id) || {};
   let draftSteps = normalizeProcessSteps(current.steps);
   if (!draftSteps.length) draftSteps = [emptyProcessStep()];
@@ -9681,7 +9858,7 @@ function openToolProcessForm(id = null) {
 }
 
 async function deleteToolProcess(id) {
-  if (!requireCurrentUserAdmin("Processos")) return;
+  if (!requireCurrentUserPermission("processes", "delete", "Processos")) return;
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process || !window.confirm(`Excluir o processo "${process.title}"?`)) return;
   try {
@@ -9749,12 +9926,12 @@ function renderToolEmails(root) {
       return `<td>${esc(account[col.k] || "—")}</td>`;
     }).join("")}
     <td class="table-actions-cell">${tableActionButtons({
-      edit: { className: "tool-email-edit", attrs: { "data-id": account.id }, title: "Editar senha local e tags" },
-      delete: !usesServer ? { className: "tool-email-delete", attrs: { "data-id": account.id }, title: "Excluir e-mail" } : null
+      edit: { className: "tool-email-edit", attrs: { "data-id": account.id }, title: "Editar senha local e tags", enabled: currentUserCan("emails", "edit") },
+      delete: !usesServer ? { className: "tool-email-delete", attrs: { "data-id": account.id }, title: "Excluir e-mail", enabled: currentUserCan("emails", "delete") } : null
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum e-mail cadastrado.</td></tr>`;
   const filterStrip = toolFilterStrip("emails", tableState, { loading: usesServer && remoteToolEmailsLoading, error: usesServer ? remoteToolEmailsError : "" });
-  root.innerHTML = `${toolsToolbarHtml(accounts.length, "Criar e-mail pelo CNPJ", "tool-email-add")}${filterStrip}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(accounts.length, "emails")}`;
+  root.innerHTML = `${toolsToolbarHtml(accounts.length, "Criar e-mail pelo CNPJ", "tool-email-add", currentUserCan("emails", "create"))}${filterStrip}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(accounts.length, "emails")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "emails");
   wireToolsLoadRetry(root, "emails");
@@ -9836,6 +10013,7 @@ function openToolColumnFilter(header, key, rows, valueFn, section = toolsState.s
 }
 
 function openToolEmailForm(id = null) {
+  if (!requireCurrentUserPermission("emails", id ? "edit" : "create", "Emails")) return;
   const usesServer = APP_VARIANT === "web" && isLive();
   const current = toolEmailRows().find((item) => item.id === id) || {};
   const editingServer = usesServer && Boolean(id);
@@ -9963,6 +10141,7 @@ async function copyToolEmailSecret(id) {
 }
 
 function deleteToolEmail(id) {
+  if (!requireCurrentUserPermission("emails", "delete", "Emails")) return;
   const rows = readToolRows(TOOL_EMAILS_KEY);
   const account = rows.find((item) => item.id === id);
   if (!account || !window.confirm(`Excluir o e-mail "${account.email}"?`)) return;
@@ -10015,7 +10194,7 @@ function handleAction(action) {
   if (action === "social") { openSocialModal(); return; }
   if (action === "updates") { openUpdatesModal(); return; }
   if (action === "pipeline") { openPipelinesModal(); return; }
-  if (action === "registrations") { if (requireCurrentUserAdmin("Cadastros")) openRegistrationsModal(); return; }
+  if (action === "registrations") { openRegistrationsModal(); return; }
   if (action === "users") { openUsersModal(); return; }
   if (action === "notifications") {
     sidePanel("Notificações", `<div class="panel-list">Nenhuma notificação por enquanto.</div>`, { closeOnOverlay: true });
@@ -10059,6 +10238,7 @@ document.getElementById("brand-home")?.addEventListener("click", () => {
 });
 document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => {
+    if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
     closeFloaters();
     state.tab = t.dataset.tab; state.sortK = null; state.sortDir = 1; state.q = "";
     state.view = "table";
@@ -10083,6 +10263,7 @@ document.addEventListener("keydown", (event) => {
   if (floater) closeFloaters();
 });
 document.getElementById("new").addEventListener("click", () => {
+  if (!requireCurrentUserPermission(state.tab, "create", ENTITY_LABEL[state.tab])) return;
   if (state.tab === "conversations") document.getElementById("import-file").click();
   else if (state.tab === "activities") openTaskDeliveryPicker();
   else openForm(state.tab, null);
@@ -10143,6 +10324,13 @@ async function init() {
         storeAuthSession(null);
         showLogin("Este usuário não possui um perfil ativo no CRM.");
         return;
+      }
+      if (currentUserIsAdmin()) {
+        await migrateLocalOperationalData();
+        await syncProductObjectives();
+        await syncProductGoals();
+        await syncProductActivities();
+        refreshActivityCache();
       }
     }
     syncRedditQueue();

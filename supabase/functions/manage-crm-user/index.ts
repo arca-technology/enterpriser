@@ -11,6 +11,24 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
   headers: { ...corsHeaders, "Content-Type": "application/json" },
 });
 
+const permissionModules = [
+  "contacts", "companies", "conversations", "deals", "projects", "activities",
+  "products", "pipelines", "users", "activityTemplates", "goalTemplates", "objectiveTemplates",
+  "files", "emails", "processes", "documents", "tables",
+  "facebook", "instagram", "linkedin", "reddit", "tiktokshop", "youtube",
+] as const;
+const permissionActions = ["view", "create", "edit", "clone", "delete", "operate"] as const;
+
+function sanitizePermissions(value: unknown) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(permissionModules.map((moduleId) => {
+    const moduleValue = source[moduleId] && typeof source[moduleId] === "object" && !Array.isArray(source[moduleId])
+      ? source[moduleId] as Record<string, unknown>
+      : {};
+    return [moduleId, Object.fromEntries(permissionActions.map((action) => [action, moduleValue[action] === true]))];
+  }));
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Método não permitido." }, 405);
@@ -121,6 +139,7 @@ Deno.serve(async (req) => {
         function_name: String(body.function_name || "").trim() || null,
         job_title: String(body.job_title || "").trim() || null,
         auth_user_id: authUserId,
+        permissions: role === "admin" ? {} : sanitizePermissions(body.permissions),
         updated_at: new Date().toISOString(),
       };
       const query = profileId
