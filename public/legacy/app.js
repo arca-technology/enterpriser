@@ -6614,6 +6614,83 @@ function openRegistrationProductPicker(section) {
 }
 
 // ---------- Integrações ----------
+const SOCIAL_CHANNEL_CONFIG = {
+  facebook: { label: "Facebook", baseUrl: "https://www.facebook.com/" },
+  instagram: { label: "Instagram", baseUrl: "https://www.instagram.com/" },
+  linkedin: { label: "LinkedIn", baseUrl: "https://www.linkedin.com/in/" },
+  reddit: { label: "Reddit", baseUrl: "https://www.reddit.com/user/" },
+  tiktokshop: { label: "TikTokShop", baseUrl: "https://www.tiktok.com/@" },
+  youtube: { label: "YouTube", baseUrl: "https://www.youtube.com/@" }
+};
+const SOCIAL_PROFILES_CACHE_KEY = "crm_social_channel_profiles";
+function socialProfilesCacheKey() {
+  return `${SOCIAL_PROFILES_CACHE_KEY}:${readAuthSession()?.user?.id || "offline"}`;
+}
+let socialChannelProfiles = (() => {
+  try { return JSON.parse(localStorage.getItem(socialProfilesCacheKey()) || "{}"); }
+  catch (e) { return {}; }
+})();
+let socialChannelProfilesLoaded = false;
+
+function normalizeSocialUsername(value, channel) {
+  let username = String(value || "").trim();
+  if (!username) return "";
+  try {
+    const url = new URL(username);
+    const parts = url.pathname.split("/").filter(Boolean);
+    username = parts.at(-1) || "";
+  } catch (e) {}
+  username = username.replace(/^@/, "");
+  if (channel === "reddit") username = username.replace(/^(u|user)\//i, "");
+  return username.trim();
+}
+
+function socialProfileUrl(channel, username) {
+  const config = SOCIAL_CHANNEL_CONFIG[channel];
+  const normalized = normalizeSocialUsername(username, channel);
+  return config && normalized ? config.baseUrl + encodeURIComponent(normalized) + (["instagram", "linkedin", "reddit"].includes(channel) ? "/" : "") : "";
+}
+
+function cacheSocialChannelProfiles() {
+  localStorage.setItem(socialProfilesCacheKey(), JSON.stringify(socialChannelProfiles));
+}
+
+async function loadSocialChannelProfiles({ force = false } = {}) {
+  if (socialChannelProfilesLoaded && !force) return socialChannelProfiles;
+  if (isLive()) {
+    const rows = await api("social_channel_profiles?select=channel,username&order=channel.asc");
+    socialChannelProfiles = Object.fromEntries((rows || []).map((row) => [row.channel, row.username || ""]));
+  }
+  socialChannelProfilesLoaded = true;
+  cacheSocialChannelProfiles();
+  return socialChannelProfiles;
+}
+
+async function saveSocialChannelProfiles() {
+  const values = Object.fromEntries(Object.keys(SOCIAL_CHANNEL_CONFIG).map((channel) => [
+    channel,
+    normalizeSocialUsername(document.querySelector(`[data-social-username="${channel}"]`)?.value, channel)
+  ]));
+  if (isLive()) {
+    const userId = readAuthSession()?.user?.id;
+    if (!userId) throw new Error("Sua sessão expirou.");
+    const rows = Object.entries(values).map(([channel, username]) => ({
+      user_id: userId,
+      channel,
+      username,
+      updated_at: new Date().toISOString()
+    }));
+    await api("social_channel_profiles?on_conflict=user_id,channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify(rows)
+    });
+  }
+  socialChannelProfiles = values;
+  socialChannelProfilesLoaded = true;
+  cacheSocialChannelProfiles();
+}
+
 const INTEGRATION_GROUPS = [
   { group: "META", items: [
     { name: "WhatsApp", active: IS_EXTENSION_CONTEXT },
@@ -6826,10 +6903,14 @@ function integrationsHtml() {
           <span class="integration-status ${it.active ? "active" : "soon"}">${it.active ? "Ativo" : "Em breve"}</span>
         </div>`).join("")}
     </div>`).join("");
+  const socialProfiles = `<div class="integrations-group social-integrations-group"><h4>Perfis sociais</h4>
+    ${Object.entries(SOCIAL_CHANNEL_CONFIG).map(([channel, config]) => `<label class="integration-row social-integration-row"><span>${esc(config.label)}</span><input data-social-username="${channel}" value="${esc(socialChannelProfiles[channel] || "")}" placeholder="Username"></label>`).join("")}
+    <div class="integration-save-row"><button class="btn primary" id="social-integrations-save" type="button">Salvar perfis</button></div>
+  </div>`;
   const googleStatus = IS_EXTENSION_CONTEXT
     ? (!googleOAuthConfigured() ? "Configuração pendente" : googleAccount ? googleAccount.email || "Conectado" : "Desconectado")
     : "Disponível na extensão Chrome";
-  return `${groups}<div class="integrations-group"><h4>Google</h4>
+  return `${groups}${socialProfiles}<div class="integrations-group"><h4>Google</h4>
     <div class="integration-row google-integration-row">
       <div><strong>Google Contatos</strong><div class="muted">${esc(googleStatus)}</div></div>
       <div class="integration-actions">
@@ -6845,6 +6926,25 @@ function integrationsHtml() {
 function wireIntegrations() {
   document.getElementById("google-connect")?.addEventListener("click", openGoogleContactsImport);
   document.getElementById("google-disconnect")?.addEventListener("click", disconnectGoogleAccount);
+  document.getElementById("social-integrations-save")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Salvando...";
+    try {
+      await saveSocialChannelProfiles();
+      toast("Perfis sociais salvos.");
+    } catch (err) {
+      toast("Erro ao salvar perfis sociais · " + err.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "Salvar perfis";
+    }
+  });
+  loadSocialChannelProfiles().then(() => {
+    document.querySelectorAll("[data-social-username]").forEach((input) => {
+      if (document.activeElement !== input) input.value = socialChannelProfiles[input.dataset.socialUsername] || "";
+    });
+  }).catch((err) => toast("Erro ao carregar perfis sociais · " + err.message, true));
 }
 
 function showGoogleOAuthSetup() {
@@ -7206,7 +7306,7 @@ const SOCIAL_MODULE_LABELS = {
   instagram: "Instagram",
   linkedin: "LinkedIn",
   reddit: "Reddit",
-  tiktok: "TikTok",
+  tiktokshop: "TikTokShop",
   youtube: "YouTube"
 };
 const SOCIAL_COLUMN_DEFS = [
@@ -7215,7 +7315,7 @@ const SOCIAL_COLUMN_DEFS = [
   { k: "details", h: "Detalhes" },
   { k: "updated_at", h: "Atualizado em" }
 ];
-let socialState = { section: "facebook", search: "", tables: {} };
+let socialState = { section: "home", search: "", tables: {} };
 
 function socialTableState(section = socialState.section) {
   if (!socialState.tables[section]) {
@@ -7229,8 +7329,8 @@ function visibleSocialColumns(section = socialState.section) {
   return orderedColumnDefinitions(SOCIAL_COLUMN_DEFS, prefs).filter((column) => prefs[column.k] !== false);
 }
 
-function openSocialModal(section = "facebook") {
-  socialState.section = SOCIAL_MODULE_LABELS[section] ? section : "facebook";
+function openSocialModal(section = "home") {
+  socialState.section = section === "home" || SOCIAL_MODULE_LABELS[section] ? section : "home";
   socialState.search = "";
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Social">
     ${Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
@@ -7238,7 +7338,13 @@ function openSocialModal(section = "facebook") {
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Social</em></span>'
+    titleHtml: '<button class="registration-brand social-home-button" id="social-home-button" type="button" title="Ir para a Home Social">ENTERPRISER <b>• CRM</b><em>Social</em></button>'
+  });
+  document.getElementById("social-home-button").addEventListener("click", () => {
+    socialState.section = "home";
+    socialState.search = "";
+    document.querySelectorAll("[data-social-tab]").forEach((tab) => tab.classList.remove("active"));
+    renderSocialSection();
   });
   document.querySelectorAll("[data-social-tab]").forEach((button) => button.addEventListener("click", () => {
     socialState.section = button.dataset.socialTab;
@@ -7250,9 +7356,26 @@ function openSocialModal(section = "facebook") {
   renderSocialSection();
 }
 
+function renderSocialHome(root) {
+  root.innerHTML = `<div class="social-home-grid">${Object.entries(SOCIAL_CHANNEL_CONFIG).map(([channel, config]) => {
+    const username = socialChannelProfiles[channel] || "";
+    const url = socialProfileUrl(channel, username);
+    return `<section class="social-home-module">
+      <header><div><strong>${esc(config.label)}</strong><span>${username ? "@" + esc(username) : "Não configurado"}</span></div>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Abrir ${esc(config.label)} em nova aba">↗</a>` : ""}</header>
+      ${url ? `<iframe src="${esc(url)}" title="${esc(config.label)} · @${esc(username)}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>` : '<div class="social-home-empty">Cadastre o username em Integrações.</div>'}
+    </section>`;
+  }).join("")}</div>`;
+  if (!socialChannelProfilesLoaded) {
+    loadSocialChannelProfiles().then(() => {
+      if (socialState.section === "home" && document.getElementById("social-root")) renderSocialHome(root);
+    }).catch((err) => toast("Erro ao carregar perfis sociais · " + err.message, true));
+  }
+}
+
 function renderSocialSection() {
   const root = document.getElementById("social-root");
   if (!root) return;
+  if (socialState.section === "home") { renderSocialHome(root); return; }
   const columns = visibleSocialColumns();
   const tableState = socialTableState();
   root.innerHTML = `<div class="tools-toolbar">
@@ -7864,6 +7987,19 @@ function applyDocumentSlideDimensions(stage, orientation, slideFormat) {
   stage.style.height = portrait ? "min(calc(100vh - 150px), 980px)" : "auto";
 }
 
+function applyDocumentReadingDimensions(stage, orientation, slideFormat) {
+  if (!stage) return;
+  const portrait = orientation === "portrait";
+  const standard = slideFormat === "standard";
+  const ratio = portrait ? (standard ? 3 / 4 : 9 / 16) : (standard ? 4 / 3 : 16 / 9);
+  const maxWidth = Math.max(320, window.innerWidth - 16);
+  const maxHeight = Math.max(320, window.innerHeight - 100);
+  const height = Math.min(maxHeight, maxWidth / ratio);
+  stage.style.aspectRatio = String(ratio);
+  stage.style.height = `${Math.floor(height)}px`;
+  stage.style.width = `${Math.floor(height * ratio)}px`;
+}
+
 function documentPageBreadcrumbParts(documentItem, page) {
   if (Array.isArray(page.breadcrumb_parts)) return page.breadcrumb_parts;
   if (page.breadcrumb) return String(page.breadcrumb).split(">").map((item) => item.trim()).filter(Boolean);
@@ -7917,12 +8053,15 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
     <div class="document-slideshow-controls"><button class="btn" id="document-slideshow-prev" title="Página anterior">‹</button><span id="document-slideshow-count"></span><button class="btn" id="document-slideshow-next" title="Próxima página">›</button></div>
   </div>`;
   let keyHandler;
+  let viewportHandler;
   let fullscreenHost;
   const baseClose = nestedCenterModal(`Leitura · ${documentItem.title}`, content, {
     cls: "full document-slideshow-modal",
     closeOnOverlay: false,
     onClose: () => {
       document.removeEventListener("keydown", keyHandler);
+      document.removeEventListener("fullscreenchange", viewportHandler);
+      window.removeEventListener("resize", viewportHandler);
       if (document.fullscreenElement === fullscreenHost) document.exitFullscreen().catch(() => {});
     }
   });
@@ -7932,7 +8071,7 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
     if (!stage || !page) return;
     stage.style.background = page.background;
     stage.innerHTML = documentPageMarkup(documentItem, page, activeIndex, pages.length);
-    applyDocumentSlideDimensions(stage, orientation, slideFormat);
+    applyDocumentReadingDimensions(stage, orientation, slideFormat);
     document.getElementById("document-slideshow-count").textContent = `${activeIndex + 1} / ${pages.length}`;
     document.getElementById("document-slideshow-prev").disabled = activeIndex === 0;
     document.getElementById("document-slideshow-next").disabled = activeIndex === pages.length - 1;
@@ -7948,6 +8087,9 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
     if (event.key === "ArrowRight" || event.key === " ") { event.preventDefault(); move(1); }
   };
   document.addEventListener("keydown", keyHandler);
+  viewportHandler = () => applyDocumentReadingDimensions(document.getElementById("document-slideshow-slide"), orientation, slideFormat);
+  document.addEventListener("fullscreenchange", viewportHandler);
+  window.addEventListener("resize", viewportHandler);
   draw();
   fullscreenHost = [...document.querySelectorAll(".modal.document-slideshow-modal")].at(-1);
   fullscreenHost?.requestFullscreen?.().catch(() => {});
