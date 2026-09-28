@@ -8378,7 +8378,7 @@ function openToolDocumentForm(id = null) {
       <button class="btn primary" id="document-add-block" type="button">+ Bloco</button>
     </div>
     <div class="document-editor-workspace">
-      <aside class="document-slide-list"><div id="document-editor-list"></div><div class="document-slide-list-actions"><button class="btn document-add-slide" id="document-add-page">+ Página</button><button class="btn document-add-slide" id="document-add-group">+ Grupo</button></div></aside>
+      <aside class="document-slide-list"><div id="document-editor-list"></div><div class="document-slide-list-actions"><button class="btn document-add-slide" id="document-add-page">+ Página</button><button class="btn document-add-slide" id="document-clone-page" title="Clonar página atual">⧉ Clonar</button><button class="btn document-add-slide" id="document-add-group">+ Grupo</button></div></aside>
       <main class="document-stage-wrap"><article class="document-slide documentation-page documentation-page-edit ${state.orientation} ${state.slideFormat}" id="document-editor-page"></article></main>
     </div>
   </div><div class="modal-foot"><button class="btn danger" id="document-delete-page">Excluir página</button><button class="btn" id="tool-document-cancel">Cancelar</button><button class="btn primary" id="tool-document-save">Salvar</button></div>`;
@@ -8507,6 +8507,23 @@ function wireDocumentationEditorShell() {
     state.pages.push(normalizeDocumentSlides([{ title: `Página ${state.pages.length + 1}`, group, blocks: [{ type: "text", span: 6, html: "" }] }])[0]);
     state.activeIndex = state.pages.length - 1;
     state.selectedBlockId = null;
+    renderDocumentationEditor();
+  });
+  document.getElementById("document-clone-page").addEventListener("click", () => {
+    persistDocumentationEditorPage();
+    const source = state.pages[state.activeIndex];
+    const subject = `${source.subject || source.title || `Página ${state.activeIndex + 1}`} - Cópia`;
+    const clone = normalizeDocumentSlides([{
+      ...source,
+      id: crypto.randomUUID(),
+      title: subject,
+      subject,
+      breadcrumb_parts: Array.isArray(source.breadcrumb_parts) ? [...source.breadcrumb_parts] : source.breadcrumb_parts,
+      blocks: source.blocks.map((block) => ({ ...block, id: crypto.randomUUID() }))
+    }])[0];
+    state.pages.splice(state.activeIndex + 1, 0, clone);
+    state.activeIndex += 1;
+    state.selectedBlockId = clone.blocks[0]?.id || null;
     renderDocumentationEditor();
   });
   document.getElementById("document-add-group").addEventListener("click", () => {
