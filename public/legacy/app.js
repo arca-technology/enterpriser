@@ -7634,10 +7634,12 @@ function sanitizeDocumentHtml(value) {
       return;
     }
     const color = element.style.color || element.getAttribute("color") || "";
+    const backgroundColor = element.style.backgroundColor || "";
     const textAlign = element.style.textAlign || element.getAttribute("align") || "";
     const href = element.tagName === "A" ? safeHttpUrl(element.getAttribute("href")) : "";
     [...element.attributes].forEach((attribute) => element.removeAttribute(attribute.name));
     if (color && CSS.supports("color", color)) element.style.color = color;
+    if (backgroundColor && CSS.supports("color", backgroundColor)) element.style.backgroundColor = backgroundColor;
     if (["left", "center", "right", "justify"].includes(textAlign)) element.style.textAlign = textAlign;
     if (href) {
       element.setAttribute("href", href);
@@ -7709,11 +7711,16 @@ function normalizeDocumentSlides(value, fallbackContent = "", fallbackTitle = ""
       ? slide.blocks.map((block) => normalizeDocumentBlock(block))
       : [normalizeDocumentBlock({ type: "text", span: 6, html: legacyHtml })];
     const title = String(slide?.subject || slide?.title || `Página ${index + 1}`).trim();
+    const breadcrumbParts = Array.isArray(slide?.breadcrumb_parts)
+      ? slide.breadcrumb_parts.map((item) => String(item || "").trim()).filter(Boolean)
+      : String(slide?.breadcrumb || "").split(">").map((item) => item.trim()).filter(Boolean);
     return {
       id: String(slide?.id || crypto.randomUUID()),
       title,
       subject: title,
       breadcrumb: String(slide?.breadcrumb || "").trim(),
+      breadcrumb_parts: Array.isArray(slide?.breadcrumb_parts) || breadcrumbParts.length ? breadcrumbParts : null,
+      breadcrumb_url: String(slide?.breadcrumb_url || "").trim(),
       blocks,
       html: blocks.map((block) => block.html).join("<br>"),
       background: CSS.supports("color", String(slide?.background || "")) ? String(slide.background) : "#ffffff",
@@ -7738,7 +7745,7 @@ function documentSlideText(slides) {
       template.innerHTML = block.html;
       return template.content.textContent || "";
     }).join(" ");
-    return [slide.subject, slide.breadcrumb, blockText].join(" ");
+    return [slide.subject, documentPageBreadcrumbParts({}, slide).join(" "), slide.breadcrumb_url, blockText].join(" ");
   }).join("\n");
 }
 
@@ -7801,6 +7808,7 @@ function renderToolDocuments(root) {
     <td class="table-actions-cell">${tableActionButtons({
       open: { className: "tool-document-open", attrs: { "data-id": documentItem.id }, title: "Abrir documentação" },
       edit: currentUserIsAdmin() ? { className: "tool-document-edit", attrs: { "data-id": documentItem.id }, title: "Editar documentação" } : null,
+      clone: currentUserIsAdmin() ? { className: "tool-document-clone", attrs: { "data-id": documentItem.id }, title: "Clonar documentação" } : null,
       delete: currentUserIsAdmin() ? { className: "tool-document-delete", attrs: { "data-id": documentItem.id }, title: "Excluir documentação" } : null
     })}</td>
   </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
@@ -7812,6 +7820,7 @@ function renderToolDocuments(root) {
   document.getElementById("tool-document-add")?.addEventListener("click", () => openToolDocumentForm());
   root.querySelectorAll(".tool-document-open").forEach((button) => button.addEventListener("click", () => openToolDocument(button.dataset.id)));
   root.querySelectorAll(".tool-document-edit").forEach((button) => button.addEventListener("click", () => openToolDocumentForm(button.dataset.id)));
+  root.querySelectorAll(".tool-document-clone").forEach((button) => button.addEventListener("click", () => cloneToolDocument(button.dataset.id)));
   root.querySelectorAll(".tool-document-delete").forEach((button) => button.addEventListener("click", () => deleteToolDocument(button.dataset.id)));
   root.querySelectorAll("th[data-tool-key]").forEach((header) => header.addEventListener("click", (event) => {
     const key = header.dataset.toolKey;
@@ -7851,12 +7860,32 @@ function applyDocumentSlideDimensions(stage, orientation, slideFormat) {
   stage.style.aspectRatio = portrait
     ? (standard ? "3 / 4" : "9 / 16")
     : (standard ? "4 / 3" : "16 / 9");
-  stage.style.width = portrait ? "auto" : (standard ? "min(780px, 100%)" : "min(1040px, 100%)");
-  stage.style.height = portrait ? "min(74vh, 900px)" : "auto";
+  stage.style.width = portrait ? "auto" : (standard ? "min(1060px, calc(100% - 12px))" : "min(1420px, calc(100% - 12px))");
+  stage.style.height = portrait ? "min(calc(100vh - 150px), 980px)" : "auto";
+}
+
+function documentPageBreadcrumbParts(documentItem, page) {
+  if (Array.isArray(page.breadcrumb_parts)) return page.breadcrumb_parts;
+  if (page.breadcrumb) return String(page.breadcrumb).split(">").map((item) => item.trim()).filter(Boolean);
+  return [documentItem.system_name || "ENTERPRISER CRM", documentItem.module_name, page.subject].filter(Boolean);
 }
 
 function documentPageBreadcrumb(documentItem, page) {
-  return page.breadcrumb || [documentItem.system_name || "ENTERPRISER CRM", documentItem.module_name, page.subject].filter(Boolean).join(" > ");
+  return documentPageBreadcrumbParts(documentItem, page).join(" > ");
+}
+
+function documentPageBreadcrumbMarkup(documentItem, page, editable) {
+  const parts = documentPageBreadcrumbParts(documentItem, page);
+  const rawUrl = String(page.breadcrumb_url || "").trim();
+  if (editable) {
+    return `<div class="documentation-breadcrumb-editor">
+      <div class="documentation-breadcrumb-parts">${parts.map((part, index) => `<button class="documentation-breadcrumb-chip" type="button" data-index="${index}" data-value="${esc(part)}" title="Remover item">${esc(part)} <span>×</span></button>`).join("")}<input id="document-breadcrumb-add" placeholder="Adicionar item"><button class="tool-icon-btn" id="document-breadcrumb-add-button" type="button" title="Adicionar ao breadcrumb">+</button></div>
+      <input id="document-breadcrumb-url" value="${esc(rawUrl)}" placeholder="URL opcional">
+    </div>`;
+  }
+  const safeUrl = safeHttpUrl(rawUrl);
+  const urlMarkup = rawUrl ? (safeUrl ? ` <a href="${esc(safeUrl)}" target="_blank" rel="noopener">(${esc(rawUrl)})</a>` : ` <em>(${esc(rawUrl)})</em>`) : "";
+  return `<span>${esc(parts.join(" > "))}${urlMarkup}</span>`;
 }
 
 function documentBlockMarkup(block, { editable = false, selectedBlockId = null } = {}) {
@@ -7876,7 +7905,7 @@ function documentPageMarkup(documentItem, page, index, total, { editable = false
   return `<header class="documentation-page-header"><strong class="documentation-system">${esc(systemName)}</strong><span class="documentation-module">${esc(moduleName)}</span></header>
     <div class="documentation-context-bar">${editable ? `<input id="document-page-subject" value="${esc(subject)}" placeholder="Assunto da página">` : `<strong>${esc(subject)}</strong>`}</div>
     <div class="documentation-body-grid">${page.blocks.map((block) => documentBlockMarkup(block, { editable, selectedBlockId })).join("")}</div>
-    <footer class="documentation-page-footer">${editable ? `<input id="document-page-breadcrumb" value="${esc(documentPageBreadcrumb(documentItem, page))}" placeholder="Sistema > Módulo > Assunto">` : `<span>${esc(documentPageBreadcrumb(documentItem, page))}</span>`}<b>${String(index + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}</b></footer>`;
+    <footer class="documentation-page-footer">${documentPageBreadcrumbMarkup(documentItem, page, editable)}<b>${String(index + 1).padStart(2, "0")} / ${String(total).padStart(2, "0")}</b></footer>`;
 }
 
 function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
@@ -7888,10 +7917,14 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
     <div class="document-slideshow-controls"><button class="btn" id="document-slideshow-prev" title="Página anterior">‹</button><span id="document-slideshow-count"></span><button class="btn" id="document-slideshow-next" title="Próxima página">›</button></div>
   </div>`;
   let keyHandler;
+  let fullscreenHost;
   const baseClose = nestedCenterModal(`Leitura · ${documentItem.title}`, content, {
     cls: "full document-slideshow-modal",
     closeOnOverlay: false,
-    onClose: () => document.removeEventListener("keydown", keyHandler)
+    onClose: () => {
+      document.removeEventListener("keydown", keyHandler);
+      if (document.fullscreenElement === fullscreenHost) document.exitFullscreen().catch(() => {});
+    }
   });
   const draw = () => {
     const page = pages[activeIndex];
@@ -7899,6 +7932,7 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
     if (!stage || !page) return;
     stage.style.background = page.background;
     stage.innerHTML = documentPageMarkup(documentItem, page, activeIndex, pages.length);
+    applyDocumentSlideDimensions(stage, orientation, slideFormat);
     document.getElementById("document-slideshow-count").textContent = `${activeIndex + 1} / ${pages.length}`;
     document.getElementById("document-slideshow-prev").disabled = activeIndex === 0;
     document.getElementById("document-slideshow-next").disabled = activeIndex === pages.length - 1;
@@ -7915,6 +7949,8 @@ function openToolDocumentPresentation(documentItem, pages, startIndex = 0) {
   };
   document.addEventListener("keydown", keyHandler);
   draw();
+  fullscreenHost = [...document.querySelectorAll(".modal.document-slideshow-modal")].at(-1);
+  fullscreenHost?.requestFullscreen?.().catch(() => {});
   return baseClose;
 }
 
@@ -7924,9 +7960,9 @@ function openToolDocument(id) {
   const pages = normalizeDocumentSlides(documentItem.slides, documentItem.content, documentItem.title);
   const orientation = documentOrientation(documentItem);
   const slideFormat = documentSlideFormat(documentItem);
-  const content = `<div class="document-presentation">
+  const content = `<div class="document-presentation" id="document-viewer-shell">
     <aside class="document-slide-list" id="document-viewer-list"></aside>
-    <main class="document-stage-wrap"><article class="document-slide documentation-page ${orientation} ${slideFormat}" id="document-viewer-slide"></article></main>
+    <main class="document-stage-wrap"><button class="document-sidebar-toggle" id="document-sidebar-toggle" type="button" title="Recolher barra lateral" aria-label="Recolher barra lateral">‹</button><article class="document-slide documentation-page ${orientation} ${slideFormat}" id="document-viewer-slide"></article></main>
   </div><div class="modal-foot"><button class="btn" id="tool-document-close">Fechar</button><button class="btn" id="tool-document-present">Modo leitura</button>${currentUserIsAdmin() ? '<button class="btn primary" id="tool-document-detail-edit">Editar</button>' : ""}</div>`;
   const closePanel = nestedCenterModal(documentItem.title, content, { cls: "full document-viewer-modal", closeOnOverlay: true });
   let activeIndex = 0;
@@ -7940,6 +7976,7 @@ function openToolDocument(id) {
     const stage = document.getElementById("document-viewer-slide");
     stage.style.background = page.background;
     stage.innerHTML = documentPageMarkup(documentItem, page, activeIndex, pages.length);
+    applyDocumentSlideDimensions(stage, orientation, slideFormat);
     document.querySelectorAll("#document-viewer-list .document-slide-thumb").forEach((button) => button.addEventListener("click", () => { activeIndex = Number(button.dataset.index); draw(); }));
     document.querySelectorAll("#document-viewer-list .document-group-toggle").forEach((button) => button.addEventListener("click", () => {
       const group = button.dataset.group;
@@ -7949,6 +7986,13 @@ function openToolDocument(id) {
   };
   draw();
   document.getElementById("tool-document-close").addEventListener("click", closePanel);
+  document.getElementById("document-sidebar-toggle").addEventListener("click", (event) => {
+    const shell = document.getElementById("document-viewer-shell");
+    const collapsed = shell.classList.toggle("sidebar-collapsed");
+    event.currentTarget.textContent = collapsed ? "›" : "‹";
+    event.currentTarget.title = collapsed ? "Expandir barra lateral" : "Recolher barra lateral";
+    event.currentTarget.setAttribute("aria-label", event.currentTarget.title);
+  });
   document.getElementById("tool-document-present").addEventListener("click", () => openToolDocumentPresentation(documentItem, pages, activeIndex));
   document.getElementById("tool-document-detail-edit")?.addEventListener("click", () => { closePanel(); openToolDocumentForm(id); });
 }
@@ -8176,6 +8220,7 @@ function openToolDocumentForm(id = null) {
       <button class="tool-icon-btn document-format" data-command="insertUnorderedList" title="Lista">•</button>
       <button class="tool-icon-btn document-format" data-command="insertOrderedList" title="Lista numerada">1.</button>
       <label><span>Texto</span><input id="document-text-color" type="color" value="#111827"></label>
+      <label><span>Fundo texto</span><input id="document-highlight-color" type="color" value="#fff59d"></label>
       <label><span>Fundo</span><input id="document-background-color" type="color" value="#ffffff"></label>
       <button class="tool-icon-btn document-format" data-command="justifyLeft" title="Alinhar à esquerda">≡</button>
       <button class="tool-icon-btn document-format" data-command="justifyCenter" title="Centralizar">≡</button>
@@ -8261,6 +8306,13 @@ function wireDocumentationEditorShell() {
     const editable = state.activeEditable || document.querySelector("#document-editor-page .documentation-block-content");
     editable?.focus();
     document.execCommand("foreColor", false, event.target.value);
+  });
+  document.getElementById("document-highlight-color").addEventListener("input", (event) => {
+    const editable = state.activeEditable || document.querySelector("#document-editor-page .documentation-block-content");
+    editable?.focus();
+    if (!document.execCommand("hiliteColor", false, event.target.value)) {
+      document.execCommand("backColor", false, event.target.value);
+    }
   });
   document.getElementById("document-background-color").addEventListener("input", (event) => {
     state.pages[state.activeIndex].background = event.target.value;
@@ -8401,7 +8453,12 @@ function persistDocumentationEditorPage() {
   if (!page) return;
   page.subject = document.getElementById("document-page-subject")?.value.trim() || `Página ${state.activeIndex + 1}`;
   page.title = page.subject;
-  page.breadcrumb = document.getElementById("document-page-breadcrumb")?.value.trim() || "";
+  const breadcrumbEditor = document.querySelector("#document-editor-page .documentation-breadcrumb-editor");
+  if (breadcrumbEditor) {
+    page.breadcrumb_parts = [...breadcrumbEditor.querySelectorAll(".documentation-breadcrumb-chip")].map((item) => item.dataset.value).filter(Boolean);
+    page.breadcrumb = page.breadcrumb_parts.join(" > ");
+    page.breadcrumb_url = document.getElementById("document-breadcrumb-url")?.value.trim() || "";
+  }
   document.querySelectorAll("#document-editor-page [data-block-id]").forEach((element) => {
     const block = page.blocks.find((item) => item.id === element.dataset.blockId);
     if (!block) return;
@@ -8536,6 +8593,28 @@ function wireDocumentationEditorPage() {
       renderDocumentationEditor();
     });
   });
+  const addBreadcrumbPart = () => {
+    const input = document.getElementById("document-breadcrumb-add");
+    const value = input?.value.trim();
+    if (!value) return;
+    persistDocumentationEditorPage();
+    if (!Array.isArray(page.breadcrumb_parts)) page.breadcrumb_parts = [];
+    page.breadcrumb_parts.push(value);
+    page.breadcrumb = page.breadcrumb_parts.join(" > ");
+    renderDocumentationEditor();
+  };
+  document.getElementById("document-breadcrumb-add-button")?.addEventListener("click", addBreadcrumbPart);
+  document.getElementById("document-breadcrumb-add")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    addBreadcrumbPart();
+  });
+  document.querySelectorAll("#document-editor-page .documentation-breadcrumb-chip").forEach((button) => button.addEventListener("click", () => {
+    persistDocumentationEditorPage();
+    page.breadcrumb_parts.splice(Number(button.dataset.index), 1);
+    page.breadcrumb = page.breadcrumb_parts.join(" > ");
+    renderDocumentationEditor();
+  }));
   document.querySelectorAll("#document-editor-page .documentation-block-content").forEach((content) => {
     content.addEventListener("focus", () => {
       state.activeEditable = content;
@@ -8546,6 +8625,43 @@ function wireDocumentationEditorPage() {
       syncDocumentationBlockToolbar();
     });
   });
+}
+
+async function cloneToolDocument(id) {
+  if (!requireCurrentUserAdmin("Documentação")) return;
+  const source = toolDocumentRows().find((item) => item.id === id);
+  if (!source) return;
+  const slides = normalizeDocumentSlides(source.slides, source.content, source.title).map((page) => ({
+    ...page,
+    id: crypto.randomUUID(),
+    blocks: page.blocks.map((block) => ({ ...block, id: crypto.randomUUID() }))
+  }));
+  const body = {
+    title: documentGeneratedTitle(source),
+    system_name: source.system_name || "ENTERPRISER CRM",
+    module_name: source.module_name || null,
+    document_type: source.document_type || "documentation",
+    category: source.category || null,
+    tags: normalizeTextList(source.tags),
+    content: documentSlideText(slides).trim(),
+    slides,
+    orientation: documentOrientation(source),
+    slide_format: documentSlideFormat(source),
+    updated_at: new Date().toISOString()
+  };
+  try {
+    const saved = await createRow("documents", body);
+    if (isLive()) {
+      remoteToolDocuments.unshift(saved);
+      remoteToolDocumentsLoaded = true;
+      remoteToolDocumentsLoadedAt = Date.now();
+      saveToolsSessionCache("documents", remoteToolDocuments, remoteToolDocumentsLoadedAt);
+    }
+    toast("Documentação clonada.");
+    renderToolsSection();
+  } catch (err) {
+    toast("Erro ao clonar documentação · " + err.message, true);
+  }
 }
 
 async function deleteToolDocument(id) {
