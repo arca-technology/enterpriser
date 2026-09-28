@@ -6998,9 +6998,9 @@ const TOOL_COLUMN_DEFS = {
     { k: "tags", h: "Tags" }, { k: "steps", h: "Etapas" }
   ],
   documents: [
-    { k: "title", h: "Título" }, { k: "system_name", h: "Sistema" },
-    { k: "module_name", h: "Módulo" }, { k: "document_type", h: "Tipo" },
-    { k: "category", h: "Categoria" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
+    { k: "title", h: "Nome" }, { k: "document_type", h: "Tipo" },
+    { k: "category", h: "Categoria" }, { k: "system_name", h: "Sistema" },
+    { k: "module_name", h: "Módulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
   ]
 };
 const TOOLS_PAGE_SIZE = 50;
@@ -7666,6 +7666,16 @@ const DOCUMENT_TYPE_LABELS = {
   specification: "Especificação"
 };
 
+function documentGeneratedTitle(documentItem) {
+  const type = DOCUMENT_TYPE_LABELS[documentItem.document_type] || DOCUMENT_TYPE_LABELS.documentation;
+  return [
+    type,
+    documentItem.category || "Sem categoria",
+    documentItem.system_name || "ENTERPRISER CRM",
+    documentItem.module_name || "Geral"
+  ].map((value) => String(value).trim().toLocaleUpperCase("pt-BR")).join("_");
+}
+
 function normalizeDocumentBlock(block, fallbackHtml = "") {
   const type = DOCUMENT_BLOCK_TYPES[block?.type] ? block.type : "text";
   return {
@@ -7733,6 +7743,7 @@ function documentSlideText(slides) {
 }
 
 function toolDocumentValue(documentItem, key) {
+  if (key === "title") return documentGeneratedTitle(documentItem);
   if (key === "tags") return normalizeTextList(documentItem.tags).join(", ");
   if (key === "orientation") return documentOrientation(documentItem) === "portrait" ? "Retrato" : "Paisagem";
   if (key === "document_type") return DOCUMENT_TYPE_LABELS[documentItem.document_type] || DOCUMENT_TYPE_LABELS.documentation;
@@ -7768,7 +7779,7 @@ function renderToolDocuments(root) {
   const query = toolsState.search.trim().toLocaleLowerCase("pt-BR");
   const tableState = toolTableState("documents");
   const documents = allDocuments.filter((documentItem) => {
-    const searchable = [documentItem.title, documentItem.system_name, documentItem.module_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
+    const searchable = [toolDocumentValue(documentItem, "title"), documentItem.system_name, documentItem.module_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolDocumentValue(documentItem, key))
@@ -7783,7 +7794,7 @@ function renderToolDocuments(root) {
   const columns = visibleToolColumns("documents");
   const rows = page.rows.length ? page.rows.map((documentItem) => `<tr data-id="${esc(documentItem.id)}">
     ${columns.map((col) => {
-      if (col.k === "title") return `<td><button class="process-open-link tool-document-open" data-id="${esc(documentItem.id)}">${esc(documentItem.title || "—")}</button></td>`;
+      if (col.k === "title") return `<td><button class="process-open-link tool-document-open" data-id="${esc(documentItem.id)}">${esc(toolDocumentValue(documentItem, "title"))}</button></td>`;
       if (col.k === "tags") return `<td><span class="tool-tags">${normalizeTextList(documentItem.tags).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("") || '<span class="muted">—</span>'}</span></td>`;
       return `<td>${esc(toolDocumentValue(documentItem, col.k))}</td>`;
     }).join("")}
@@ -8153,14 +8164,11 @@ function openToolDocumentForm(id = null) {
   const blockOptions = Object.entries(DOCUMENT_BLOCK_TYPES).map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
   const content = `<div class="document-editor documentation-editor">
     <div class="document-editor-info">
-      <input id="tool-document-title" value="${esc(current.title || "")}" placeholder="Nome da documentação">
-      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CRM")}" placeholder="Sistema">
-      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
+      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CRM")}" placeholder="Sistema">
+      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
-      <div class="document-choice document-slide-format"><button class="${state.slideFormat === "widescreen" ? "active" : ""}" data-slide-format="widescreen" type="button">16:9</button><button class="${state.slideFormat === "standard" ? "active" : ""}" data-slide-format="standard" type="button">4:3</button></div>
-      <div class="document-choice document-orientation"><button class="${state.orientation === "landscape" ? "active" : ""}" data-orientation="landscape" type="button">Paisagem</button><button class="${state.orientation === "portrait" ? "active" : ""}" data-orientation="portrait" type="button">Retrato</button></div>
     </div>
     <div class="document-editor-toolbar" role="toolbar" aria-label="Formatação e blocos">
       <button class="tool-icon-btn document-format" data-command="bold" title="Negrito"><b>B</b></button>
@@ -8172,6 +8180,8 @@ function openToolDocumentForm(id = null) {
       <button class="tool-icon-btn document-format" data-command="justifyLeft" title="Alinhar à esquerda">≡</button>
       <button class="tool-icon-btn document-format" data-command="justifyCenter" title="Centralizar">≡</button>
       <button class="tool-icon-btn document-format" data-command="justifyRight" title="Alinhar à direita">≡</button>
+      <div class="document-choice document-slide-format"><button class="${state.slideFormat === "widescreen" ? "active" : ""}" data-slide-format="widescreen" type="button">16:9</button><button class="${state.slideFormat === "standard" ? "active" : ""}" data-slide-format="standard" type="button">4:3</button></div>
+      <div class="document-choice document-orientation"><button class="${state.orientation === "landscape" ? "active" : ""}" data-orientation="landscape" type="button">Paisagem</button><button class="${state.orientation === "portrait" ? "active" : ""}" data-orientation="portrait" type="button">Retrato</button></div>
       <span class="documentation-toolbar-spacer"></span>
       <select id="document-new-block-type" title="Tipo do novo bloco">${blockOptions}</select>
       <select id="document-new-block-span" title="Largura do novo bloco">${[1, 2, 3, 4, 5, 6].map((span) => `<option value="${span}"${span === 6 ? " selected" : ""}>${span}/6</option>`).join("")}</select>
@@ -8329,18 +8339,26 @@ function wireDocumentationEditorShell() {
 async function saveDocumentationEditor() {
   const state = documentationEditorState;
   persistDocumentationEditorPage();
-  const title = document.getElementById("tool-document-title").value.trim();
   const contentValue = documentSlideText(state.pages).trim();
-  if (!title || !contentValue) { toast("Informe o nome e o conteúdo da documentação.", true); return; }
+  const metadata = {
+    document_type: document.getElementById("tool-document-type").value,
+    category: document.getElementById("tool-document-category").value.trim(),
+    system_name: document.getElementById("tool-document-system").value.trim(),
+    module_name: document.getElementById("tool-document-module").value.trim()
+  };
+  if (!metadata.category || !metadata.system_name || !metadata.module_name || !contentValue) {
+    toast("Preencha tipo, categoria, sistema, módulo e conteúdo.", true);
+    return;
+  }
   const button = document.getElementById("tool-document-save");
   button.disabled = true;
   button.textContent = "Salvando...";
   const body = {
-    title,
-    system_name: document.getElementById("tool-document-system").value.trim() || "ENTERPRISER CRM",
-    module_name: document.getElementById("tool-document-module").value.trim() || null,
-    document_type: document.getElementById("tool-document-type").value,
-    category: document.getElementById("tool-document-category").value.trim() || null,
+    title: documentGeneratedTitle(metadata),
+    system_name: metadata.system_name,
+    module_name: metadata.module_name,
+    document_type: metadata.document_type,
+    category: metadata.category,
     tags: normalizeTextList(document.getElementById("tool-document-tags").value),
     content: contentValue,
     slides: state.pages,
@@ -8413,7 +8431,7 @@ function renderDocumentationEditor() {
   const list = document.getElementById("document-editor-list");
   list.innerHTML = groups.map((group, groupIndex) => `<section class="document-slide-group" data-group="${esc(group.name)}" draggable="true">
     <div class="document-group-head"><button class="document-group-toggle" data-group="${esc(group.name)}"><span>${state.collapsedGroups.has(group.name) ? "▸" : "▾"}</span><b>${esc(group.name)}</b><small>${group.items.length}</small></button><span class="document-group-actions"><button class="tool-icon-btn document-group-up" data-group="${esc(group.name)}"${groupIndex === 0 ? " disabled" : ""}>↑</button><button class="tool-icon-btn document-group-down" data-group="${esc(group.name)}"${groupIndex === groups.length - 1 ? " disabled" : ""}>↓</button></span></div>
-    <div class="document-group-slides"${state.collapsedGroups.has(group.name) ? " hidden" : ""}>${group.items.map(({ slide, index }) => `<button class="document-slide-thumb${index === state.activeIndex ? " active" : ""}" data-index="${index}"><span>${index + 1}</span><b>${esc(slide.subject)}</b></button>`).join("")}</div>
+    <div class="document-group-slides"${state.collapsedGroups.has(group.name) ? " hidden" : ""}>${group.items.map(({ slide, index }) => `<button class="document-slide-thumb${index === state.activeIndex ? " active" : ""}" data-index="${index}" data-slide-id="${esc(slide.id)}" draggable="true" title="Arraste para mover a página para outro grupo"><span>${index + 1}</span><b>${esc(slide.subject)}</b></button>`).join("")}</div>
   </section>`).join("");
   const stage = document.getElementById("document-editor-page");
   if (!page.blocks.some((block) => block.id === state.selectedBlockId)) state.selectedBlockId = page.blocks[0]?.id || null;
@@ -8464,14 +8482,48 @@ function wireDocumentationEditorPage() {
   });
   document.querySelectorAll("#document-editor-list .document-group-up").forEach((button) => button.addEventListener("click", () => documentationEditorMoveGroup(button.dataset.group, -1)));
   document.querySelectorAll("#document-editor-list .document-group-down").forEach((button) => button.addEventListener("click", () => documentationEditorMoveGroup(button.dataset.group, 1)));
+  document.querySelectorAll("#document-editor-list .document-slide-thumb").forEach((button) => {
+    button.addEventListener("dragstart", (event) => {
+      event.stopPropagation();
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-document-slide-id", button.dataset.slideId);
+    });
+  });
   document.querySelectorAll("#document-editor-list .document-slide-group").forEach((groupElement) => {
-    groupElement.addEventListener("dragstart", (event) => event.dataTransfer.setData("text/plain", groupElement.dataset.group));
-    groupElement.addEventListener("dragover", (event) => event.preventDefault());
+    groupElement.addEventListener("dragstart", (event) => {
+      if (event.target.closest(".document-slide-thumb")) return;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-document-group", groupElement.dataset.group);
+    });
+    groupElement.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      groupElement.classList.add("is-drag-target");
+    });
+    groupElement.addEventListener("dragleave", (event) => {
+      if (!groupElement.contains(event.relatedTarget)) groupElement.classList.remove("is-drag-target");
+    });
     groupElement.addEventListener("drop", (event) => {
       event.preventDefault();
+      event.stopPropagation();
+      groupElement.classList.remove("is-drag-target");
       persistDocumentationEditorPage();
-      const source = event.dataTransfer.getData("text/plain");
       const target = groupElement.dataset.group;
+      const slideId = event.dataTransfer.getData("application/x-document-slide-id");
+      if (slideId) {
+        const activeId = state.pages[state.activeIndex].id;
+        const sourceIndex = state.pages.findIndex((item) => item.id === slideId);
+        if (sourceIndex < 0 || state.pages[sourceIndex].group === target) return;
+        const [movedSlide] = state.pages.splice(sourceIndex, 1);
+        movedSlide.group = target;
+        const targetIndex = state.pages.reduce((last, item, index) => item.group === target ? index : last, -1);
+        state.pages.splice(targetIndex + 1, 0, movedSlide);
+        state.activeIndex = state.pages.findIndex((item) => item.id === activeId);
+        state.collapsedGroups.delete(target);
+        renderDocumentationEditor();
+        return;
+      }
+      const source = event.dataTransfer.getData("application/x-document-group");
       if (!source || source === target) return;
       const groups = documentSlideGroups(state.pages);
       const from = groups.findIndex((group) => group.name === source);

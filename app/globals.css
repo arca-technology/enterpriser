@@ -494,10 +494,13 @@
   .document-presentation,.document-editor-workspace{display:grid;min-height:0;flex:1 1 auto;grid-template-columns:190px minmax(0,1fr);background:var(--bg)}
   .document-slide-list{min-height:0;padding:10px;border-right:1px solid var(--border);background:var(--panel);overflow:auto}
   .document-slide-thumb{display:grid;width:100%;grid-template-columns:24px minmax(0,1fr);align-items:center;gap:7px;margin-bottom:7px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);text-align:left}
+  .document-slide-thumb[draggable="true"]{cursor:grab}
+  .document-slide-thumb[draggable="true"]:active{cursor:grabbing}
   .document-slide-thumb.active{border-color:var(--cyan);box-shadow:inset 3px 0 var(--cyan)}
   .document-slide-thumb span{color:var(--muted);font-size:9px}
   .document-slide-thumb b{overflow:hidden;font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
   .document-slide-group{margin-bottom:8px;border:1px solid var(--border);border-radius:5px;background:var(--panel2);overflow:hidden}
+  .document-slide-group.is-drag-target{border-color:var(--cyan);box-shadow:0 0 0 1px var(--cyan)}
   .document-slide-group[draggable="true"]{cursor:grab}
   .document-slide-group[draggable="true"]:active{cursor:grabbing}
   .document-group-head{display:flex;align-items:center;border-bottom:1px solid var(--border2)}
@@ -580,10 +583,11 @@
   .documentation-block.is-editing>.documentation-block-content{min-height:48px;padding:8px 10px;outline:0}
   .documentation-block.is-editing.documentation-block-note,.documentation-block.is-editing.documentation-block-rule,.documentation-block.is-editing.documentation-block-warning,.documentation-block.is-editing.documentation-block-example{padding:12px 14px}
   .documentation-block.is-selected{border-color:#2f6bd8;box-shadow:0 0 0 1px rgba(47,107,216,.25)}
-  .documentation-editor .document-editor-info{grid-template-columns:repeat(4,minmax(140px,1fr))}
+  .documentation-editor .document-editor-info{grid-template-columns:repeat(5,minmax(120px,1fr))}
   .documentation-editor .document-editor-info select,.documentation-editor-toolbar select{min-width:0;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);padding:7px 9px;font:inherit}
   .documentation-toolbar-spacer{flex:1 1 auto}
   .documentation-editor-toolbar select{height:28px;padding:0 7px;font-size:9px}
+  .documentation-editor-toolbar .document-choice{height:26px}
   .documentation-editor-toolbar #document-add-block{height:28px}
   .documentation-reading-mode .documentation-page{box-shadow:0 6px 28px rgba(0,0,0,.35)}
   .registrations-root .product-activity-list td:first-child strong{color:var(--text)}
