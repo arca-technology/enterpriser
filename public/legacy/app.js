@@ -262,8 +262,8 @@ function fromRemoteRow(tab, row) {
 // ---------- Dados de exemplo (mutáveis em memória quando offline) ----------
 const DEMO = {
   users: [
-    { id: "u1", full_name: "Ana Ferreira", email: "ana@upgferreira.com", phone: "", role: "admin", status: "active" },
-    { id: "u2", full_name: "Bruno Lima", email: "bruno@upgferreira.com", phone: "", role: "user", status: "active" }
+    { id: "u1", full_name: "Ana Ferreira", nickname: "Ana", email: "ana@upgferreira.com", phone: "", role: "admin", status: "active" },
+    { id: "u2", full_name: "Bruno Lima", nickname: "Bruno", email: "bruno@upgferreira.com", phone: "", role: "user", status: "active" }
   ],
   pipelines: [
     { id: "pl1", name: "Padrão", stages: ["Lead", "Qualificação", "Diagnóstico", "Proposta", "Negociação"] }
@@ -1489,7 +1489,7 @@ function userByReference(id, c = cache) {
 
 function userDisplayName(id, c = cache, missing = "Responsável não encontrado") {
   const user = userByReference(id, c);
-  return user?.full_name || user?.name || user?.email || missing;
+  return user?.nickname || user?.full_name || user?.name || user?.email || missing;
 }
 // Etapas do pipeline selecionado (ou o primeiro cadastrado, na falta de um).
 // Como agora são texto livre por pipeline, valor e rótulo da opção são o
@@ -3204,7 +3204,7 @@ function responsibilityNames(ids, fallbackId = null, jobTitles = [], assignToCli
   const roles = normalizeTextList(jobTitles).map((title) => {
     const eligible = (cache?.users || []).filter((user) =>
       user.status === "active" && String(user.job_title || "").trim().toLocaleLowerCase("pt-BR") === title.toLocaleLowerCase("pt-BR")
-    ).map((user) => user.full_name || user.name || user.email).filter(Boolean);
+    ).map((user) => user.nickname || user.full_name || user.name || user.email).filter(Boolean);
     return eligible.length ? `Cargo: ${title} (${eligible.join(", ")})` : `Cargo: ${title}`;
   });
   return [...new Set([...direct, ...roles])].join(", ") || "—";
@@ -5884,8 +5884,8 @@ function openUsersModal(editId = null, returnToRegistrations = false) {
   if (!requireCurrentUserAdmin("Usuários")) return;
   const user = editId && editId !== "new" ? cache.users.find((item) => item.id === editId) : null;
   umReturnToRegistrations = returnToRegistrations;
-  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", email: user.email || "", phone: user.phone || "", role: user.role || "user", function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id) };
-  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
+  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: user.role || "user", function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id) };
+  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
   else umState = { mode: "list" };
   const title = user ? "Editar usuário" : editId === "new" ? "Novo usuário" : "Usuários · Responsáveis";
   const nestedRegistration = Boolean(returnToRegistrations && document.getElementById("registrations-root"));
@@ -5917,7 +5917,7 @@ function renderUsersModal() {
 function usersListHtml() {
   const list = cache?.users || [];
   const rows = list.map((u) => `<div class="entity-row">
-      <div class="entity-main"><b>${esc(u.full_name || u.name || "—")}</b><span class="muted"> · ${esc(u.email || "sem e-mail")}</span>
+      <div class="entity-main"><b>${esc(u.full_name || u.name || "—")}</b><span class="muted"> · ${esc(u.nickname ? `Apelido: ${u.nickname}` : "Sem apelido")} · ${esc(u.email || "sem e-mail")}</span>
         <div class="muted" style="margin-top:4px">Perfil: ${esc(ROLE_LABEL[u.role] || u.role || "—")} · Função: ${esc(u.function_name || "—")} · Cargo: ${esc(u.job_title || "—")}</div>
         <div class="muted" style="margin-top:3px">${u.status === "active" ? "Ativo" : "Inativo"} · ${u.auth_user_id ? "Login ativo" : "Sem login"}</div></div>
       <div class="entity-actions">
@@ -5933,6 +5933,7 @@ function usersListHtml() {
 function userFormHtml() {
   return `<div class="form">
       <div class="field full"><label>Nome completo</label><input id="u-name" value="${esc(umState.full_name)}"></div>
+      <div class="field"><label>Apelido</label><input id="u-nickname" value="${esc(umState.nickname || "")}" placeholder="Nome exibido nos responsáveis"></div>
       <div class="field"><label>E-mail de acesso</label><input id="u-email" type="email" autocomplete="off" value="${esc(umState.email)}"></div>
       <div class="field"><label>Telefone</label><input id="u-phone" value="${esc(umState.phone)}"></div>
       <div class="field"><label>Perfil</label><select id="u-role">
@@ -5968,14 +5969,14 @@ function userCredentialsHtml() {
 function wireUsersModal() {
   if (umState.mode === "list") {
     document.getElementById("new-user")?.addEventListener("click", () => {
-      umState = { mode: "form", editId: null, full_name: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
+      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false };
       renderUsersModal();
     });
     document.querySelectorAll("#um-body .rowbtn.edit").forEach((b) =>
       b.addEventListener("click", () => {
         const u = cache.users.find((x) => x.id === b.dataset.id);
         if (!u) return;
-        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", email: u.email || "", phone: u.phone || "", role: u.role || "user", function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id) };
+        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: u.role || "user", function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id) };
         renderUsersModal();
       }));
     document.querySelectorAll("#um-body .rowbtn.del").forEach((b) =>
@@ -6017,6 +6018,7 @@ function wireUsersModal() {
       if (!umState.hasAccess && !password) { toast("Gere uma senha para ativar o acesso.", true); return; }
       const body = {
         full_name,
+        nickname: document.getElementById("u-nickname").value.trim() || null,
         email,
         phone: document.getElementById("u-phone").value.trim() || null,
         role: document.getElementById("u-role").value,
@@ -6133,9 +6135,9 @@ function renderRegistrationsSection() {
   }
   if (section === "users") {
     const users = cache.users || [];
-    const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
+    const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
     root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
-      <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="9" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
+      <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
     wireRegistrationTable();
@@ -7284,7 +7286,7 @@ function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlacehold
   return `<div class="tools-toolbar">
     <div class="registration-toolbar-left"><span class="muted">${count} item(ns)</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+    <div class="registration-toolbar-right"><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
   </div>`;
 }
 
@@ -7307,6 +7309,118 @@ function wireToolsToolbar(root) {
       onChange: renderToolsSection
     });
   });
+  root.querySelector(".tools-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openToolsDataMenu(event.currentTarget);
+  });
+}
+
+function toolsDataSource(section = toolsState.section) {
+  if (section === "files") return { rows: toolFileRows(), value: toolFileValue };
+  if (section === "emails") return { rows: toolEmailRows(), value: toolEmailValue };
+  if (section === "processes") return { rows: toolProcessRows(), value: toolProcessValue };
+  if (section === "documents") return { rows: toolDocumentRows(), value: toolDocumentValue };
+  return { rows: toolCustomTableRows(), value: toolCustomTableValue };
+}
+
+function exportToolsCSV(activeOnly) {
+  const section = toolsState.section;
+  const definitions = activeOnly ? visibleToolColumns(section) : TOOL_COLUMN_DEFS[section];
+  const source = toolsDataSource(section);
+  const columns = definitions.map((column) => ({
+    ...column,
+    csv: (_value, row) => source.value(row, column.k)
+  }));
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  downloadCSV(columns, source.rows, `enterpriser_ferramentas_${section}_${stamp}.csv`);
+  toast(`CSV exportado: ${source.rows.length} linha(s).`);
+}
+
+function openToolsDataMenu(anchor) {
+  document.getElementById("tools-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "tools-data-dd";
+  panel.className = "data-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Ferramentas</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn tools-export-active" type="button">CSV (Colunas Ativas)</button>
+    <button class="dd-menu-btn tools-export-all" type="button">CSV (Todas as Colunas)</button>
+    ${toolsState.section === "tables" && currentUserIsAdmin() ? '<div class="dd-head"><span>Importar</span><span>Nova tabela</span></div><button class="dd-menu-btn tools-import-table" type="button">CSV, XLS ou XLSX</button>' : ""}`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.querySelector(".tools-export-active").addEventListener("click", () => { panel.remove(); exportToolsCSV(true); });
+  panel.querySelector(".tools-export-all").addEventListener("click", () => { panel.remove(); exportToolsCSV(false); });
+  panel.querySelector(".tools-import-table")?.addEventListener("click", () => {
+    panel.remove();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) importCustomTableFile(file);
+    }, { once: true });
+    input.click();
+  });
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
+}
+
+async function importCustomTableFile(file) {
+  if (!requireCurrentUserAdmin("Tabelas")) return;
+  const parser = globalThis.XLSX;
+  if (!parser?.read || !parser?.utils?.sheet_to_json) {
+    toast("O leitor de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true);
+    return;
+  }
+  try {
+    const workbook = parser.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!worksheet) throw new Error("O arquivo não possui uma planilha.");
+    let matrix = parser.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false });
+    matrix = matrix.map((row) => Array.from(row || []));
+    while (matrix.length && !matrix[matrix.length - 1].some((value) => String(value || "").trim())) matrix.pop();
+    if (!matrix.length) throw new Error("A planilha está vazia.");
+    const width = Math.min(200, Math.max(...matrix.map((row) => row.length), 1));
+    const header = matrix[0].slice(0, width);
+    const usedNames = new Set();
+    const columns = header.map((value, index) => {
+      const base = String(value || "").trim() || `Coluna ${index + 1}`;
+      let name = base;
+      let suffix = 2;
+      while (usedNames.has(name.toLocaleLowerCase("pt-BR"))) name = `${base} ${suffix++}`;
+      usedNames.add(name.toLocaleLowerCase("pt-BR"));
+      return { id: crypto.randomUUID(), name };
+    });
+    const rows = matrix.slice(1, 20001)
+      .filter((row) => row.slice(0, width).some((value) => String(value || "").trim()))
+      .map((row) => ({
+        id: crypto.randomUUID(),
+        cells: Object.fromEntries(columns.map((column, index) => [column.id, String(row[index] ?? "")]))
+      }));
+    const name = file.name.replace(/\.(csv|xlsx?|xls)$/i, "").trim() || "Tabela importada";
+    const body = { name, columns, rows, updated_at: new Date().toISOString() };
+    let saved;
+    if (isLive()) saved = await createRow("customTables", body);
+    else {
+      saved = { id: crypto.randomUUID(), ...body, created_at: new Date().toISOString() };
+      saveToolRows(TOOL_TABLES_KEY, [saved, ...toolCustomTableRows()]);
+    }
+    if (isLive()) updateToolCustomTableCache(saved);
+    renderToolsSection();
+    toast(`Tabela importada: ${columns.length} coluna(s) e ${rows.length} linha(s).`);
+  } catch (err) {
+    toast("Erro ao importar planilha · " + err.message, true);
+  }
 }
 
 function renderToolsSection() {
@@ -8124,17 +8238,75 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     <div class="custom-table-editor-toolbar">
       <input id="custom-table-name" value="${esc(draft.name)}" placeholder="Nome da tabela"${readOnly ? " disabled" : ""}>
       <span id="custom-table-summary" class="muted"></span>
-      <button class="btn" id="custom-table-clear-filters" type="button">Limpar filtros</button>
       ${readOnly ? "" : '<button class="btn" id="custom-table-add-column" type="button">+ Coluna</button><button class="btn primary" id="custom-table-add-row" type="button">+ Linha</button>'}
     </div>
+    <div class="registration-filter-strip custom-table-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all custom-table-filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="custom-table-grid-wrap" id="custom-table-grid-wrap"></div>
   </div><div class="modal-foot"><button class="btn" id="custom-table-cancel">${readOnly ? "Fechar" : "Cancelar"}</button>${readOnly ? "" : '<button class="btn primary" id="custom-table-save">Salvar</button>'}</div>`;
   const closePanel = nestedCenterModal(readOnly ? `Tabela · ${draft.name}` : (id ? "Editar tabela" : "Nova tabela"), content, { cls: "full custom-table-editor-modal", closeOnOverlay: true });
 
+  const openColumnFilter = (header, column) => {
+    document.getElementById("custom-table-filter-dd")?.remove();
+    const values = [...new Set(draft.rows.map((row) => String(row.cells[column.id] || "")))].sort((a, b) =>
+      a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
+    );
+    let selected = new Set(view.filters[column.id] || []);
+    const rect = header.getBoundingClientRect();
+    const panel = document.createElement("div");
+    panel.id = "custom-table-filter-dd";
+    panel.className = "filter-dd";
+    panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 300))}px`;
+    panel.style.top = `${rect.bottom + 4}px`;
+    panel.style.maxHeight = `${Math.max(220, window.innerHeight - rect.bottom - 20)}px`;
+    panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(column.name)}</span><span>${values.length}</span></div>
+      <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
+      <div class="dd-foot"><button class="btn custom-table-filter-all">Todos</button><button class="btn danger custom-table-filter-clear">Limpar</button><button class="btn primary custom-table-filter-apply">Aplicar</button></div>`;
+    document.body.appendChild(panel);
+    const list = panel.querySelector(".dd-list");
+    const draw = () => {
+      const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
+      list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) =>
+        `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value || "(vazio)")}</span></label>`
+      ).join("");
+      list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
+        const value = item.dataset.value;
+        if (selected.has(value)) selected.delete(value); else selected.add(value);
+        draw();
+      }));
+    };
+    draw();
+    panel.querySelector("input").addEventListener("input", draw);
+    panel.querySelector(".custom-table-filter-all").addEventListener("click", () => {
+      if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
+      draw();
+    });
+    panel.querySelector(".custom-table-filter-clear").addEventListener("click", () => {
+      delete view.filters[column.id];
+      panel.remove();
+      renderGrid();
+    });
+    panel.querySelector(".custom-table-filter-apply").addEventListener("click", () => {
+      if (selected.size && selected.size < values.length) view.filters[column.id] = selected;
+      else delete view.filters[column.id];
+      panel.remove();
+      renderGrid();
+    });
+    panel.querySelector("input").focus();
+    setTimeout(() => {
+      const outside = (event) => {
+        if (!panel.contains(event.target) && !header.contains(event.target)) {
+          panel.remove();
+          document.removeEventListener("mousedown", outside);
+        }
+      };
+      document.addEventListener("mousedown", outside);
+    }, 50);
+  };
+
   const renderGrid = () => {
     let visibleRows = draft.rows.filter((row) => draft.columns.every((column) => {
-      const filter = String(view.filters[column.id] || "").trim().toLocaleLowerCase("pt-BR");
-      return !filter || String(row.cells[column.id] || "").toLocaleLowerCase("pt-BR").includes(filter);
+      const selected = view.filters[column.id];
+      return !selected?.size || selected.has(String(row.cells[column.id] || ""));
     }));
     if (view.sortKey) {
       visibleRows = [...visibleRows].sort((a, b) => String(a.cells[view.sortKey] || "").localeCompare(
@@ -8142,12 +8314,26 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       ) * view.sortDir);
     }
     document.getElementById("custom-table-summary").textContent = `${draft.columns.length} coluna(s) · ${visibleRows.length}/${draft.rows.length} linha(s)`;
+    const activeFilters = Object.entries(view.filters).filter(([, values]) => values?.size);
+    const filterStrip = document.querySelector(".custom-table-filter-strip");
+    filterStrip.querySelector(".registration-filter-badges").innerHTML = activeFilters.map(([columnId, values]) => {
+      const label = draft.columns.find((column) => column.id === columnId)?.name || "Coluna";
+      return `<button class="registration-filter-badge custom-table-filter-badge" data-column-id="${esc(columnId)}" title="Limpar filtro"><span>${esc(label)}: ${esc([...values].map((value) => value || "(vazio)").join(", "))}</span><b>×</b></button>`;
+    }).join("");
+    filterStrip.querySelector(".custom-table-filter-clear-all").hidden = activeFilters.length < 2;
+    filterStrip.querySelectorAll(".custom-table-filter-badge").forEach((button) => button.addEventListener("click", () => {
+      delete view.filters[button.dataset.columnId];
+      renderGrid();
+    }));
+    filterStrip.querySelector(".custom-table-filter-clear-all").onclick = () => {
+      view.filters = {};
+      renderGrid();
+    };
     const wrap = document.getElementById("custom-table-grid-wrap");
     wrap.innerHTML = `<table class="custom-table-grid"><thead>
-      <tr><th class="custom-table-index-cell">#</th>${draft.columns.map((column) => `<th>
-        <div class="custom-table-column-head"><input value="${esc(column.name)}" data-column-name="${esc(column.id)}"${readOnly ? " disabled" : ""}><button class="tool-icon-btn custom-table-sort" data-column-id="${esc(column.id)}" title="Classificar">${view.sortKey === column.id ? (view.sortDir > 0 ? "↑" : "↓") : "↕"}</button>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
+      <tr><th class="custom-table-index-cell">#</th>${draft.columns.map((column) => `<th data-custom-table-key="${esc(column.id)}" title="Clique para ordenar. Ctrl+clique para filtrar.">
+        <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
       </th>`).join("")}<th class="custom-table-row-action"></th></tr>
-      <tr class="custom-table-filter-row"><th class="custom-table-index-cell"></th>${draft.columns.map((column) => `<th><input class="custom-table-filter" data-column-id="${esc(column.id)}" value="${esc(view.filters[column.id] || "")}" placeholder="Filtrar..."></th>`).join("")}<th class="custom-table-row-action"></th></tr>
     </thead><tbody>${visibleRows.length ? visibleRows.map((row) => {
       const originalIndex = draft.rows.findIndex((item) => item.id === row.id);
       return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${draft.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
@@ -8160,20 +8346,20 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       const row = draft.rows.find((item) => item.id === input.dataset.rowId);
       if (row) row.cells[input.dataset.cellColumn] = input.value;
     }));
-    wrap.querySelectorAll(".custom-table-sort").forEach((button) => button.addEventListener("click", () => {
-      const columnId = button.dataset.columnId;
+    wrap.querySelectorAll("th[data-custom-table-key]").forEach((header) => header.addEventListener("click", (event) => {
+      const columnId = header.dataset.customTableKey;
+      const column = draft.columns.find((item) => item.id === columnId);
+      if (!column) return;
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
+        openColumnFilter(header, column);
+        return;
+      }
+      if (!readOnly && event.target.closest("input,button")) return;
       if (view.sortKey !== columnId) { view.sortKey = columnId; view.sortDir = 1; }
       else if (view.sortDir === 1) view.sortDir = -1;
       else { view.sortKey = null; view.sortDir = 1; }
       renderGrid();
-    }));
-    wrap.querySelectorAll(".custom-table-filter").forEach((input) => input.addEventListener("input", () => {
-      const columnId = input.dataset.columnId;
-      view.filters[columnId] = input.value;
-      renderGrid();
-      const next = wrap.querySelector(`.custom-table-filter[data-column-id="${CSS.escape(columnId)}"]`);
-      next?.focus();
-      next?.setSelectionRange(next.value.length, next.value.length);
     }));
     wrap.querySelectorAll(".custom-table-delete-column").forEach((button) => button.addEventListener("click", () => {
       if (draft.columns.length === 1) { toast("A tabela precisa ter ao menos uma coluna.", true); return; }
@@ -8191,12 +8377,6 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
   };
 
   document.getElementById("custom-table-cancel").addEventListener("click", closePanel);
-  document.getElementById("custom-table-clear-filters").addEventListener("click", () => {
-    view.filters = {};
-    view.sortKey = null;
-    view.sortDir = 1;
-    renderGrid();
-  });
   document.getElementById("custom-table-add-column")?.addEventListener("click", () => {
     const name = window.prompt("Nome da nova coluna:", `Coluna ${draft.columns.length + 1}`)?.trim();
     if (!name) return;

@@ -651,16 +651,15 @@
   .custom-table-grid th,.custom-table-grid td{min-width:190px;height:34px;box-sizing:border-box;padding:0;border-right:1px solid var(--border2);border-bottom:1px solid var(--border2);background:var(--panel);vertical-align:middle}
   .custom-table-grid thead th{position:sticky;z-index:7;background:var(--panel2)}
   .custom-table-grid thead tr:first-child th{top:0;height:36px}
-  .custom-table-grid thead .custom-table-filter-row th{top:36px;height:34px}
   .custom-table-grid tbody tr:nth-child(even) td{background:var(--row-alt)}
   .custom-table-grid tbody tr:hover td{background:var(--row-hover)}
   .custom-table-grid input{width:100%;height:100%;box-sizing:border-box;border:0;background:transparent;color:var(--text);padding:0 9px;font:inherit;outline:0}
   .custom-table-grid input:focus{box-shadow:inset 0 0 0 2px var(--cyan);background:var(--panel)}
-  .custom-table-column-head{display:grid;height:100%;grid-template-columns:minmax(120px,1fr) 25px 25px;align-items:center}
-  .custom-table-editor.is-readonly .custom-table-column-head{grid-template-columns:minmax(120px,1fr) 25px}
+  .custom-table-column-head{display:grid;height:100%;grid-template-columns:minmax(120px,1fr) 16px 25px;align-items:center}
+  .custom-table-editor.is-readonly .custom-table-column-head{grid-template-columns:minmax(120px,1fr) 16px}
+  .custom-table-column-label{overflow:hidden;padding:0 9px;text-overflow:ellipsis;white-space:nowrap}
   .custom-table-column-head>input{font-weight:800;text-transform:uppercase}
   .custom-table-column-head .tool-icon-btn{width:24px;height:24px;border:0}
-  .custom-table-filter{font-size:10px!important}
   .custom-table-index-cell{position:sticky!important;left:0!important;z-index:6!important;min-width:44px!important;width:44px!important;background:var(--panel2)!important;color:var(--muted);text-align:center!important}
   .custom-table-grid thead .custom-table-index-cell{z-index:10!important}
   .custom-table-row-action{position:sticky!important;right:0!important;z-index:6!important;min-width:34px!important;width:34px!important;background:var(--panel2)!important;text-align:center}
