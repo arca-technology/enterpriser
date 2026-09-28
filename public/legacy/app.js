@@ -5450,6 +5450,14 @@ async function replaceContactCompanyLinks({ contactId = null, companyId = null, 
     DEMO.contactCompanies.push(...links);
     return;
   }
+  if (contactId) {
+    await api("rpc/replace_contact_company_links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ p_contact_id: contactId, p_company_ids: ids })
+    });
+    return;
+  }
   const filter = contactId
     ? `contact_id=eq.${encodeURIComponent(contactId)}`
     : `company_id=eq.${encodeURIComponent(companyId)}`;
@@ -6167,9 +6175,9 @@ function renderRegistrationsSection() {
     const summary = (group) => {
       const { linked, item } = group;
       const products = [...new Set(linked.map((candidate) => registrationProductName(candidate.product_id)))].join(", ");
-      const owners = [...new Set(linked.map((candidate) => responsibilityNames(
-        candidate.default_assignee_ids, candidate.default_owner_id, candidate.default_assignee_job_titles, candidate.assign_to_client
-      )).filter((value) => value !== "—"))].join(", ") || "—";
+      const ownerIds = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.default_assignee_ids, candidate.default_owner_id)))];
+      const ownerJobTitles = normalizeTextList(linked.flatMap((candidate) => normalizeTextList(candidate.default_assignee_job_titles)));
+      const owners = responsibilityNames(ownerIds, null, ownerJobTitles, linked.some((candidate) => candidate.assign_to_client));
       const objectives = [...new Set(linked.map((candidate) => loadProductObjectives().find((objective) => objective.id === candidate.objective_template_id)?.name).filter(Boolean))].join(", ") || "—";
       const dependencies = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.dependency_template_ids, candidate.depends_on_template_id)).map((id) => activityDisplayName(items.find((other) => other.id === id))).filter((name) => name !== "—"))].join(", ") || "—";
       return { products, owners, objectives, dependencies };
@@ -7109,7 +7117,7 @@ const TOOL_COLUMN_DEFS = {
     { k: "module_name", h: "Módulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
   ],
   tables: [
-    { k: "name", h: "Nome" }, { k: "column_count", h: "Colunas" },
+    { k: "name", h: "Nome" }, { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
     { k: "row_count", h: "Linhas" }, { k: "updated_at", h: "Atualizado em" }
   ]
 };
@@ -7286,7 +7294,7 @@ function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlacehold
   return `<div class="tools-toolbar">
     <div class="registration-toolbar-left"><span class="muted">${count} item(ns)</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+    <div class="registration-toolbar-right"><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
   </div>`;
 }
 
@@ -7323,9 +7331,9 @@ function toolsDataSource(section = toolsState.section) {
   return { rows: toolCustomTableRows(), value: toolCustomTableValue };
 }
 
-function exportToolsCSV(activeOnly) {
+function exportToolsCSV() {
   const section = toolsState.section;
-  const definitions = activeOnly ? visibleToolColumns(section) : TOOL_COLUMN_DEFS[section];
+  const definitions = TOOL_COLUMN_DEFS[section];
   const source = toolsDataSource(section);
   const columns = definitions.map((column) => ({
     ...column,
@@ -7343,16 +7351,14 @@ function openToolsDataMenu(anchor) {
   panel.className = "data-dd";
   panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Ferramentas</span></div>
     <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
-    <button class="dd-menu-btn tools-export-active" type="button">CSV (Colunas Ativas)</button>
-    <button class="dd-menu-btn tools-export-all" type="button">CSV (Todas as Colunas)</button>
+    <button class="dd-menu-btn tools-export-all" type="button">Exportar todas as colunas</button>
     ${toolsState.section === "tables" && currentUserIsAdmin() ? '<div class="dd-head"><span>Importar</span><span>Nova tabela</span></div><button class="dd-menu-btn tools-import-table" type="button">CSV, XLS ou XLSX</button>' : ""}`;
   document.body.appendChild(panel);
   const rect = anchor.getBoundingClientRect();
   panel.style.right = "auto";
   panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
   panel.style.top = `${rect.bottom + 4}px`;
-  panel.querySelector(".tools-export-active").addEventListener("click", () => { panel.remove(); exportToolsCSV(true); });
-  panel.querySelector(".tools-export-all").addEventListener("click", () => { panel.remove(); exportToolsCSV(false); });
+  panel.querySelector(".tools-export-all").addEventListener("click", () => { panel.remove(); exportToolsCSV(); });
   panel.querySelector(".tools-import-table")?.addEventListener("click", () => {
     panel.remove();
     const input = document.createElement("input");
@@ -7375,6 +7381,30 @@ function openToolsDataMenu(anchor) {
   }, 80);
 }
 
+function customTableSheetFromMatrix(matrix, name, index = 0) {
+  const normalized = matrix.map((row) => Array.from(row || []));
+  while (normalized.length && !normalized[normalized.length - 1].some((value) => String(value || "").trim())) normalized.pop();
+  if (!normalized.length) return null;
+  const width = Math.min(200, Math.max(...normalized.map((row) => row.length), 1));
+  const header = normalized[0].slice(0, width);
+  const usedNames = new Set();
+  const columns = header.map((value, columnIndex) => {
+    const base = String(value || "").trim() || `Coluna ${columnIndex + 1}`;
+    let columnName = base;
+    let suffix = 2;
+    while (usedNames.has(columnName.toLocaleLowerCase("pt-BR"))) columnName = `${base} ${suffix++}`;
+    usedNames.add(columnName.toLocaleLowerCase("pt-BR"));
+    return { id: crypto.randomUUID(), name: columnName };
+  });
+  const rows = normalized.slice(1, 20001)
+    .filter((row) => row.slice(0, width).some((value) => String(value || "").trim()))
+    .map((row) => ({
+      id: crypto.randomUUID(),
+      cells: Object.fromEntries(columns.map((column, columnIndex) => [column.id, String(row[columnIndex] ?? "")]))
+    }));
+  return { id: crypto.randomUUID(), name: String(name || `Planilha ${index + 1}`).trim() || `Planilha ${index + 1}`, columns, rows };
+}
+
 async function importCustomTableFile(file) {
   if (!requireCurrentUserAdmin("Tabelas")) return;
   const parser = globalThis.XLSX;
@@ -7384,31 +7414,15 @@ async function importCustomTableFile(file) {
   }
   try {
     const workbook = parser.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-    if (!worksheet) throw new Error("O arquivo não possui uma planilha.");
-    let matrix = parser.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false });
-    matrix = matrix.map((row) => Array.from(row || []));
-    while (matrix.length && !matrix[matrix.length - 1].some((value) => String(value || "").trim())) matrix.pop();
-    if (!matrix.length) throw new Error("A planilha está vazia.");
-    const width = Math.min(200, Math.max(...matrix.map((row) => row.length), 1));
-    const header = matrix[0].slice(0, width);
-    const usedNames = new Set();
-    const columns = header.map((value, index) => {
-      const base = String(value || "").trim() || `Coluna ${index + 1}`;
-      let name = base;
-      let suffix = 2;
-      while (usedNames.has(name.toLocaleLowerCase("pt-BR"))) name = `${base} ${suffix++}`;
-      usedNames.add(name.toLocaleLowerCase("pt-BR"));
-      return { id: crypto.randomUUID(), name };
-    });
-    const rows = matrix.slice(1, 20001)
-      .filter((row) => row.slice(0, width).some((value) => String(value || "").trim()))
-      .map((row) => ({
-        id: crypto.randomUUID(),
-        cells: Object.fromEntries(columns.map((column, index) => [column.id, String(row[index] ?? "")]))
-      }));
+    const sheets = workbook.SheetNames.map((sheetName, index) => {
+      const worksheet = workbook.Sheets[sheetName];
+      const matrix = worksheet ? parser.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false }) : [];
+      return customTableSheetFromMatrix(matrix, sheetName, index);
+    }).filter(Boolean);
+    if (!sheets.length) throw new Error("O arquivo não possui planilhas com dados.");
+    const { columns, rows } = sheets[0];
     const name = file.name.replace(/\.(csv|xlsx?|xls)$/i, "").trim() || "Tabela importada";
-    const body = { name, columns, rows, updated_at: new Date().toISOString() };
+    const body = { name, sheets, columns, rows, updated_at: new Date().toISOString() };
     let saved;
     if (isLive()) saved = await createRow("customTables", body);
     else {
@@ -7417,7 +7431,8 @@ async function importCustomTableFile(file) {
     }
     if (isLive()) updateToolCustomTableCache(saved);
     renderToolsSection();
-    toast(`Tabela importada: ${columns.length} coluna(s) e ${rows.length} linha(s).`);
+    const rowCount = sheets.reduce((total, sheet) => total + sheet.rows.length, 0);
+    toast(`Tabela importada: ${sheets.length} aba(s) e ${rowCount} linha(s).`);
   } catch (err) {
     toast("Erro ao importar planilha · " + err.message, true);
   }
@@ -8121,13 +8136,34 @@ function normalizeCustomTableRows(value, columns) {
   });
 }
 
+function normalizeCustomTableSheets(value, fallbackColumns, fallbackRows) {
+  let sheets = value;
+  if (typeof sheets === "string") {
+    try { sheets = JSON.parse(sheets); } catch (e) { sheets = []; }
+  }
+  if (!Array.isArray(sheets) || !sheets.length) {
+    sheets = [{ name: "Planilha 1", columns: fallbackColumns, rows: fallbackRows }];
+  }
+  return sheets.map((sheet, index) => {
+    const columns = normalizeCustomTableColumns(sheet?.columns);
+    return {
+      id: String(sheet?.id || crypto.randomUUID()),
+      name: String(sheet?.name || `Planilha ${index + 1}`).trim() || `Planilha ${index + 1}`,
+      columns,
+      rows: normalizeCustomTableRows(sheet?.rows, columns)
+    };
+  });
+}
+
 function normalizeCustomTable(item = {}) {
-  const columns = normalizeCustomTableColumns(item.columns);
+  const legacyColumns = normalizeCustomTableColumns(item.columns);
+  const sheets = normalizeCustomTableSheets(item.sheets, legacyColumns, item.rows);
   return {
     ...item,
     name: String(item.name || "Nova tabela").trim() || "Nova tabela",
-    columns,
-    rows: normalizeCustomTableRows(item.rows, columns)
+    sheets,
+    columns: sheets[0].columns,
+    rows: sheets[0].rows
   };
 }
 
@@ -8138,8 +8174,9 @@ function toolCustomTableRows() {
 
 function toolCustomTableValue(item, key) {
   const table = normalizeCustomTable(item);
-  if (key === "column_count") return String(table.columns.length);
-  if (key === "row_count") return String(table.rows.length);
+  if (key === "sheet_count") return String(table.sheets.length);
+  if (key === "column_count") return String(Math.max(...table.sheets.map((sheet) => sheet.columns.length), 0));
+  if (key === "row_count") return String(table.sheets.reduce((total, sheet) => total + sheet.rows.length, 0));
   if (key === "updated_at") return item.updated_at ? new Date(item.updated_at).toLocaleString("pt-BR") : "—";
   return String(item[key] || "—");
 }
@@ -8169,7 +8206,7 @@ function renderToolCustomTables(root) {
   const query = toolsState.search.trim().toLocaleLowerCase("pt-BR");
   const tableState = toolTableState("tables");
   const tables = allTables.filter((item) => {
-    const searchable = [item.name, ...item.columns.map((column) => column.name)];
+    const searchable = [item.name, ...item.sheets.flatMap((sheet) => [sheet.name, ...sheet.columns.map((column) => column.name)])];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolCustomTableValue(item, key))
@@ -8233,6 +8270,8 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     columns: [{ name: "Coluna 1" }, { name: "Coluna 2" }, { name: "Coluna 3" }],
     rows: []
   });
+  let activeSheetId = draft.sheets[0].id;
+  const activeSheet = () => draft.sheets.find((sheet) => sheet.id === activeSheetId) || draft.sheets[0];
   const view = { sortKey: null, sortDir: 1, filters: {} };
   const content = `<div class="custom-table-editor${readOnly ? " is-readonly" : ""}">
     <div class="custom-table-editor-toolbar">
@@ -8242,12 +8281,49 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     </div>
     <div class="registration-filter-strip custom-table-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all custom-table-filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="custom-table-grid-wrap" id="custom-table-grid-wrap"></div>
+    <div class="custom-table-sheet-tabs"><div id="custom-table-sheet-list"></div>${readOnly ? "" : '<button class="custom-table-add-sheet" id="custom-table-add-sheet" type="button" title="Adicionar aba">+</button>'}</div>
   </div><div class="modal-foot"><button class="btn" id="custom-table-cancel">${readOnly ? "Fechar" : "Cancelar"}</button>${readOnly ? "" : '<button class="btn primary" id="custom-table-save">Salvar</button>'}</div>`;
   const closePanel = nestedCenterModal(readOnly ? `Tabela · ${draft.name}` : (id ? "Editar tabela" : "Nova tabela"), content, { cls: "full custom-table-editor-modal", closeOnOverlay: true });
 
+  const resetSheetView = () => {
+    view.sortKey = null;
+    view.sortDir = 1;
+    view.filters = {};
+  };
+
+  const renderSheetTabs = () => {
+    const root = document.getElementById("custom-table-sheet-list");
+    if (!root) return;
+    root.innerHTML = draft.sheets.map((sheet) => `<div class="custom-table-sheet-tab${sheet.id === activeSheetId ? " active" : ""}" data-sheet-id="${esc(sheet.id)}"><button type="button" class="custom-table-sheet-select" title="Abrir aba">${esc(sheet.name)}</button>${readOnly ? "" : '<button type="button" class="custom-table-sheet-rename" title="Renomear aba">✎</button><button type="button" class="custom-table-sheet-delete" title="Excluir aba">×</button>'}</div>`).join("");
+    root.querySelectorAll(".custom-table-sheet-select").forEach((button) => button.addEventListener("click", () => {
+      activeSheetId = button.closest("[data-sheet-id]").dataset.sheetId;
+      resetSheetView();
+      renderGrid();
+    }));
+    if (readOnly) return;
+    root.querySelectorAll(".custom-table-sheet-rename").forEach((button) => button.addEventListener("click", () => {
+      const sheet = draft.sheets.find((item) => item.id === button.closest("[data-sheet-id]").dataset.sheetId);
+      const name = window.prompt("Nome da aba:", sheet?.name || "")?.trim();
+      if (!sheet || !name) return;
+      sheet.name = name;
+      renderSheetTabs();
+    }));
+    root.querySelectorAll(".custom-table-sheet-delete").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (draft.sheets.length === 1) { toast("A tabela precisa ter ao menos uma aba.", true); return; }
+      const sheetId = button.closest("[data-sheet-id]").dataset.sheetId;
+      const sheet = draft.sheets.find((item) => item.id === sheetId);
+      if (!window.confirm(`Excluir a aba "${sheet?.name || ""}"?`)) return;
+      draft.sheets = draft.sheets.filter((item) => item.id !== sheetId);
+      if (activeSheetId === sheetId) activeSheetId = draft.sheets[0].id;
+      resetSheetView();
+      renderGrid();
+    }));
+  };
+
   const openColumnFilter = (header, column) => {
     document.getElementById("custom-table-filter-dd")?.remove();
-    const values = [...new Set(draft.rows.map((row) => String(row.cells[column.id] || "")))].sort((a, b) =>
+    const values = [...new Set(activeSheet().rows.map((row) => String(row.cells[column.id] || "")))].sort((a, b) =>
       a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
     );
     let selected = new Set(view.filters[column.id] || []);
@@ -8304,7 +8380,8 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
   };
 
   const renderGrid = () => {
-    let visibleRows = draft.rows.filter((row) => draft.columns.every((column) => {
+    const sheet = activeSheet();
+    let visibleRows = sheet.rows.filter((row) => sheet.columns.every((column) => {
       const selected = view.filters[column.id];
       return !selected?.size || selected.has(String(row.cells[column.id] || ""));
     }));
@@ -8313,11 +8390,11 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
         String(b.cells[view.sortKey] || ""), "pt-BR", { numeric: true, sensitivity: "base" }
       ) * view.sortDir);
     }
-    document.getElementById("custom-table-summary").textContent = `${draft.columns.length} coluna(s) · ${visibleRows.length}/${draft.rows.length} linha(s)`;
+    document.getElementById("custom-table-summary").textContent = `${draft.sheets.length} aba(s) · ${sheet.columns.length} coluna(s) · ${visibleRows.length}/${sheet.rows.length} linha(s)`;
     const activeFilters = Object.entries(view.filters).filter(([, values]) => values?.size);
     const filterStrip = document.querySelector(".custom-table-filter-strip");
     filterStrip.querySelector(".registration-filter-badges").innerHTML = activeFilters.map(([columnId, values]) => {
-      const label = draft.columns.find((column) => column.id === columnId)?.name || "Coluna";
+      const label = sheet.columns.find((column) => column.id === columnId)?.name || "Coluna";
       return `<button class="registration-filter-badge custom-table-filter-badge" data-column-id="${esc(columnId)}" title="Limpar filtro"><span>${esc(label)}: ${esc([...values].map((value) => value || "(vazio)").join(", "))}</span><b>×</b></button>`;
     }).join("");
     filterStrip.querySelector(".custom-table-filter-clear-all").hidden = activeFilters.length < 2;
@@ -8331,24 +8408,24 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     };
     const wrap = document.getElementById("custom-table-grid-wrap");
     wrap.innerHTML = `<table class="custom-table-grid"><thead>
-      <tr><th class="custom-table-index-cell">#</th>${draft.columns.map((column) => `<th data-custom-table-key="${esc(column.id)}" title="Clique para ordenar. Ctrl+clique para filtrar.">
+      <tr><th class="custom-table-index-cell">#</th>${sheet.columns.map((column) => `<th data-custom-table-key="${esc(column.id)}" title="Clique para ordenar. Ctrl+clique para filtrar.">
         <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
       </th>`).join("")}<th class="custom-table-row-action"></th></tr>
     </thead><tbody>${visibleRows.length ? visibleRows.map((row) => {
-      const originalIndex = draft.rows.findIndex((item) => item.id === row.id);
-      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${draft.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
-    }).join("") : `<tr><td colspan="${draft.columns.length + 2}" class="tool-empty">Nenhuma linha para exibir.</td></tr>`}</tbody></table>`;
+      const originalIndex = sheet.rows.findIndex((item) => item.id === row.id);
+      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${sheet.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
+    }).join("") : `<tr><td colspan="${sheet.columns.length + 2}" class="tool-empty">Nenhuma linha para exibir.</td></tr>`}</tbody></table>`;
     wrap.querySelectorAll("[data-column-name]").forEach((input) => input.addEventListener("input", () => {
-      const column = draft.columns.find((item) => item.id === input.dataset.columnName);
+      const column = sheet.columns.find((item) => item.id === input.dataset.columnName);
       if (column) column.name = input.value;
     }));
     wrap.querySelectorAll("[data-cell-column]").forEach((input) => input.addEventListener("input", () => {
-      const row = draft.rows.find((item) => item.id === input.dataset.rowId);
+      const row = sheet.rows.find((item) => item.id === input.dataset.rowId);
       if (row) row.cells[input.dataset.cellColumn] = input.value;
     }));
     wrap.querySelectorAll("th[data-custom-table-key]").forEach((header) => header.addEventListener("click", (event) => {
       const columnId = header.dataset.customTableKey;
-      const column = draft.columns.find((item) => item.id === columnId);
+      const column = sheet.columns.find((item) => item.id === columnId);
       if (!column) return;
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
@@ -8362,44 +8439,67 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       renderGrid();
     }));
     wrap.querySelectorAll(".custom-table-delete-column").forEach((button) => button.addEventListener("click", () => {
-      if (draft.columns.length === 1) { toast("A tabela precisa ter ao menos uma coluna.", true); return; }
+      if (sheet.columns.length === 1) { toast("A aba precisa ter ao menos uma coluna.", true); return; }
       const columnId = button.dataset.columnId;
-      draft.columns = draft.columns.filter((column) => column.id !== columnId);
-      draft.rows.forEach((row) => delete row.cells[columnId]);
+      sheet.columns = sheet.columns.filter((column) => column.id !== columnId);
+      sheet.rows.forEach((row) => delete row.cells[columnId]);
       delete view.filters[columnId];
       if (view.sortKey === columnId) view.sortKey = null;
       renderGrid();
     }));
     wrap.querySelectorAll(".custom-table-delete-row").forEach((button) => button.addEventListener("click", () => {
-      draft.rows = draft.rows.filter((row) => row.id !== button.dataset.rowId);
+      sheet.rows = sheet.rows.filter((row) => row.id !== button.dataset.rowId);
       renderGrid();
     }));
+    renderSheetTabs();
   };
 
   document.getElementById("custom-table-cancel").addEventListener("click", closePanel);
+  document.getElementById("custom-table-add-sheet")?.addEventListener("click", () => {
+    const sheet = {
+      id: crypto.randomUUID(),
+      name: `Planilha ${draft.sheets.length + 1}`,
+      columns: [{ id: crypto.randomUUID(), name: "Coluna 1" }],
+      rows: []
+    };
+    draft.sheets.push(sheet);
+    activeSheetId = sheet.id;
+    resetSheetView();
+    renderGrid();
+  });
   document.getElementById("custom-table-add-column")?.addEventListener("click", () => {
-    const name = window.prompt("Nome da nova coluna:", `Coluna ${draft.columns.length + 1}`)?.trim();
+    const sheet = activeSheet();
+    const name = window.prompt("Nome da nova coluna:", `Coluna ${sheet.columns.length + 1}`)?.trim();
     if (!name) return;
     const column = { id: crypto.randomUUID(), name };
-    draft.columns.push(column);
-    draft.rows.forEach((row) => { row.cells[column.id] = ""; });
+    sheet.columns.push(column);
+    sheet.rows.forEach((row) => { row.cells[column.id] = ""; });
     renderGrid();
   });
   document.getElementById("custom-table-add-row")?.addEventListener("click", () => {
-    draft.rows.push({ id: crypto.randomUUID(), cells: Object.fromEntries(draft.columns.map((column) => [column.id, ""])) });
+    const sheet = activeSheet();
+    sheet.rows.push({ id: crypto.randomUUID(), cells: Object.fromEntries(sheet.columns.map((column) => [column.id, ""])) });
     renderGrid();
   });
   document.getElementById("custom-table-save")?.addEventListener("click", async () => {
     draft.name = document.getElementById("custom-table-name").value.trim();
-    draft.columns.forEach((column) => { column.name = column.name.trim(); });
+    draft.sheets.forEach((sheet) => {
+      sheet.name = sheet.name.trim();
+      sheet.columns.forEach((column) => { column.name = column.name.trim(); });
+    });
     if (!draft.name) { toast("Informe o nome da tabela.", true); return; }
-    if (draft.columns.some((column) => !column.name)) { toast("Todas as colunas precisam ter nome.", true); return; }
-    const names = draft.columns.map((column) => column.name.toLocaleLowerCase("pt-BR"));
-    if (new Set(names).size !== names.length) { toast("Os nomes das colunas não podem se repetir.", true); return; }
+    if (draft.sheets.some((sheet) => !sheet.name)) { toast("Todas as abas precisam ter nome.", true); return; }
+    if (draft.sheets.some((sheet) => sheet.columns.some((column) => !column.name))) { toast("Todas as colunas precisam ter nome.", true); return; }
+    const duplicateColumns = draft.sheets.some((sheet) => {
+      const names = sheet.columns.map((column) => column.name.toLocaleLowerCase("pt-BR"));
+      return new Set(names).size !== names.length;
+    });
+    if (duplicateColumns) { toast("Os nomes das colunas não podem se repetir dentro da mesma aba.", true); return; }
     const button = document.getElementById("custom-table-save");
     button.disabled = true;
     button.textContent = "Salvando...";
-    const body = { name: draft.name, columns: draft.columns, rows: draft.rows, updated_at: new Date().toISOString() };
+    const firstSheet = draft.sheets[0];
+    const body = { name: draft.name, sheets: draft.sheets, columns: firstSheet.columns, rows: firstSheet.rows, updated_at: new Date().toISOString() };
     try {
       let saved;
       if (isLive()) saved = id ? await updateRow("customTables", id, body) : await createRow("customTables", body);
@@ -8427,13 +8527,16 @@ async function cloneToolCustomTable(id) {
   if (!requireCurrentUserAdmin("Tabelas")) return;
   const source = toolCustomTableRows().find((item) => item.id === id);
   if (!source) return;
-  const idMap = new Map(source.columns.map((column) => [column.id, crypto.randomUUID()]));
-  const columns = source.columns.map((column) => ({ id: idMap.get(column.id), name: column.name }));
-  const rows = source.rows.map((row) => ({
-    id: crypto.randomUUID(),
-    cells: Object.fromEntries(source.columns.map((column) => [idMap.get(column.id), row.cells[column.id] || ""]))
-  }));
-  const body = { name: `${source.name} - Cópia`, columns, rows, updated_at: new Date().toISOString() };
+  const sheets = source.sheets.map((sourceSheet) => {
+    const idMap = new Map(sourceSheet.columns.map((column) => [column.id, crypto.randomUUID()]));
+    const columns = sourceSheet.columns.map((column) => ({ id: idMap.get(column.id), name: column.name }));
+    const rows = sourceSheet.rows.map((row) => ({
+      id: crypto.randomUUID(),
+      cells: Object.fromEntries(sourceSheet.columns.map((column) => [idMap.get(column.id), row.cells[column.id] || ""]))
+    }));
+    return { id: crypto.randomUUID(), name: sourceSheet.name, columns, rows };
+  });
+  const body = { name: `${source.name} - Cópia`, sheets, columns: sheets[0].columns, rows: sheets[0].rows, updated_at: new Date().toISOString() };
   try {
     let saved;
     if (isLive()) saved = await createRow("customTables", body);

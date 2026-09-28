@@ -660,6 +660,17 @@
   .custom-table-grid thead .custom-table-row-action{z-index:10!important}
   .custom-table-row-action .tool-icon-btn{width:24px;height:24px;color:var(--red)}
   .custom-table-editor.is-readonly tbody input{cursor:default}
+  .custom-table-sheet-tabs{display:flex;align-items:center;height:34px;flex:0 0 34px;border-top:1px solid var(--border);background:var(--panel);padding:0 7px;gap:4px;overflow:hidden}
+  #custom-table-sheet-list{display:flex;align-items:stretch;min-width:0;height:100%;gap:2px;overflow-x:auto;overflow-y:hidden}
+  .custom-table-sheet-tab{display:flex;align-items:center;height:100%;min-width:92px;max-width:210px;border-top:2px solid transparent;background:var(--panel2)}
+  .custom-table-sheet-tab.active{border-top-color:var(--cyan);background:var(--bg)}
+  .custom-table-sheet-select{min-width:0;flex:1 1 auto;height:100%;overflow:hidden;border:0;background:transparent;color:var(--muted);padding:0 9px;font:inherit;font-weight:700;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+  .custom-table-sheet-tab.active .custom-table-sheet-select{color:var(--text)}
+  .custom-table-sheet-rename,.custom-table-sheet-delete,.custom-table-add-sheet{width:26px;height:26px;flex:0 0 26px;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--muted);font:inherit;cursor:pointer}
+  .custom-table-sheet-rename,.custom-table-sheet-delete{width:20px;height:20px;flex-basis:20px;border:0;background:transparent}
+  .custom-table-sheet-delete{margin-right:3px;color:var(--red)}
+  .custom-table-sheet-rename:hover,.custom-table-add-sheet:hover{border-color:var(--cyan);color:var(--cyan)}
+  .custom-table-sheet-delete:hover{color:var(--red)}
   .tool-load-retry{margin-left:auto;border:0;background:transparent;color:var(--red);padding:2px 5px;font:inherit;font-size:9.5px;cursor:pointer}
   .tool-load-retry:hover{color:var(--text)}
   @keyframes tools-progress{from{transform:translateX(-110%)}to{transform:translateX(330%)}}
