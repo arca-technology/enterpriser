@@ -149,8 +149,10 @@ async function signOut() {
 // pipelines por conta (gerenciado no modal "Pipeline" do rodapé).
 const STATUSES = ["open", "won", "lost"];
 const STATUS_LABEL = { open: "Aberto", won: "Ganho", lost: "Perdido" };
-const PROJECT_STATUSES = ["planned", "in_progress", "done", "canceled"];
-const PROJECT_STATUS_LABEL = { planned: "Planejado", in_progress: "Em andamento", done: "Concluído", canceled: "Cancelado" };
+const PROJECT_STATUSES = ["active", "inactive", "closed"];
+const PROJECT_STATUS_LABEL = { active: "Ativo", inactive: "Inativo", closed: "Encerrado" };
+const PROJECT_SUBSTATUS = ["support", "closed"];
+const PROJECT_SUBSTATUS_LABEL = { support: "Suporte", closed: "Encerrado" };
 const MAX_PIPELINES = 5;
 const SOURCES = ["Indicação", "Site", "Anúncio", "Evento", "LinkedIn", "Inbound", "Prospecção", "Outro"];
 const RECURRENCE_OPTIONS = [
@@ -370,9 +372,9 @@ const DEMO = {
     { id: "d6", title: "Onboarding Delta", company_id: "22.333.444/0001-55", contact_id: "p4", product_id: "pr3", owner_id: "u2", pipeline_id: "pl1", stage: "Negociação", status: "won", amount: 9800, lead_source: "Indicação", expected_close_date: "2026-06-28" }
   ],
   projects: [
-    { id: "pj1", name: "EC365 | Rede Alfa | Formação em Liderança", group_name: "", client_name: "Rede Alfa", company_id: "12.345.678/0001-90", product_id: "pr1", owner_id: "u1", negotiation_id: null, status: "in_progress", substatus: "", source: "manual", start_date: "2026-07-01", end_date: "2026-08-15" },
-    { id: "pj2", name: "EC365 | Beta | Excel Avançado", group_name: "", client_name: "Beta", company_id: "98.765.432/0001-10", product_id: "pr2", owner_id: "u2", negotiation_id: null, status: "planned", substatus: "", source: "manual", start_date: "2026-07-18", end_date: "2026-08-05" },
-    { id: "pj3", name: "EC365 | Delta Log | Onboarding Comercial", group_name: "", client_name: "Delta Log", company_id: "22.333.444/0001-55", product_id: "pr3", owner_id: "u2", negotiation_id: "d6", status: "done", substatus: "", source: "negotiation", start_date: "2026-06-10", end_date: "2026-06-28" }
+    { id: "pj1", name: "EC365 | Rede Alfa | Formação em Liderança", group_name: "", client_name: "Rede Alfa", company_id: "12.345.678/0001-90", product_id: "pr1", owner_id: "u1", negotiation_id: null, status: "active", substatus: "", source: "manual", start_date: "2026-07-01", end_date: "2026-08-15" },
+    { id: "pj2", name: "EC365 | Beta | Excel Avançado", group_name: "", client_name: "Beta", company_id: "98.765.432/0001-10", product_id: "pr2", owner_id: "u2", negotiation_id: null, status: "active", substatus: "", source: "manual", start_date: "2026-07-18", end_date: "2026-08-05" },
+    { id: "pj3", name: "EC365 | Delta Log | Onboarding Comercial", group_name: "", client_name: "Delta Log", company_id: "22.333.444/0001-55", product_id: "pr3", owner_id: "u2", negotiation_id: "d6", status: "closed", substatus: "closed", source: "negotiation", start_date: "2026-06-10", end_date: "2026-06-28" }
   ],
   conversations: [],
   activities: [],
@@ -618,6 +620,10 @@ function activityRemoteBody(task) {
     assign_to_client: Boolean(task.assign_to_client),
     priority: task.priority || "normal",
     due_date: task.due_date || null,
+    planned_start_date: task.planned_start_date || null,
+    planned_end_date: task.planned_end_date || task.due_date || null,
+    actual_start_date: task.actual_start_date || null,
+    actual_end_date: task.actual_end_date || null,
     notes: task.notes || null,
     status: task.status || "todo",
     created_at: task.created_at || new Date().toISOString(),
@@ -894,7 +900,10 @@ async function syncProductActivities() {
             updates.assignee_job_titles = defaultJobTitles;
           }
           if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
-          if (dueDate && (!current.due_date || recurrenceChanged)) updates.due_date = dueDate;
+          if (dueDate && (!current.due_date || recurrenceChanged)) {
+            updates.due_date = dueDate;
+            updates.planned_end_date = dueDate;
+          }
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
             : current[key] !== value)) {
@@ -912,7 +921,8 @@ async function syncProductActivities() {
           assignee_ids: normalizeIdList(template.default_assignee_ids, template.default_owner_id),
           assignee_job_titles: normalizeTextList(template.default_assignee_job_titles),
           assign_to_client: Boolean(template.assign_to_client),
-          due_date: dueDate, notes: "", status: "todo",
+          due_date: dueDate, planned_start_date: project.start_date || null, planned_end_date: dueDate,
+          actual_start_date: null, actual_end_date: null, notes: "", status: "todo",
           created_at: now, updated_at: now
         };
         const saved = isLive() ? await createActivityOrLoadExisting(body) : body;
@@ -1393,6 +1403,14 @@ function deliveryGeneratedName(clientName, productId) {
   const product = cache?.productById?.[productId];
   return `EC365 | ${String(clientName || "Sem cliente").trim() || "Sem cliente"} | ${product?.name || "Sem produto"}`;
 }
+const taskPlannedStart = (task) => task?.planned_start_date || null;
+const taskPlannedEnd = (task) => task?.planned_end_date || task?.due_date || null;
+const taskStatusLabel = (status) => TASK_STATUS.find((item) => item.id === status)?.label || "Em aberto";
+const taskStatusTone = (status) => status === "done" ? "won" : status === "canceled" ? "lost" : status === "doing" ? "negotiation" : "lead";
+function inlineTaskStatus(task, className = "inline-task-status") {
+  const disabled = !currentUserCan("activities", "operate");
+  return `<select class="${className}" data-id="${esc(task.id)}" title="Alterar status"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task))}</select>`;
+}
 
 // Quando um negócio entra em "Ganho", um projeto nasce sozinho — carrega
 // cliente/produto do negócio e calcula o fim pela duração cadastrada no
@@ -1417,7 +1435,7 @@ async function createProjectFromDeal(deal) {
       company_id: deal.company_id || null,
       product_id: deal.product_id || null,
       negotiation_id: deal.id,
-      status: "planned",
+      status: "active",
       substatus: null,
       source: "negotiation",
       start_date: start,
@@ -1502,8 +1520,8 @@ function columns(tab, c) {
       { k: "product_id", h: "PRODUTO", fmt: (v) => c.productById[v]?.name || "—" },
       { k: "start_date", h: "INÍCIO", fmt: dt },
       { k: "end_date", h: "FIM", fmt: dt },
-      { k: "status", h: "STATUS", fmt: (v) => badge(v === "done" ? "won" : v === "canceled" ? "lost" : v === "in_progress" ? "negotiation" : "lead", PROJECT_STATUS_LABEL[v] || v) },
-      { k: "substatus", h: "SUBSTATUS", cls: "muted" }];
+      { k: "status", h: "STATUS", fmt: (v) => badge(v === "active" ? "won" : v === "closed" ? "lost" : "lead", PROJECT_STATUS_LABEL[v] || v) },
+      { k: "substatus", h: "SUBSTATUS", fmt: (v) => PROJECT_SUBSTATUS_LABEL[v] || v || "—", cls: "muted" }];
     case "activities": return [
       { k: "client_name", h: "CLIENTE", cls: "sticky-col sticky-col-1", thCls: "sticky-col sticky-col-1" },
       { k: "product_name", h: "PRODUTO", cls: "sticky-col sticky-col-2", thCls: "sticky-col sticky-col-2" },
@@ -1526,8 +1544,11 @@ function columns(tab, c) {
       } },
       { k: "objective_name", h: "OBJETIVO" },
       { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => esc(responsibilityNames(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)) },
-      { k: "due_date", h: "PRAZO", fmt: (v, row) => `<input class="inline-due-date" type="date" data-id="${esc(row.id)}" value="${esc(v || "")}" title="Alterar prazo">` },
-      { k: "status", h: "STATUS", fmt: (v) => badge(v === "done" ? "won" : v === "doing" ? "negotiation" : "lead", TASK_STATUS.find((s) => s.id === v)?.label || "A fazer") },
+      { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
+      { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => dt(v || row.due_date) || "—" },
+      { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
+      { k: "actual_end_date", h: "TÉRMINO REAL", fmt: (v) => v ? dt(v) : "—" },
+      { k: "status", h: "STATUS", fmt: (_v, row) => inlineTaskStatus(row) },
       { k: "notes", h: "NOTAS", cls: "muted" }];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
@@ -1644,8 +1665,8 @@ function fields(tab, c) {
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), req: true, full: true, placeholder: "Buscar por nome ou CNPJ" },
       { k: "client_name", label: "Cliente", req: true },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c), req: true },
-      { k: "status", label: "Status", type: "select", options: PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })), def: "planned" },
-      { k: "substatus", label: "Substatus" },
+      { k: "status", label: "Status", type: "select", options: PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })), def: "active" },
+      { k: "substatus", label: "Substatus", type: "select", options: PROJECT_SUBSTATUS.map((s) => ({ value: s, label: PROJECT_SUBSTATUS_LABEL[s] })) },
       { k: "start_date", label: "Início", type: "date" },
       { k: "end_date", label: "Fim", type: "date" }];
   }
@@ -1878,11 +1899,13 @@ function renderTable(c) {
     b.addEventListener("click", () => openProjectBoard(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.product-activities-btn").forEach((b) =>
     b.addEventListener("click", () => openProductActivities(b.dataset.id)));
-  document.querySelectorAll(".inline-due-date").forEach((input) => input.addEventListener("change", async () => {
+  document.querySelectorAll("#main .inline-task-status").forEach((select) => select.addEventListener("change", async () => {
+    const previous = cache.activityRecords.find((task) => task.id === select.dataset.id)?.status || "todo";
     try {
-      await updateProjectTask(input.dataset.id, { due_date: input.value || null });
-      toast("Prazo atualizado.");
-    } catch (err) { toast("Erro ao atualizar prazo · " + err.message, true); }
+      const updated = await updateProjectTask(select.dataset.id, { status: select.value });
+      if (!updated) select.value = previous;
+      else { toast("Status atualizado."); render(); }
+    } catch (err) { select.value = previous; toast("Erro ao atualizar status · " + err.message, true); }
   }));
   document.querySelectorAll(".checklist-open").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
@@ -1961,7 +1984,7 @@ function renderActivityKanban(c) {
       return `<div class="card${blocked ? " blocked" : ""}" data-id="${esc(task.id)}">
         <div class="t">${esc(activityDisplayName(task))}</div>
         <div class="m">${esc(task.client_name)} · ${esc(task.project_name)}</div>
-        <div class="m">${esc(owner)}${task.due_date ? ` · ${esc(dt(task.due_date))}` : ""}</div>
+        <div class="m">${esc(owner)}${taskPlannedEnd(task) ? ` · ${esc(dt(taskPlannedEnd(task)))}` : ""}</div>
         ${blocked ? '<div class="task-dependency blocked">Aguardando tarefa anterior</div>' : ""}
       </div>`;
     }).join("");
@@ -2250,10 +2273,10 @@ function renderHome(c) {
   refreshActivityCache();
   const today = new Date().toISOString().slice(0, 10);
   const activities = c.activities || [];
-  const pending = activities.filter((task) => task.status !== "done");
-  const overdue = pending.filter((task) => task.due_date && task.due_date < today);
+  const pending = activities.filter((task) => !["done", "canceled"].includes(task.status));
+  const overdue = pending.filter((task) => taskPlannedEnd(task) && taskPlannedEnd(task) < today);
   const openDeals = (c.deals || []).filter((deal) => deal.status === "open");
-  const activeProjects = (c.projects || []).filter((project) => project.status === "in_progress" || project.status === "planned");
+  const activeProjects = (c.projects || []).filter((project) => project.status === "active");
   const revenue = (c.deals || []).filter((deal) => deal.status === "won").reduce((sum, deal) => sum + Number(deal.amount || 0), 0);
   const metrics = [
     ["contacts", "Pessoas", c.contacts.length],
@@ -2266,14 +2289,14 @@ function renderHome(c) {
     .map(([, label, value]) => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div></div>`).join("");
 
   const upcoming = [...pending]
-    .sort((a, b) => (a.due_date || "9999-12-31").localeCompare(b.due_date || "9999-12-31"))
+    .sort((a, b) => (taskPlannedEnd(a) || "9999-12-31").localeCompare(taskPlannedEnd(b) || "9999-12-31"))
     .slice(0, 8);
   const activityRows = upcoming.map((task) => `<tr>
     <td>${esc(activityDisplayName(task))}</td>
     <td>${esc(task.client_name)}</td>
     <td>${esc(task.project_name)}</td>
-    <td>${esc(task.due_date ? dt(task.due_date) : "—")}</td>
-    <td>${badge(task.status === "doing" ? "negotiation" : "lead", TASK_STATUS.find((s) => s.id === task.status)?.label || "A fazer")}</td>
+    <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
+    <td>${badge(taskStatusTone(task.status), taskStatusLabel(task.status))}</td>
   </tr>`).join("");
   const projectStatuses = PROJECT_STATUSES.map((status) => {
     const count = (c.projects || []).filter((project) => project.status === status).length;
@@ -2282,7 +2305,7 @@ function renderHome(c) {
 
   const tasksPanel = currentUserCan("activities", "view") ? `<section class="home-panel">
         <h3>Próximas tarefas</h3>
-        <div class="task-table-wrap"><table><thead><tr><th>Tarefa</th><th>Cliente</th><th>Entrega</th><th>Prazo</th><th>Status</th></tr></thead>
+        <div class="task-table-wrap"><table><thead><tr><th>Tarefa</th><th>Cliente</th><th>Entrega</th><th>Término previsto</th><th>Status</th></tr></thead>
         <tbody>${activityRows || '<tr><td colspan="5" class="empty">Nenhuma tarefa pendente.</td></tr>'}</tbody></table></div>
       </section>` : "";
   const projectsPanel = currentUserCan("projects", "view") ? `<section class="home-panel">
@@ -3237,9 +3260,10 @@ async function saveProductActivity() {
 }
 
 const TASK_STATUS = [
-  { id: "todo", label: "A fazer" },
+  { id: "todo", label: "Em aberto" },
   { id: "doing", label: "Em andamento" },
-  { id: "done", label: "Concluído" }
+  { id: "done", label: "Atendido" },
+  { id: "canceled", label: "Cancelado" }
 ];
 const CLIENT_ASSIGNEE_VALUE = "__client__";
 let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
@@ -3440,7 +3464,7 @@ document.addEventListener("click", (event) => {
 });
 
 function taskStatusOptions(selected = "todo", blocked = false) {
-  return TASK_STATUS.map((s) => `<option value="${s.id}"${s.id === selected ? " selected" : ""}${blocked && s.id !== "todo" ? " disabled" : ""}>${s.label}</option>`).join("");
+  return TASK_STATUS.map((s) => `<option value="${s.id}"${s.id === selected ? " selected" : ""}${blocked && !["todo", "canceled"].includes(s.id) ? " disabled" : ""}>${s.label}</option>`).join("");
 }
 
 function taskDependencies(task, tasks = loadProjectTasks()) {
@@ -3479,7 +3503,7 @@ function taskCardHtml(task) {
     </div>` : ""}
     <div class="task-row">
       <span class="muted">${esc(owners)}</span>
-      <input class="task-due" type="date" value="${esc(task.due_date || "")}" title="Prazo">
+      <span class="muted">${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")} → ${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</span>
     </div>
     <textarea class="task-notes" placeholder="Notas, checklist ou contexto">${esc(task.notes || "")}</textarea>
     ${terminal
@@ -3565,7 +3589,6 @@ function renderTaskTable(tasks) {
   const start = (projectBoardState.page - 1) * projectBoardState.pageSize;
   const pageRows = tasks.slice(start, start + projectBoardState.pageSize);
   const rows = pageRows.map((task) => {
-    const status = TASK_STATUS.find((s) => s.id === (task.status || "todo"))?.label || "A fazer";
     const checklist = checklistProgress(task.checklist);
     const parent = taskParent(task, allTasks);
     const subtasks = taskSubtaskProgress(task.id, allTasks);
@@ -3584,8 +3607,11 @@ function renderTaskTable(tasks) {
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
       <td>${esc(responsibilityNames(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
-      <td>${esc(task.due_date ? dt(task.due_date) : "—")}</td>
-      <td>${esc(status)}</td>
+      <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
+      <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
+      <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
+      <td>${esc(task.actual_end_date ? dt(task.actual_end_date) : "—")}</td>
+      <td>${inlineTaskStatus(task, "project-inline-task-status")}</td>
       <td class="muted">${esc(task.notes || "—")}</td>
       <td class="table-actions-cell">${tableActionButtons({
         open: terminal && checklist.total ? { className: "checklist-open", attrs: { "data-id": task.id }, title: "Abrir checklist" } : null,
@@ -3596,8 +3622,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th>Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th>Responsáveis</th><th>Prazo</th><th>Status</th><th>Notas</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="17" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th>Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th>Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Notas</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="20" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -3610,8 +3636,8 @@ function renderProjectTaskCalendar(tasks) {
   const gridStart = new Date(monthStart);
   gridStart.setDate(gridStart.getDate() - gridStart.getDay());
   const byDay = new Map();
-  tasks.filter((task) => dateOnly(task.due_date)).forEach((task) => {
-    const key = String(task.due_date).slice(0, 10);
+  tasks.filter((task) => dateOnly(taskPlannedEnd(task))).forEach((task) => {
+    const key = String(taskPlannedEnd(task)).slice(0, 10);
     if (!byDay.has(key)) byDay.set(key, []);
     byDay.get(key).push(task);
   });
@@ -3631,12 +3657,12 @@ function renderProjectTaskCalendar(tasks) {
 }
 
 function renderProjectTaskGantt(tasks) {
-  const items = tasks.filter((task) => dateOnly(task.due_date)).map((task) => ({
+  const items = tasks.filter((task) => dateOnly(taskPlannedStart(task) || taskPlannedEnd(task))).map((task) => ({
     id: task.id,
     title: activityDisplayName(task),
-    detail: TASK_STATUS.find((status) => status.id === task.status)?.label || "A fazer",
-    start: task.due_date,
-    end: task.due_date,
+    detail: taskStatusLabel(task.status),
+    start: taskPlannedStart(task) || taskPlannedEnd(task),
+    end: taskPlannedEnd(task) || taskPlannedStart(task),
     status: task.status
   }));
   if (!items.length) return '<div class="empty">Nenhuma tarefa com prazo para exibir no Gantt.</div>';
@@ -3746,7 +3772,7 @@ function renderTaskDashboard(tasks) {
   const total = tasks.length;
   const done = tasks.filter((t) => t.status === "done").length;
   const doing = tasks.filter((t) => t.status === "doing").length;
-  const overdue = tasks.filter((t) => t.due_date && t.status !== "done" && t.due_date < new Date().toISOString().slice(0, 10)).length;
+  const overdue = tasks.filter((t) => taskPlannedEnd(t) && !["done", "canceled"].includes(t.status) && taskPlannedEnd(t) < new Date().toISOString().slice(0, 10)).length;
   const pct = total ? Math.round((done / total) * 100) : 0;
   return `<div class="project-dashboard">
     <div class="metric"><div class="k">Tarefas</div><div class="v">${total}</div></div>
@@ -3795,7 +3821,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Prazo", "Status", "Notas"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Notas"],
   objectives: ["Objetivo", "Critério de conclusão", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
@@ -3814,8 +3840,11 @@ function projectSectionValues(item, tasks = []) {
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
       responsibilityNames(item.assignee_ids, item.owner_id, item.assignee_job_titles, item.assign_to_client),
-      item.due_date ? dt(item.due_date) : "—",
-      TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer",
+      taskPlannedStart(item) ? dt(taskPlannedStart(item)) : "—",
+      taskPlannedEnd(item) ? dt(taskPlannedEnd(item)) : "—",
+      item.actual_start_date ? dt(item.actual_start_date) : "—",
+      item.actual_end_date ? dt(item.actual_end_date) : "—",
+      taskStatusLabel(item.status || "todo"),
       item.notes || "—"
     ];
   }
@@ -4029,7 +4058,7 @@ async function updateProjectTask(taskId, patch) {
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
-  if (patch.status && patch.status !== "todo" && taskIsBlocked(task, tasks)) {
+  if (patch.status && !["todo", "canceled"].includes(patch.status) && taskIsBlocked(task, tasks)) {
     const dependency = taskDependencies(task, tasks).find((item) => item.status !== "done");
     toast(`Conclua "${dependency ? activityDisplayName(dependency) : "a tarefa anterior"}" antes de iniciar esta tarefa.`, true);
     return false;
@@ -4037,11 +4066,15 @@ async function updateProjectTask(taskId, patch) {
   if (patch.status && patch.status !== "done" && task.status === "done") {
     const activeDependent = tasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
     if (activeDependent) {
-      toast(`Volte "${activityDisplayName(activeDependent)}" para A fazer antes de reabrir esta tarefa.`, true);
+      toast(`Volte "${activityDisplayName(activeDependent)}" para Em aberto antes de reabrir esta tarefa.`, true);
       return false;
     }
   }
+  const today = new Date().toISOString().slice(0, 10);
   const changes = { ...patch, updated_at: new Date().toISOString() };
+  if (["doing", "done"].includes(patch.status) && !task.actual_start_date) changes.actual_start_date = today;
+  if (patch.status === "done" && !task.actual_end_date) changes.actual_end_date = today;
+  if (patch.status && patch.status !== "done" && task.status === "done") changes.actual_end_date = null;
   if (isLive()) await updateRow("activities", taskId, changes);
   Object.assign(task, changes);
   if (isLive()) cache.activityRecords = tasks;
@@ -4226,7 +4259,10 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
-      <div class="field"><label>Prazo</label><input id="project-task-due" type="date" value="${esc(current.due_date || "")}"></div>
+      <div class="field"><label>Início previsto</label><input id="project-task-planned-start" type="date" value="${esc(current.planned_start_date || "")}"></div>
+      <div class="field"><label>Término previsto</label><input id="project-task-planned-end" type="date" value="${esc(taskPlannedEnd(current) || "")}"></div>
+      <div class="field"><label>Início real</label><input id="project-task-actual-start" type="date" value="${esc(current.actual_start_date || "")}"></div>
+      <div class="field"><label>Término real</label><input id="project-task-actual-end" type="date" value="${esc(current.actual_end_date || "")}"></div>
       <div class="field task-form-wide"><label>Notas</label><textarea id="project-task-notes" rows="3">${esc(current.notes || "")}</textarea></div>
       ${editId && !parentId ? `<div class="field full task-subtasks-editor"><label>Subtarefas</label><div class="task-subtask-list">${subtasks.map((subtask) => {
         const progress = checklistProgress(subtask.checklist);
@@ -4252,6 +4288,12 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
     const dependencyIds = multiPickerValues("project-task-dependencies");
     const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
+    const plannedStart = document.getElementById("project-task-planned-start").value || null;
+    const plannedEnd = document.getElementById("project-task-planned-end").value || null;
+    const actualStart = document.getElementById("project-task-actual-start").value || null;
+    const actualEnd = document.getElementById("project-task-actual-end").value || null;
+    if (plannedStart && plannedEnd && plannedEnd < plannedStart) { toast("O término previsto não pode ser anterior ao início previsto.", true); return; }
+    if (actualStart && actualEnd && actualEnd < actualStart) { toast("O término real não pode ser anterior ao início real.", true); return; }
     if (createsTaskDependencyCycle(tasks, editId, dependencyIds)) { toast("Essa dependência criaria um ciclo entre as tarefas.", true); return; }
     const now = new Date().toISOString();
     const inheritedChecklist = !editId && parentTask && !taskSubtasks(parentTask.id, tasks).length
@@ -4274,7 +4316,11 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       assignee_ids: assignees.ids,
       assignee_job_titles: assigneeJobTitles,
       assign_to_client: assignees.assignToClient,
-      due_date: document.getElementById("project-task-due").value || null,
+      planned_start_date: plannedStart,
+      planned_end_date: plannedEnd,
+      actual_start_date: actualStart,
+      actual_end_date: actualEnd,
+      due_date: plannedEnd,
       notes: document.getElementById("project-task-notes").value.trim(),
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
       checklist: parentId ? (editId ? normalizeChecklist(current.checklist) : inheritedChecklist) : (subtasks.length ? [] : normalizeChecklist(current.checklist)),
@@ -4500,13 +4546,20 @@ function wireProjectBoard(projectId) {
     button.addEventListener("click", () => openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.querySelectorAll("#project-board-root .task-delete-table[data-id]").forEach((button) =>
     button.addEventListener("click", () => deleteDeliveryTask(projectId, button.dataset.id)));
+  document.querySelectorAll("#project-board-root .project-inline-task-status").forEach((select) =>
+    select.addEventListener("change", async () => {
+      const task = loadProjectTasks().find((item) => item.id === select.dataset.id);
+      const previous = task?.status || "todo";
+      const updated = await updateProjectTask(select.dataset.id, { status: select.value });
+      if (!updated) select.value = previous;
+      else renderProjectBoard(projectId);
+    }));
   document.querySelectorAll("#project-board-root .task-card").forEach((card) => {
     const id = card.dataset.id;
     const rerender = () => renderProjectBoard(projectId);
     card.querySelector(".task-title-input")?.addEventListener("change", async (e) => updateProjectTask(id, { title: e.target.value.trim() }));
     card.querySelector(".task-add-subtask")?.addEventListener("click", () => openDeliveryTaskDrawer(projectId, null, id));
     card.querySelector(".task-edit")?.addEventListener("click", () => openDeliveryTaskDrawer(projectId, id));
-    card.querySelector(".task-due")?.addEventListener("change", async (e) => updateProjectTask(id, { due_date: e.target.value || null }));
     card.querySelector(".task-notes")?.addEventListener("change", async (e) => updateProjectTask(id, { notes: e.target.value }));
     card.querySelector(".task-status")?.addEventListener("change", async (e) => { await updateProjectTask(id, { status: e.target.value }); rerender(); });
     card.querySelector(".del-task")?.addEventListener("click", () => deleteDeliveryTask(projectId, id));
@@ -5480,6 +5533,15 @@ function openForm(tab, id, opts = {}) {
     const startEl = form?.querySelector('[data-k="start_date"]');
     const endEl = form?.querySelector('[data-k="end_date"]');
     const productEl = form?.querySelector('[data-k="product_id"]');
+    const statusEl = form?.querySelector('[data-k="status"]');
+    const substatusEl = form?.querySelector('[data-k="substatus"]');
+    const syncSubstatus = () => {
+      const enabled = statusEl?.value === "inactive";
+      if (substatusEl) {
+        substatusEl.disabled = !enabled;
+        if (!enabled) substatusEl.value = statusEl?.value === "closed" ? "closed" : "";
+      }
+    };
     const recalcName = () => { if (nameEl) nameEl.value = deliveryGeneratedName(clientEl?.value, productEl?.value); };
     const recalcEnd = () => {
       const prod = c.productById[productEl?.value];
@@ -5488,7 +5550,9 @@ function openForm(tab, id, opts = {}) {
     startEl?.addEventListener("change", recalcEnd);
     clientEl?.addEventListener("input", recalcName);
     productEl?.addEventListener("change", () => { recalcEnd(); recalcName(); });
+    statusEl?.addEventListener("change", syncSubstatus);
     recalcName();
+    syncSubstatus();
   }
 }
 
@@ -5605,7 +5669,12 @@ async function saveForm(tab, id, fs, opts = {}) {
     body.company_id = linkedCompanyIds[0] || null;
   }
   if (tab === "companies") delete body.contact_ids;
-  if (tab === "projects") body.name = deliveryGeneratedName(body.client_name, body.product_id);
+  if (tab === "projects") {
+    body.name = deliveryGeneratedName(body.client_name, body.product_id);
+    if (body.status === "active") body.substatus = null;
+    if (body.status === "closed") body.substatus = "closed";
+    if (body.status === "inactive" && !body.substatus) { toast("Selecione o substatus da entrega inativa: Suporte ou Encerrado.", true); return; }
+  }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { toast(`Preencha: ${req.label}`, true); return; }
   if (tab === "contacts") {
@@ -5787,7 +5856,7 @@ function helpContentHtml() {
       <li><b>Tarefas:</b> crie tarefas do dia a dia, altere status e prazo, acompanhe checklists, notas, responsáveis e bloqueios.</li>
       <li><b>Objetivos:</b> acompanhe progresso calculado pelas tarefas vinculadas, responsável, prazo, dependências e status.</li>
       <li><b>Metas:</b> atualize valor atual, indicador, valor-alvo, prazo, dependências e status. Metas atingidas podem ser concluídas.</li>
-      <li><b>Matriz:</b> distribui itens por A fazer, Em andamento e Concluído. <b>Dashboard:</b> resume andamento, concluídos, atrasados e bloqueados.</li>
+      <li><b>Matriz:</b> distribui itens por Em aberto, Em andamento, Atendido e Cancelado. <b>Dashboard:</b> resume andamento, atendidos, atrasados e bloqueados.</li>
     </ul></section>
 
     <section class="help-section" id="help-conversations"><h4>Conversas e integrações</h4>
