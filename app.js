@@ -230,6 +230,7 @@ const REMOTE_TABLE = {
   files: "company_files",
   processes: "training_processes",
   documents: "company_documents",
+  customTables: "custom_tables",
   contactCompanies: "contact_companies"
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
@@ -238,7 +239,8 @@ const FIELD_REMAP = {
   activities: { project_id: "delivery_id", group: "group_name", type: "activity_type" },
   deliveryObjectives: { project_id: "delivery_id" },
   deliveryGoals: { project_id: "delivery_id" },
-  productActivities: { group: "group_name", type: "activity_type" }
+  productActivities: { group: "group_name", type: "activity_type" },
+  customTables: { columns: "column_definitions", rows: "row_data" }
 }; // chave local -> chave remota
 function toRemoteBody(tab, body) {
   const map = FIELD_REMAP[tab];
@@ -306,6 +308,7 @@ const DEMO = {
   files: [],
   processes: [],
   documents: [],
+  customTables: [],
   contactCompanies: []
 };
 
@@ -7085,6 +7088,7 @@ function requireCurrentUserAdmin(area = "Esta área") {
 const TOOL_FOLDERS_KEY = "crm_tool_folders";
 const TOOL_FILES_KEY = "crm_tool_files_v2";
 const TOOL_EMAILS_KEY = "crm_tool_emails";
+const TOOL_TABLES_KEY = "crm_tool_tables";
 const TOOL_COLUMN_DEFS = {
   files: [
     { k: "status", h: "Status" }, { k: "client", h: "Cliente" }, { k: "company", h: "Empresa" },
@@ -7101,6 +7105,10 @@ const TOOL_COLUMN_DEFS = {
     { k: "title", h: "Nome" }, { k: "document_type", h: "Tipo" },
     { k: "category", h: "Categoria" }, { k: "system_name", h: "Sistema" },
     { k: "module_name", h: "Módulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
+  ],
+  tables: [
+    { k: "name", h: "Nome" }, { k: "column_count", h: "Colunas" },
+    { k: "row_count", h: "Linhas" }, { k: "updated_at", h: "Atualizado em" }
   ]
 };
 const TOOLS_PAGE_SIZE = 50;
@@ -7127,6 +7135,11 @@ let remoteToolDocumentsLoaded = false;
 let remoteToolDocumentsLoading = false;
 let remoteToolDocumentsError = "";
 let remoteToolDocumentsLoadedAt = 0;
+let remoteToolTables = [];
+let remoteToolTablesLoaded = false;
+let remoteToolTablesLoading = false;
+let remoteToolTablesError = "";
+let remoteToolTablesLoadedAt = 0;
 const hydratedToolsCache = new Set();
 
 function readToolsSessionCache(section) {
@@ -7139,14 +7152,14 @@ function readToolsSessionCache(section) {
 }
 
 function saveToolsSessionCache(section, rows, loadedAt = Date.now()) {
-  if (!["files", "processes", "documents"].includes(section)) return;
+  if (!["files", "processes", "documents", "tables"].includes(section)) return;
   try {
     sessionStorage.setItem(`${TOOLS_CACHE_PREFIX}${section}`, JSON.stringify({ rows, loadedAt }));
   } catch (e) {}
 }
 
 function hydrateToolsSessionCache(section) {
-  if (hydratedToolsCache.has(section) || !["files", "processes", "documents"].includes(section)) return;
+  if (hydratedToolsCache.has(section) || !["files", "processes", "documents", "tables"].includes(section)) return;
   hydratedToolsCache.add(section);
   const cached = readToolsSessionCache(section);
   if (!cached) return;
@@ -7158,10 +7171,14 @@ function hydrateToolsSessionCache(section) {
     remoteToolProcesses = cached.rows;
     remoteToolProcessesLoaded = true;
     remoteToolProcessesLoadedAt = Number(cached.loadedAt || 0);
-  } else {
+  } else if (section === "documents") {
     remoteToolDocuments = cached.rows;
     remoteToolDocumentsLoaded = true;
     remoteToolDocumentsLoadedAt = Number(cached.loadedAt || 0);
+  } else {
+    remoteToolTables = cached.rows;
+    remoteToolTablesLoaded = true;
+    remoteToolTablesLoadedAt = Number(cached.loadedAt || 0);
   }
 }
 
@@ -7201,6 +7218,7 @@ function openToolsModal(section = "files") {
     <button class="modal-header-tab${section === "emails" ? " active" : ""}" data-tools-tab="emails" role="tab">Emails</button>
     <button class="modal-header-tab${section === "processes" ? " active" : ""}" data-tools-tab="processes" role="tab">Processos</button>
     <button class="modal-header-tab${section === "documents" ? " active" : ""}" data-tools-tab="documents" role="tab">Documentação</button>
+    <button class="modal-header-tab${section === "tables" ? " active" : ""}" data-tools-tab="tables" role="tab">Tabelas</button>
   </div>`;
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
@@ -7284,7 +7302,7 @@ function wireToolsToolbar(root) {
     event.stopPropagation();
     openSecondaryColumnManager({
       scope: `tools:${toolsState.section}`,
-      label: toolsState.section === "files" ? "Arquivos" : toolsState.section === "emails" ? "Emails" : toolsState.section === "processes" ? "Processos" : "Documentação",
+      label: toolsState.section === "files" ? "Arquivos" : toolsState.section === "emails" ? "Emails" : toolsState.section === "processes" ? "Processos" : toolsState.section === "documents" ? "Documentação" : "Tabelas",
       definitions: TOOL_COLUMN_DEFS[toolsState.section],
       onChange: renderToolsSection
     });
@@ -7298,6 +7316,7 @@ function renderToolsSection() {
   if (toolsState.section === "emails") renderToolEmails(root);
   else if (toolsState.section === "processes") renderToolProcesses(root);
   else if (toolsState.section === "documents") renderToolDocuments(root);
+  else if (toolsState.section === "tables") renderToolCustomTables(root);
   else renderToolFolders(root);
 }
 
@@ -7678,6 +7697,9 @@ function wireToolsLoadRetry(root, section = toolsState.section) {
     } else if (section === "documents") {
       remoteToolDocumentsError = "";
       loadRemoteToolDocuments({ force: true });
+    } else if (section === "tables") {
+      remoteToolTablesError = "";
+      loadRemoteToolTables({ force: true });
     }
     renderToolsSection();
   });
@@ -7956,6 +7978,315 @@ function renderToolDocuments(root) {
     delete tableState.filters[filter.dataset.key]; renderToolsSection();
   }));
   root.querySelector(".tool-filter-clear-all")?.addEventListener("click", () => { tableState.filters = {}; renderToolsSection(); });
+}
+
+function normalizeCustomTableColumns(value) {
+  let columns = value;
+  if (typeof columns === "string") {
+    try { columns = JSON.parse(columns); } catch (e) { columns = []; }
+  }
+  if (!Array.isArray(columns) || !columns.length) columns = [{ name: "Coluna 1" }];
+  return columns.map((column, index) => ({
+    id: String(column?.id || crypto.randomUUID()),
+    name: String(column?.name || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`
+  }));
+}
+
+function normalizeCustomTableRows(value, columns) {
+  let rows = value;
+  if (typeof rows === "string") {
+    try { rows = JSON.parse(rows); } catch (e) { rows = []; }
+  }
+  if (!Array.isArray(rows)) rows = [];
+  return rows.map((row) => {
+    const source = row?.cells && typeof row.cells === "object" ? row.cells : row || {};
+    return {
+      id: String(row?.id || crypto.randomUUID()),
+      cells: Object.fromEntries(columns.map((column) => [column.id, String(source[column.id] ?? "")]))
+    };
+  });
+}
+
+function normalizeCustomTable(item = {}) {
+  const columns = normalizeCustomTableColumns(item.columns);
+  return {
+    ...item,
+    name: String(item.name || "Nova tabela").trim() || "Nova tabela",
+    columns,
+    rows: normalizeCustomTableRows(item.rows, columns)
+  };
+}
+
+function toolCustomTableRows() {
+  const source = isLive() ? remoteToolTables : readToolRows(TOOL_TABLES_KEY);
+  return source.map(normalizeCustomTable);
+}
+
+function toolCustomTableValue(item, key) {
+  const table = normalizeCustomTable(item);
+  if (key === "column_count") return String(table.columns.length);
+  if (key === "row_count") return String(table.rows.length);
+  if (key === "updated_at") return item.updated_at ? new Date(item.updated_at).toLocaleString("pt-BR") : "—";
+  return String(item[key] || "—");
+}
+
+async function loadRemoteToolTables({ force = false } = {}) {
+  if (!isLive() || remoteToolTablesLoading) return;
+  if (!force && !toolsCacheIsStale(remoteToolTablesLoaded, remoteToolTablesLoadedAt)) return;
+  remoteToolTablesLoading = true;
+  remoteToolTablesError = "";
+  try {
+    remoteToolTables = await fetchTable("customTables");
+    remoteToolTablesLoaded = true;
+    remoteToolTablesLoadedAt = Date.now();
+    saveToolsSessionCache("tables", remoteToolTables, remoteToolTablesLoadedAt);
+  } catch (err) {
+    remoteToolTablesError = err.message;
+  } finally {
+    remoteToolTablesLoading = false;
+    const root = document.getElementById("tools-root");
+    if (root && toolsState.section === "tables") renderToolCustomTables(root);
+  }
+}
+
+function renderToolCustomTables(root) {
+  if (isLive() && !remoteToolTablesLoading && !remoteToolTablesError && toolsCacheIsStale(remoteToolTablesLoaded, remoteToolTablesLoadedAt)) loadRemoteToolTables();
+  const allTables = toolCustomTableRows();
+  const query = toolsState.search.trim().toLocaleLowerCase("pt-BR");
+  const tableState = toolTableState("tables");
+  const tables = allTables.filter((item) => {
+    const searchable = [item.name, ...item.columns.map((column) => column.name)];
+    const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
+    return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
+      !selected?.size || selected.has(toolCustomTableValue(item, key))
+    );
+  });
+  if (tableState.sortKey) {
+    tables.sort((a, b) => toolCustomTableValue(a, tableState.sortKey).localeCompare(
+      toolCustomTableValue(b, tableState.sortKey), "pt-BR", { numeric: true, sensitivity: "base" }
+    ) * tableState.sortDir);
+  }
+  const page = paginateToolRows(tables, "tables");
+  const columns = visibleToolColumns("tables");
+  const rows = page.rows.length ? page.rows.map((item) => `<tr data-id="${esc(item.id)}">
+    ${columns.map((column) => column.k === "name"
+      ? `<td><button class="process-open-link tool-custom-table-open" data-id="${esc(item.id)}">${esc(item.name)}</button></td>`
+      : `<td>${esc(toolCustomTableValue(item, column.k))}</td>`).join("")}
+    <td class="table-actions-cell">${tableActionButtons({
+      open: { className: "tool-custom-table-open", attrs: { "data-id": item.id }, title: "Abrir tabela" },
+      edit: currentUserIsAdmin() ? { className: "tool-custom-table-edit", attrs: { "data-id": item.id }, title: "Editar tabela" } : null,
+      clone: currentUserIsAdmin() ? { className: "tool-custom-table-clone", attrs: { "data-id": item.id }, title: "Clonar tabela" } : null,
+      delete: currentUserIsAdmin() ? { className: "tool-custom-table-delete", attrs: { "data-id": item.id }, title: "Excluir tabela" } : null
+    })}</td>
+  </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma tabela cadastrada.</td></tr>`;
+  root.innerHTML = `${toolsToolbarHtml(tables.length, "Adicionar tabela", "tool-custom-table-add", currentUserIsAdmin(), "Buscar tabela...")}${toolFilterStrip("tables", tableState, { loading: remoteToolTablesLoading, error: remoteToolTablesError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-tool-key="${esc(column.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(tables.length, "tables")}`;
+  wireToolsToolbar(root);
+  wireToolsPagination(root, "tables");
+  wireToolsLoadRetry(root, "tables");
+  wireSecondaryTableSelection(root.querySelector("table"), "tools:tables");
+  document.getElementById("tool-custom-table-add")?.addEventListener("click", () => openToolCustomTableEditor());
+  root.querySelectorAll(".tool-custom-table-open").forEach((button) => button.addEventListener("click", () => openToolCustomTableEditor(button.dataset.id, true)));
+  root.querySelectorAll(".tool-custom-table-edit").forEach((button) => button.addEventListener("click", () => openToolCustomTableEditor(button.dataset.id)));
+  root.querySelectorAll(".tool-custom-table-clone").forEach((button) => button.addEventListener("click", () => cloneToolCustomTable(button.dataset.id)));
+  root.querySelectorAll(".tool-custom-table-delete").forEach((button) => button.addEventListener("click", () => deleteToolCustomTable(button.dataset.id)));
+  root.querySelectorAll("th[data-tool-key]").forEach((header) => header.addEventListener("click", (event) => {
+    const key = header.dataset.toolKey;
+    if (event.ctrlKey || event.metaKey) { openToolColumnFilter(header, key, allTables, toolCustomTableValue, "tables"); return; }
+    if (tableState.sortKey === key) tableState.sortDir *= -1;
+    else { tableState.sortKey = key; tableState.sortDir = 1; }
+    renderToolsSection();
+  }));
+  root.querySelectorAll(".tool-filter-badge").forEach((filter) => filter.addEventListener("click", () => {
+    delete tableState.filters[filter.dataset.key]; renderToolsSection();
+  }));
+  root.querySelector(".tool-filter-clear-all")?.addEventListener("click", () => { tableState.filters = {}; renderToolsSection(); });
+}
+
+function updateToolCustomTableCache(saved) {
+  const index = remoteToolTables.findIndex((item) => item.id === saved.id);
+  if (index >= 0) remoteToolTables[index] = saved; else remoteToolTables.unshift(saved);
+  remoteToolTablesLoaded = true;
+  remoteToolTablesLoadedAt = Date.now();
+  saveToolsSessionCache("tables", remoteToolTables, remoteToolTablesLoadedAt);
+}
+
+function openToolCustomTableEditor(id = null, readOnly = false) {
+  if (!readOnly && !requireCurrentUserAdmin("Tabelas")) return;
+  const source = toolCustomTableRows().find((item) => item.id === id);
+  if (id && !source) return;
+  const draft = normalizeCustomTable(source || {
+    name: "Nova tabela",
+    columns: [{ name: "Coluna 1" }, { name: "Coluna 2" }, { name: "Coluna 3" }],
+    rows: []
+  });
+  const view = { sortKey: null, sortDir: 1, filters: {} };
+  const content = `<div class="custom-table-editor${readOnly ? " is-readonly" : ""}">
+    <div class="custom-table-editor-toolbar">
+      <input id="custom-table-name" value="${esc(draft.name)}" placeholder="Nome da tabela"${readOnly ? " disabled" : ""}>
+      <span id="custom-table-summary" class="muted"></span>
+      <button class="btn" id="custom-table-clear-filters" type="button">Limpar filtros</button>
+      ${readOnly ? "" : '<button class="btn" id="custom-table-add-column" type="button">+ Coluna</button><button class="btn primary" id="custom-table-add-row" type="button">+ Linha</button>'}
+    </div>
+    <div class="custom-table-grid-wrap" id="custom-table-grid-wrap"></div>
+  </div><div class="modal-foot"><button class="btn" id="custom-table-cancel">${readOnly ? "Fechar" : "Cancelar"}</button>${readOnly ? "" : '<button class="btn primary" id="custom-table-save">Salvar</button>'}</div>`;
+  const closePanel = nestedCenterModal(readOnly ? `Tabela · ${draft.name}` : (id ? "Editar tabela" : "Nova tabela"), content, { cls: "full custom-table-editor-modal", closeOnOverlay: true });
+
+  const renderGrid = () => {
+    let visibleRows = draft.rows.filter((row) => draft.columns.every((column) => {
+      const filter = String(view.filters[column.id] || "").trim().toLocaleLowerCase("pt-BR");
+      return !filter || String(row.cells[column.id] || "").toLocaleLowerCase("pt-BR").includes(filter);
+    }));
+    if (view.sortKey) {
+      visibleRows = [...visibleRows].sort((a, b) => String(a.cells[view.sortKey] || "").localeCompare(
+        String(b.cells[view.sortKey] || ""), "pt-BR", { numeric: true, sensitivity: "base" }
+      ) * view.sortDir);
+    }
+    document.getElementById("custom-table-summary").textContent = `${draft.columns.length} coluna(s) · ${visibleRows.length}/${draft.rows.length} linha(s)`;
+    const wrap = document.getElementById("custom-table-grid-wrap");
+    wrap.innerHTML = `<table class="custom-table-grid"><thead>
+      <tr><th class="custom-table-index-cell">#</th>${draft.columns.map((column) => `<th>
+        <div class="custom-table-column-head"><input value="${esc(column.name)}" data-column-name="${esc(column.id)}"${readOnly ? " disabled" : ""}><button class="tool-icon-btn custom-table-sort" data-column-id="${esc(column.id)}" title="Classificar">${view.sortKey === column.id ? (view.sortDir > 0 ? "↑" : "↓") : "↕"}</button>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
+      </th>`).join("")}<th class="custom-table-row-action"></th></tr>
+      <tr class="custom-table-filter-row"><th class="custom-table-index-cell"></th>${draft.columns.map((column) => `<th><input class="custom-table-filter" data-column-id="${esc(column.id)}" value="${esc(view.filters[column.id] || "")}" placeholder="Filtrar..."></th>`).join("")}<th class="custom-table-row-action"></th></tr>
+    </thead><tbody>${visibleRows.length ? visibleRows.map((row) => {
+      const originalIndex = draft.rows.findIndex((item) => item.id === row.id);
+      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${draft.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
+    }).join("") : `<tr><td colspan="${draft.columns.length + 2}" class="tool-empty">Nenhuma linha para exibir.</td></tr>`}</tbody></table>`;
+    wrap.querySelectorAll("[data-column-name]").forEach((input) => input.addEventListener("input", () => {
+      const column = draft.columns.find((item) => item.id === input.dataset.columnName);
+      if (column) column.name = input.value;
+    }));
+    wrap.querySelectorAll("[data-cell-column]").forEach((input) => input.addEventListener("input", () => {
+      const row = draft.rows.find((item) => item.id === input.dataset.rowId);
+      if (row) row.cells[input.dataset.cellColumn] = input.value;
+    }));
+    wrap.querySelectorAll(".custom-table-sort").forEach((button) => button.addEventListener("click", () => {
+      const columnId = button.dataset.columnId;
+      if (view.sortKey !== columnId) { view.sortKey = columnId; view.sortDir = 1; }
+      else if (view.sortDir === 1) view.sortDir = -1;
+      else { view.sortKey = null; view.sortDir = 1; }
+      renderGrid();
+    }));
+    wrap.querySelectorAll(".custom-table-filter").forEach((input) => input.addEventListener("input", () => {
+      const columnId = input.dataset.columnId;
+      view.filters[columnId] = input.value;
+      renderGrid();
+      const next = wrap.querySelector(`.custom-table-filter[data-column-id="${CSS.escape(columnId)}"]`);
+      next?.focus();
+      next?.setSelectionRange(next.value.length, next.value.length);
+    }));
+    wrap.querySelectorAll(".custom-table-delete-column").forEach((button) => button.addEventListener("click", () => {
+      if (draft.columns.length === 1) { toast("A tabela precisa ter ao menos uma coluna.", true); return; }
+      const columnId = button.dataset.columnId;
+      draft.columns = draft.columns.filter((column) => column.id !== columnId);
+      draft.rows.forEach((row) => delete row.cells[columnId]);
+      delete view.filters[columnId];
+      if (view.sortKey === columnId) view.sortKey = null;
+      renderGrid();
+    }));
+    wrap.querySelectorAll(".custom-table-delete-row").forEach((button) => button.addEventListener("click", () => {
+      draft.rows = draft.rows.filter((row) => row.id !== button.dataset.rowId);
+      renderGrid();
+    }));
+  };
+
+  document.getElementById("custom-table-cancel").addEventListener("click", closePanel);
+  document.getElementById("custom-table-clear-filters").addEventListener("click", () => {
+    view.filters = {};
+    view.sortKey = null;
+    view.sortDir = 1;
+    renderGrid();
+  });
+  document.getElementById("custom-table-add-column")?.addEventListener("click", () => {
+    const name = window.prompt("Nome da nova coluna:", `Coluna ${draft.columns.length + 1}`)?.trim();
+    if (!name) return;
+    const column = { id: crypto.randomUUID(), name };
+    draft.columns.push(column);
+    draft.rows.forEach((row) => { row.cells[column.id] = ""; });
+    renderGrid();
+  });
+  document.getElementById("custom-table-add-row")?.addEventListener("click", () => {
+    draft.rows.push({ id: crypto.randomUUID(), cells: Object.fromEntries(draft.columns.map((column) => [column.id, ""])) });
+    renderGrid();
+  });
+  document.getElementById("custom-table-save")?.addEventListener("click", async () => {
+    draft.name = document.getElementById("custom-table-name").value.trim();
+    draft.columns.forEach((column) => { column.name = column.name.trim(); });
+    if (!draft.name) { toast("Informe o nome da tabela.", true); return; }
+    if (draft.columns.some((column) => !column.name)) { toast("Todas as colunas precisam ter nome.", true); return; }
+    const names = draft.columns.map((column) => column.name.toLocaleLowerCase("pt-BR"));
+    if (new Set(names).size !== names.length) { toast("Os nomes das colunas não podem se repetir.", true); return; }
+    const button = document.getElementById("custom-table-save");
+    button.disabled = true;
+    button.textContent = "Salvando...";
+    const body = { name: draft.name, columns: draft.columns, rows: draft.rows, updated_at: new Date().toISOString() };
+    try {
+      let saved;
+      if (isLive()) saved = id ? await updateRow("customTables", id, body) : await createRow("customTables", body);
+      else {
+        const localRows = toolCustomTableRows();
+        saved = { ...draft, ...body, id: id || crypto.randomUUID(), created_at: source?.created_at || new Date().toISOString() };
+        const index = localRows.findIndex((item) => item.id === saved.id);
+        if (index >= 0) localRows[index] = saved; else localRows.unshift(saved);
+        saveToolRows(TOOL_TABLES_KEY, localRows);
+      }
+      if (isLive()) updateToolCustomTableCache(saved);
+      closePanel();
+      renderToolsSection();
+      toast("Tabela salva.");
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = "Salvar";
+      toast("Erro ao salvar tabela · " + err.message, true);
+    }
+  });
+  renderGrid();
+}
+
+async function cloneToolCustomTable(id) {
+  if (!requireCurrentUserAdmin("Tabelas")) return;
+  const source = toolCustomTableRows().find((item) => item.id === id);
+  if (!source) return;
+  const idMap = new Map(source.columns.map((column) => [column.id, crypto.randomUUID()]));
+  const columns = source.columns.map((column) => ({ id: idMap.get(column.id), name: column.name }));
+  const rows = source.rows.map((row) => ({
+    id: crypto.randomUUID(),
+    cells: Object.fromEntries(source.columns.map((column) => [idMap.get(column.id), row.cells[column.id] || ""]))
+  }));
+  const body = { name: `${source.name} - Cópia`, columns, rows, updated_at: new Date().toISOString() };
+  try {
+    let saved;
+    if (isLive()) saved = await createRow("customTables", body);
+    else {
+      saved = { id: crypto.randomUUID(), ...body, created_at: new Date().toISOString() };
+      saveToolRows(TOOL_TABLES_KEY, [saved, ...toolCustomTableRows()]);
+    }
+    if (isLive()) updateToolCustomTableCache(saved);
+    renderToolsSection();
+    toast("Tabela clonada.");
+  } catch (err) {
+    toast("Erro ao clonar tabela · " + err.message, true);
+  }
+}
+
+async function deleteToolCustomTable(id) {
+  if (!requireCurrentUserAdmin("Tabelas")) return;
+  const item = toolCustomTableRows().find((table) => table.id === id);
+  if (!item || !window.confirm(`Excluir a tabela "${item.name}"?`)) return;
+  try {
+    if (isLive()) {
+      await deleteRow("customTables", id);
+      remoteToolTables = remoteToolTables.filter((table) => table.id !== id);
+      remoteToolTablesLoadedAt = Date.now();
+      saveToolsSessionCache("tables", remoteToolTables, remoteToolTablesLoadedAt);
+    } else {
+      saveToolRows(TOOL_TABLES_KEY, toolCustomTableRows().filter((table) => table.id !== id));
+    }
+    renderToolsSection();
+    toast("Tabela excluída.");
+  } catch (err) {
+    toast("Erro ao excluir tabela · " + err.message, true);
+  }
 }
 
 function closeToolDocumentPanel(closePanel) {
