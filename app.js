@@ -1816,11 +1816,17 @@ function renderTable(c) {
     counts.set(client, (counts.get(client) || 0) + 1);
     return counts;
   }, new Map()) : new Map();
+  const clientNames = groupByClient ? [...clientCounts.keys()] : [];
   const paginated = true;
-  const totalPages = paginated ? Math.max(1, Math.ceil(allRows.length / state.pageSize)) : 1;
+  const paginationLength = groupByClient ? clientNames.length : allRows.length;
+  const totalPages = paginated ? Math.max(1, Math.ceil(paginationLength / state.pageSize)) : 1;
   if (paginated) state.pages[state.tab] = Math.min(Math.max(1, state.pages[state.tab] || 1), totalPages);
   const currentPage = paginated ? state.pages[state.tab] : 1;
-  const rows = paginated ? allRows.slice((currentPage - 1) * state.pageSize, currentPage * state.pageSize) : allRows;
+  const pageStart = (currentPage - 1) * state.pageSize;
+  const pageClientNames = groupByClient ? new Set(clientNames.slice(pageStart, pageStart + state.pageSize)) : null;
+  const rows = groupByClient
+    ? allRows.filter((row) => pageClientNames.has(String(row.client_name || "Sem cliente")))
+    : paginated ? allRows.slice(pageStart, currentPage * state.pageSize) : allRows;
   const filters = tabFilters();
   const selectable = ["conversations", "contacts", "companies", "deals", "products", "projects", "activities"].includes(state.tab);
   const selectedSet = state.tab === "conversations" ? state.selectedConversations : state.bulkSelections[state.tab];
@@ -1850,6 +1856,7 @@ function renderTable(c) {
       : "";
     const taskRowAttrs = groupByClient ? ` class="client-task-row" data-client="${esc(client)}"${clientExpanded ? "" : " hidden"}` : "";
     if (groupByClient) previousClient = client;
+    if (groupByClient && !clientExpanded) return groupHeader;
     const selectTd = selectable
       ? `<td class="select-cell"><input type="checkbox" class="row-select" data-id="${esc(String(rid))}"${selectedSet.has(String(rid)) ? " checked" : ""}></td>`
       : "";
@@ -1892,7 +1899,9 @@ function renderTable(c) {
   }).join("");
 
   const pagination = paginated ? `<div class="table-pagination">
-    <span>${allRows.length ? `${(currentPage - 1) * state.pageSize + 1}-${Math.min(currentPage * state.pageSize, allRows.length)} de ${allRows.length}` : "0 registros"}</span>
+    <span>${paginationLength ? groupByClient
+      ? `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength} clientes · ${allRows.length} tarefas`
+      : `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength}` : "0 registros"}</span>
     <div><button class="btn" id="page-prev"${currentPage <= 1 ? " disabled" : ""}>‹</button><span>Página ${currentPage} de ${totalPages}</span><button class="btn" id="page-next"${currentPage >= totalPages ? " disabled" : ""}>›</button></div>
   </div>` : "";
   const emptyColspan = cols.length + (selectable ? 1 : 0) + 1;
@@ -1943,11 +1952,7 @@ function renderTable(c) {
     const client = button.dataset.client;
     if (state.expandedActivityClients.has(client)) state.expandedActivityClients.delete(client);
     else state.expandedActivityClients.add(client);
-    const expanded = state.expandedActivityClients.has(client);
-    document.querySelectorAll(`.client-task-row[data-client="${CSS.escape(client)}"]`).forEach((row) => { row.hidden = !expanded; });
-    const arrow = button.querySelector(".registration-task-toggle");
-    if (arrow) arrow.textContent = expanded ? "▾" : "▸";
-    button.title = `${expanded ? "Recolher" : "Expandir"} tarefas de ${client}`;
+    render();
   }));
   document.getElementById("select-all-rows")?.addEventListener("change", (e) => {
     rows.forEach((r) => {
