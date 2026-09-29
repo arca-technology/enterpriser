@@ -1684,6 +1684,7 @@ let colPrefs = loadColPrefs();
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
   groupActivitiesByClient: false,
+  expandedActivityClients: new Set(),
   selectedConversations: new Set(),
   bulkSelections: {
     contacts: new Set(), companies: new Set(), deals: new Set(), products: new Set(),
@@ -1840,9 +1841,14 @@ function renderTable(c) {
   const body = rows.map((r) => {
     const rid = r[rowKey];
     const client = String(r.client_name || "Sem cliente");
+    const clientExpanded = groupByClient && state.expandedActivityClients.has(client);
+    const groupCells = groupByClient ? cols.map((col, index) => index === 0
+      ? `<td data-k="${esc(col.k)}"><button class="client-group-toggle" type="button" data-client="${esc(client)}" title="${clientExpanded ? "Recolher" : "Expandir"} tarefas de ${esc(client)}"><span class="registration-task-toggle">${clientExpanded ? "▾" : "▸"}</span><strong>${esc(client)}</strong><span class="registration-subtask-count">${clientCounts.get(client) || 0}</span></button></td>`
+      : `<td data-k="${esc(col.k)}"></td>`).join("") : "";
     const groupHeader = groupByClient && client !== previousClient
-      ? `<tr class="client-group-row"><td colspan="${cols.length + (selectable ? 1 : 0) + 1}"><strong>${esc(client)}</strong><span>${clientCounts.get(client) || 0} tarefa(s)</span></td></tr>`
+      ? `<tr class="client-group-row" data-client="${esc(client)}">${selectable ? '<td class="select-cell"></td>' : ""}${groupCells}<td class="act action-col table-actions-cell"></td></tr>`
       : "";
+    const taskRowAttrs = groupByClient ? ` class="client-task-row" data-client="${esc(client)}"${clientExpanded ? "" : " hidden"}` : "";
     if (groupByClient) previousClient = client;
     const selectTd = selectable
       ? `<td class="select-cell"><input type="checkbox" class="row-select" data-id="${esc(String(rid))}"${selectedSet.has(String(rid)) ? " checked" : ""}></td>`
@@ -1853,13 +1859,13 @@ function renderTable(c) {
       return `<td class="${cls}" data-k="${esc(col.k)}">${val}</td>`;
     }).join("");
     if (state.tab === "conversations") {
-      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
         delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "projects") {
-      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega", enabled: currentUserCan("projects", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega", enabled: currentUserCan("projects", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega", enabled: currentUserCan("projects", "delete") }
@@ -1867,19 +1873,19 @@ function renderTable(c) {
     }
     if (state.tab === "activities") {
       const checklist = normalizeChecklist(r.checklist);
-      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
         edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
     if (state.tab === "products") {
-      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto", enabled: currentUserCan("products", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
-    return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+    return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
     })}</td></tr>`;
@@ -1933,6 +1939,16 @@ function renderTable(c) {
       else selectedSet.delete(box.dataset.id);
       render();
     }));
+  document.querySelectorAll(".client-group-toggle").forEach((button) => button.addEventListener("click", () => {
+    const client = button.dataset.client;
+    if (state.expandedActivityClients.has(client)) state.expandedActivityClients.delete(client);
+    else state.expandedActivityClients.add(client);
+    const expanded = state.expandedActivityClients.has(client);
+    document.querySelectorAll(`.client-task-row[data-client="${CSS.escape(client)}"]`).forEach((row) => { row.hidden = !expanded; });
+    const arrow = button.querySelector(".registration-task-toggle");
+    if (arrow) arrow.textContent = expanded ? "▾" : "▸";
+    button.title = `${expanded ? "Recolher" : "Expandir"} tarefas de ${client}`;
+  }));
   document.getElementById("select-all-rows")?.addEventListener("change", (e) => {
     rows.forEach((r) => {
       const id = String(r[rowKey]);

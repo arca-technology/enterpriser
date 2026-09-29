@@ -373,9 +373,17 @@
   .gantt-bottom-scroll{height:18px;min-height:18px;margin:0 14px;overflow-x:scroll;overflow-y:hidden;border:1px solid var(--border);border-top:0;background:var(--panel2);flex:0 0 18px}
   .gantt-bottom-scroll>div{height:1px}
   .gantt-pagination{flex:0 0 26px}
-  .client-group-row td{position:sticky;left:0;z-index:1;height:28px!important;padding:4px 12px!important;background:var(--panel2)!important;border-top:1px solid var(--border);border-bottom:1px solid var(--border)!important;color:var(--text);font-size:11px}
-  .client-group-row td strong{margin-right:10px;text-transform:uppercase}
-  .client-group-row td span{color:var(--muted);font-size:10px}
+  .client-group-row td{height:34px!important;background:var(--panel2)!important;border-top:1px solid var(--border);border-bottom:1px solid var(--border)!important;color:var(--text);font-size:11px}
+  .client-group-row .select-cell,.client-group-row .table-actions-cell{background:var(--panel2)!important}
+  .client-group-toggle{display:flex;width:100%;min-width:180px;align-items:center;gap:7px;border:0;background:transparent;color:var(--text);padding:0;font:inherit;text-align:left;cursor:pointer}
+  .client-group-toggle:hover{color:var(--cyan)}
+  .client-group-toggle .registration-task-toggle{pointer-events:none}
+  .client-group-toggle strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:uppercase}
+  .client-group-toggle .registration-subtask-count{flex:0 0 auto}
+  .client-task-row td{background:color-mix(in srgb,var(--panel2) 42%,var(--panel))!important}
+  .client-task-row td:first-child{border-left:3px solid var(--cyan)}
+  .client-task-row td[data-k="client_name"]{padding-left:30px;color:var(--muted)}
+  .client-task-row .table-actions-cell{background:color-mix(in srgb,var(--panel2) 42%,var(--panel))!important}
 
   .empty{padding:60px 18px;text-align:center;color:var(--muted)}
   .dashboard{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:12px;padding:16px}
