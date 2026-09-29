@@ -1683,6 +1683,7 @@ function saveColPrefs() {
 let colPrefs = loadColPrefs();
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
+  groupActivitiesByClient: false,
   selectedConversations: new Set(),
   bulkSelections: {
     contacts: new Set(), companies: new Set(), deals: new Set(), products: new Set(),
@@ -1804,7 +1805,16 @@ function rowsFor(tab, c) {
 // ---------- Render tabela ----------
 function renderTable(c) {
   const cols = visibleColumns(state.tab, c);
-  const allRows = rowsFor(state.tab, c);
+  let allRows = rowsFor(state.tab, c);
+  const groupByClient = state.tab === "activities" && state.groupActivitiesByClient;
+  if (groupByClient) {
+    allRows = [...allRows].sort((a, b) => String(a.client_name || "Sem cliente").localeCompare(String(b.client_name || "Sem cliente"), "pt-BR", { sensitivity: "base" }));
+  }
+  const clientCounts = groupByClient ? allRows.reduce((counts, row) => {
+    const client = String(row.client_name || "Sem cliente");
+    counts.set(client, (counts.get(client) || 0) + 1);
+    return counts;
+  }, new Map()) : new Map();
   const paginated = true;
   const totalPages = paginated ? Math.max(1, Math.ceil(allRows.length / state.pageSize)) : 1;
   if (paginated) state.pages[state.tab] = Math.min(Math.max(1, state.pages[state.tab] || 1), totalPages);
@@ -1826,8 +1836,14 @@ function renderTable(c) {
     return `<th data-k="${col.k}" class="${cls}" title="Clique para ordenar. Ctrl+clique para filtrar.">${col.h}${arr}</th>`;
   }).join("") + actionHead;
 
+  let previousClient = null;
   const body = rows.map((r) => {
     const rid = r[rowKey];
+    const client = String(r.client_name || "Sem cliente");
+    const groupHeader = groupByClient && client !== previousClient
+      ? `<tr class="client-group-row"><td colspan="${cols.length + (selectable ? 1 : 0) + 1}"><strong>${esc(client)}</strong><span>${clientCounts.get(client) || 0} tarefa(s)</span></td></tr>`
+      : "";
+    if (groupByClient) previousClient = client;
     const selectTd = selectable
       ? `<td class="select-cell"><input type="checkbox" class="row-select" data-id="${esc(String(rid))}"${selectedSet.has(String(rid)) ? " checked" : ""}></td>`
       : "";
@@ -1837,13 +1853,13 @@ function renderTable(c) {
       return `<td class="${cls}" data-k="${esc(col.k)}">${val}</td>`;
     }).join("");
     if (state.tab === "conversations") {
-      return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
         delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "projects") {
-      return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega", enabled: currentUserCan("projects", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega", enabled: currentUserCan("projects", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega", enabled: currentUserCan("projects", "delete") }
@@ -1851,19 +1867,19 @@ function renderTable(c) {
     }
     if (state.tab === "activities") {
       const checklist = normalizeChecklist(r.checklist);
-      return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
         edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
     if (state.tab === "products") {
-      return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto", enabled: currentUserCan("products", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
-    return `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+    return groupHeader + `<tr>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
     })}</td></tr>`;
@@ -2040,7 +2056,7 @@ function timelineItem(tab, row, c) {
   };
   if (tab === "activities") return {
     id: row.id, title: activityDisplayName(row), detail: `${row.client_name || "Sem cliente"} · ${row.product_name || "Sem produto"}`,
-    start: row.due_date, end: row.due_date, status: row.status
+    start: taskPlannedStart(row) || taskPlannedEnd(row), end: taskPlannedEnd(row) || taskPlannedStart(row), status: row.status
   };
   return null;
 }
@@ -2103,7 +2119,7 @@ function ganttItemState(item) {
   return "planned";
 }
 
-function ganttTimelineMarkup(items, label = "Registro", itemClass = "") {
+function ganttTimelineMarkup(items, label = "Registro", itemClass = "", footer = "") {
   const scale = ganttScale(items);
   const grid = `<div class="gantt-grid" style="grid-template-columns:repeat(${scale.ticks.length},1fr)">${scale.ticks.map(() => "<span></span>").join("")}</div>`;
   const axis = `<div class="gantt-axis" style="width:${scale.width}px;grid-template-columns:repeat(${scale.ticks.length},1fr)">${scale.ticks.map((tick) => `<span>${esc(tick)}</span>`).join("")}</div>`;
@@ -2112,7 +2128,7 @@ function ganttTimelineMarkup(items, label = "Registro", itemClass = "") {
     ? (today.getTime() - scale.start.getTime()) / scale.span * scale.width
     : null;
   const todayLine = todayLeft == null ? "" : `<span class="gantt-today" style="left:${todayLeft}px" title="Hoje"></span>`;
-  const rows = items.sort((a, b) => dateOnly(a.start) - dateOnly(b.start)).map((item) => {
+  const rows = [...items].sort((a, b) => dateOnly(a.start) - dateOnly(b.start)).map((item) => {
     const start = dateOnly(item.start);
     const end = dateOnly(item.end) || start;
     const isMilestone = isoDay(start) === isoDay(end);
@@ -2128,10 +2144,26 @@ function ganttTimelineMarkup(items, label = "Registro", itemClass = "") {
     return `<div class="gantt-row"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span></div>
       <div class="gantt-track" style="width:${scale.width}px">${grid}${todayLine}${control}</div></div>`;
   }).join("");
-  return `<div class="gantt-view"><div class="gantt-board">
+  return `<div class="gantt-shell"><div class="gantt-view"><div class="gantt-board">
     <div class="gantt-head"><div>${esc(label)}</div><div class="gantt-axis-wrap">${axis}</div></div>${rows}
-    <div class="gantt-legend"><span><i class="planned"></i>Planejado</span><span><i class="active"></i>Em andamento</span><span><i class="done"></i>Concluído</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">◆ data única</span></div>
-  </div></div>`;
+    <div class="gantt-legend"><span><i class="planned"></i>Planejado</span><span><i class="active"></i>Em andamento</span><span><i class="done"></i>Atendido</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">◆ data única</span></div>
+  </div></div><div class="gantt-bottom-scroll" aria-label="Rolagem horizontal do Gantt"><div style="width:${scale.width + 262}px"></div></div>${footer}</div>`;
+}
+
+function wireGanttScrolling(root = document) {
+  const view = root.querySelector(".gantt-view");
+  const bottom = root.querySelector(".gantt-bottom-scroll");
+  if (!view || !bottom) return;
+  let syncing = false;
+  const sync = (source, target) => {
+    if (syncing) return;
+    syncing = true;
+    target.scrollLeft = source.scrollLeft;
+    requestAnimationFrame(() => { syncing = false; });
+  };
+  view.addEventListener("scroll", () => sync(view, bottom), { passive: true });
+  bottom.addEventListener("scroll", () => sync(bottom, view), { passive: true });
+  bottom.scrollLeft = view.scrollLeft;
 }
 
 function openTimelineRecord(tab, id) {
@@ -2183,14 +2215,24 @@ function renderCalendar(c) {
 }
 
 function renderGantt(c) {
-  const items = rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter((item) => item && dateOnly(item.start));
-  if (!items.length) {
+  const allItems = rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter((item) => item && dateOnly(item.start));
+  if (!allItems.length) {
     document.getElementById("main").innerHTML = '<div class="empty">Nenhum registro com data para exibir no Gantt.</div>';
     return;
   }
-  document.getElementById("main").innerHTML = ganttTimelineMarkup(items);
+  const totalPages = Math.max(1, Math.ceil(allItems.length / state.pageSize));
+  state.pages[state.tab] = Math.min(Math.max(1, state.pages[state.tab] || 1), totalPages);
+  const currentPage = state.pages[state.tab];
+  const start = (currentPage - 1) * state.pageSize;
+  const items = allItems.slice(start, start + state.pageSize);
+  const pagination = `<div class="table-pagination gantt-pagination"><span>${start + 1}-${Math.min(start + state.pageSize, allItems.length)} de ${allItems.length}</span><div><button class="btn" id="gantt-page-prev"${currentPage <= 1 ? " disabled" : ""}>‹</button><span>Página ${currentPage} de ${totalPages}</span><button class="btn" id="gantt-page-next"${currentPage >= totalPages ? " disabled" : ""}>›</button></div></div>`;
+  const main = document.getElementById("main");
+  main.innerHTML = ganttTimelineMarkup(items, state.tab === "activities" ? "Tarefa" : "Registro", "", pagination);
+  wireGanttScrolling(main);
   document.querySelectorAll(".gantt-bar,.gantt-milestone").forEach((button) =>
     button.addEventListener("click", () => openTimelineRecord(state.tab, button.dataset.id)));
+  document.getElementById("gantt-page-prev")?.addEventListener("click", () => { state.pages[state.tab] -= 1; render(); });
+  document.getElementById("gantt-page-next")?.addEventListener("click", () => { state.pages[state.tab] += 1; render(); });
 }
 
 function wireKanbanDnD(pipelineId) {
@@ -5285,6 +5327,12 @@ function render() {
   document.getElementById("new").disabled = isHome || !currentUserCan(state.tab, "create");
   document.getElementById("cols-btn").disabled = isHome;
   document.getElementById("data-btn").disabled = isHome;
+  const groupClientButton = document.getElementById("group-client-btn");
+  const canGroupClients = !isHome && state.tab === "activities" && state.view === "table";
+  groupClientButton.hidden = !canGroupClients;
+  groupClientButton.disabled = !canGroupClients;
+  groupClientButton.classList.toggle("active", canGroupClients && state.groupActivitiesByClient);
+  groupClientButton.setAttribute("aria-pressed", String(canGroupClients && state.groupActivitiesByClient));
   document.getElementById("filter-strip").classList.toggle("home-hidden", isHome);
   if (!isHome) renderActiveFilterBadges();
 
@@ -10342,6 +10390,12 @@ document.getElementById("cols-btn").addEventListener("click", (e) => {
   document.getElementById("filter-dd")?.remove();
   document.getElementById("csv-dd")?.remove();
   openColumnManager();
+});
+document.getElementById("group-client-btn").addEventListener("click", () => {
+  if (state.tab !== "activities" || state.view !== "table") return;
+  state.groupActivitiesByClient = !state.groupActivitiesByClient;
+  state.pages.activities = 1;
+  render();
 });
 document.getElementById("view-menu-btn").addEventListener("click", (event) => {
   event.stopPropagation();

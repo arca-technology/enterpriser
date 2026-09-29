@@ -119,7 +119,8 @@
   .view-menu-trigger.active{background:var(--blue);border-color:var(--blue);color:#fff}
   .view-menu-trigger.active .chevron{color:#dbe8ff}
   .view-menu-trigger .chevron{font-size:10px;color:var(--muted)}
-  #cols-btn,#data-btn{width:38px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px}
+  #cols-btn,#data-btn,#group-client-btn{width:38px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px}
+  #group-client-btn.active{background:var(--blue);border-color:var(--blue);color:#fff}
   .view-option{display:grid;grid-template-columns:22px 1fr 14px;align-items:center;gap:6px;width:100%;border:0;background:transparent;color:var(--text);padding:8px 9px;border-radius:5px;text-align:left;font:inherit;font-size:12px;cursor:pointer}
   .view-option:hover{background:var(--row)}
   .view-option.active{color:var(--blue);background:var(--panel2);font-weight:700}
@@ -342,8 +343,9 @@
   .calendar-date{font-size:11px;font-weight:700;color:var(--muted)}
   .calendar-item{border:0;border-left:3px solid var(--blue);background:var(--panel2);color:var(--text);border-radius:4px;padding:5px 6px;text-align:left;font:inherit;font-size:10.5px;line-height:1.3;cursor:pointer;overflow:hidden;text-overflow:ellipsis}
   .calendar-item:hover{background:var(--row-hover)}
-  .gantt-view{padding:14px;overflow:auto;min-height:100%}
-  .gantt-board{width:max-content;min-width:100%;border:1px solid var(--border);border-radius:7px;overflow:hidden;background:var(--panel)}
+  .gantt-shell{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+  .gantt-view{padding:14px 14px 0;overflow:auto;min-height:0;flex:1 1 auto;overscroll-behavior:contain}
+  .gantt-board{width:max-content;min-width:100%;border:1px solid var(--border);border-radius:7px 7px 0 0;overflow:visible;background:var(--panel)}
   .gantt-head,.gantt-row{display:grid;grid-template-columns:260px auto}
   .gantt-head{position:sticky;top:0;z-index:5;background:var(--panel2);color:var(--muted);font-size:10.5px;font-weight:750;text-transform:uppercase}
   .gantt-head>div:first-child,.gantt-label{position:sticky;left:0;z-index:3;padding:9px 12px;border-bottom:1px solid var(--border2);background:var(--panel)}
@@ -374,6 +376,12 @@
   .gantt-legend i.done{background:var(--green)}
   .gantt-legend i.overdue{background:var(--red)}
   .gantt-legend-note{margin-left:auto}
+  .gantt-bottom-scroll{height:18px;min-height:18px;margin:0 14px;overflow-x:scroll;overflow-y:hidden;border:1px solid var(--border);border-top:0;background:var(--panel2);flex:0 0 18px}
+  .gantt-bottom-scroll>div{height:1px}
+  .gantt-pagination{flex:0 0 26px}
+  .client-group-row td{position:sticky;left:0;z-index:1;height:28px!important;padding:4px 12px!important;background:var(--panel2)!important;border-top:1px solid var(--border);border-bottom:1px solid var(--border)!important;color:var(--text);font-size:11px}
+  .client-group-row td strong{margin-right:10px;text-transform:uppercase}
+  .client-group-row td span{color:var(--muted);font-size:10px}
 
   .empty{padding:60px 18px;text-align:center;color:var(--muted)}
   .dashboard{display:grid;grid-template-columns:repeat(4,minmax(160px,1fr));gap:12px;padding:16px}
@@ -1138,6 +1146,7 @@
       <button class="view" id="v-dashboard" data-view="dashboard">Dashboard</button>
       <button class="view" id="v-matrix" data-view="matrix">Matriz</button>
       <button class="btn view-menu-trigger" id="view-menu-btn" title="Modo de visualização"><span id="view-menu-label">TABELA</span><span class="chevron">▾</span></button>
+      <button class="btn" id="group-client-btn" title="Agrupar tarefas por cliente" aria-label="Agrupar tarefas por cliente" aria-pressed="false" hidden>≡</button>
       <button class="btn" id="cols-btn" title="Selecionar colunas">⊞</button>
       <div class="selection-actions" id="selection-actions">
         <button class="btn" id="associate-contact">Associar contato</button>
