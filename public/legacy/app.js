@@ -1359,11 +1359,28 @@ function normalizePhoneNumber(value) {
 }
 function normalizePhoneList(value) {
   const seen = new Set();
-  return splitMultiValues(value).map(normalizePhoneNumber).filter((item) => {
+  const normalized = splitMultiValues(value).map(normalizePhoneNumber).filter((item) => {
     const key = item.replace(/\D/g, "");
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
+  });
+  const phoneDigits = (item) => {
+    let digits = item.replace(/\D/g, "");
+    if (digits.startsWith("00")) digits = digits.slice(2);
+    if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
+    return digits;
+  };
+  return normalized.filter((item) => {
+    const short = phoneDigits(item);
+    if (short.length !== 12) return true;
+    return !normalized.some((candidate) => {
+      const long = phoneDigits(candidate);
+      return long.length === 13
+        && long.slice(0, 4) === short.slice(0, 4)
+        && long[4] === "9"
+        && long.slice(5) === short.slice(4);
+    });
   }).join("; ");
 }
 function normalizeEmailList(value) {
