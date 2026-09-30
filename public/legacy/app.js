@@ -1485,6 +1485,8 @@ function columns(tab, c) {
       { k: "headquarters", h: "SEDE" },
       { k: "founded_at", h: "DATA DE ABERTURA", fmt: dt },
       { k: "registration_status", h: "SITUAÇÃO CADASTRAL" },
+      { k: "qsa", h: "QSA", fmt: (v) => multiLineCell(v) },
+      { k: "share_capital", h: "CAPITAL SOCIAL", num: true, fmt: brl, cls: "pos" },
       { k: "activities", h: "ATIVIDADES" },
       { k: "address", h: "ENDEREÇO" },
       { k: "zip_code", h: "CEP", cls: "muted" },
@@ -1630,6 +1632,8 @@ function fields(tab, c) {
       { k: "headquarters", label: "Sede" },
       { k: "founded_at", label: "Data de abertura", type: "date" },
       { k: "registration_status", label: "Situação cadastral" },
+      { k: "qsa", label: "QSA", type: "textarea", full: true, placeholder: "Nome/Nome Empresarial: NOME | Qualificação: 49-Sócio-Administrador; ..." },
+      { k: "share_capital", label: "Capital social (R$)", type: "number", min: 0, step: 0.01 },
       { k: "activities", label: "Atividades", full: true },
       { k: "address", label: "Endereço", full: true },
       { k: "zip_code", label: "CEP" },
@@ -5540,10 +5544,12 @@ function openForm(tab, id, opts = {}) {
       ctrl = `<select data-k="${f.k}"${isLocked ? " disabled" : ""}>${opts.join("")}</select>`;
     } else if (f.type === "checkbox") {
       ctrl = `<input type="checkbox" data-k="${f.k}"${val ? " checked" : ""}${isLocked ? " disabled" : ""}>`;
+    } else if (f.type === "textarea") {
+      ctrl = `<textarea data-k="${f.k}"${f.req ? " required" : ""}${isLocked ? " readonly" : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>${esc(val)}</textarea>`;
     } else {
       const t = f.type === "number" ? "number" : f.type === "date" ? "date" : "text";
       const lockPk = id && f.k === pk(tab);
-      const input = `<input type="${t}" data-k="${f.k}" value="${esc(val)}"${f.req ? " required" : ""}${(lockPk || isLocked) ? " readonly" : ""}>`;
+      const input = `<input type="${t}" data-k="${f.k}" value="${esc(val)}"${f.req ? " required" : ""}${(lockPk || isLocked) ? " readonly" : ""}${f.min != null ? ` min="${esc(f.min)}"` : ""}${f.step != null ? ` step="${esc(f.step)}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>`;
       ctrl = f.lookup === "cnpj" && !lockPk
         ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">Buscar dados</button></div>`
         : input;
@@ -5676,6 +5682,17 @@ async function lookupCompanyByCnpj(form, button) {
     set("headquarters", data.head === false ? "Filial" : "Matriz");
     set("founded_at", String(data.founded || data.openedAt || "").slice(0, 10));
     set("registration_status", data.status?.text || data.status?.name || data.status);
+    const qsa = [...new Set((data.company?.members || []).map((member) => {
+      const name = String(member?.person?.name || "").trim();
+      const role = [member?.role?.id, member?.role?.text]
+        .filter((value) => value != null && value !== "")
+        .join("-");
+      return name && role
+        ? `Nome/Nome Empresarial: ${name} | Qualificação: ${role}`
+        : "";
+    }).filter(Boolean))].join("; ");
+    set("qsa", qsa);
+    set("share_capital", data.company?.equity);
     set("activities", activity ? [activity.id, activity.text].filter(Boolean).join(" — ") : "");
     set("address", addressText);
     set("zip_code", address.zip);
