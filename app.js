@@ -10471,43 +10471,140 @@ function openTaskComments(activityId) {
 
 let internalChatTimer = null;
 let internalChatRecipientId = null;
+let internalChatMessages = [];
+let internalChatQuery = "";
 
 function stopInternalChatPolling() {
   if (internalChatTimer) clearInterval(internalChatTimer);
   internalChatTimer = null;
 }
 
-async function fetchDirectMessages(recipientId) {
-  const profileId = activeProfileId();
-  if (!profileId) throw new Error("Usuário ativo não encontrado.");
-  if (!isLive()) return (cache.directMessages || []).filter((message) =>
-    (message.sender_id === profileId && message.recipient_id === recipientId)
-    || (message.sender_id === recipientId && message.recipient_id === profileId)
+function internalChatUsers() {
+  return (cache.users || []).filter((user) => user.id !== activeProfileId()).sort((a, b) => {
+    const statusOrder = Number(b.status === "active") - Number(a.status === "active");
+    return statusOrder || userDisplayName(a.id, cache, "Usuário").localeCompare(userDisplayName(b.id, cache, "Usuário"), "pt-BR", { sensitivity: "base" });
+  });
+}
+
+async function fetchAllDirectMessages() {
+  if (!isLive()) return [...(cache.directMessages || [])];
+  return api("direct_messages?select=*&order=created_at.desc&limit=1000");
+}
+
+function directConversationMessages(userId) {
+  const me = activeProfileId();
+  return internalChatMessages.filter((message) =>
+    (message.sender_id === me && message.recipient_id === userId)
+    || (message.sender_id === userId && message.recipient_id === me)
   ).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-  const me = encodeURIComponent(profileId);
-  const other = encodeURIComponent(recipientId);
-  return api(`direct_messages?select=*&or=(and(sender_id.eq.${me},recipient_id.eq.${other}),and(sender_id.eq.${other},recipient_id.eq.${me}))&order=created_at.asc&limit=200`);
+}
+
+function internalChatTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  const now = new Date();
+  return date.toDateString() === now.toDateString()
+    ? date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+}
+
+function internalChatInitials(user) {
+  return userDisplayName(user.id, cache, "U").split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+}
+
+function internalChatConversationState(latest, unreadCount) {
+  if (!latest) return "Nova conversa";
+  if (latest.sender_id !== activeProfileId()) return unreadCount ? "Nova resposta" : "Respondida";
+  return latest.read_at ? "Lida · aguardando resposta" : "Enviada · aguardando resposta";
+}
+
+function internalChatRowsHtml() {
+  const query = internalChatQuery.trim().toLocaleLowerCase("pt-BR");
+  const users = internalChatUsers().map((user) => {
+    const messages = directConversationMessages(user.id);
+    const latest = messages.at(-1) || null;
+    const unreadCount = messages.filter((message) => message.sender_id === user.id && message.recipient_id === activeProfileId() && !message.read_at).length;
+    return { user, latest, unreadCount, state: internalChatConversationState(latest, unreadCount) };
+  }).filter(({ user, latest }) => !query || [userDisplayName(user.id, cache, "Usuário"), user.email, user.job_title, latest?.body]
+    .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query)));
+  return users.length ? users.map(({ user, latest, unreadCount, state }) => {
+    const mine = latest?.sender_id === activeProfileId();
+    return `<button class="internal-chat-contact${unreadCount ? " unread" : ""}" type="button" data-chat-user="${esc(user.id)}">
+      <span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span>
+      <span class="internal-chat-contact-main"><span class="internal-chat-contact-head"><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><time>${esc(internalChatTime(latest?.created_at))}</time></span>
+        <span class="internal-chat-preview">${latest ? `${mine ? "Você: " : ""}${esc(latest.body)}` : "Clique para iniciar uma conversa"}</span>
+        <span class="internal-chat-contact-meta"><span class="user-presence ${user.status === "active" ? "active" : "inactive"}">${user.status === "active" ? "Ativo" : "Inativo"}</span><span class="conversation-state">${esc(state)}</span></span>
+      </span>${unreadCount ? `<b class="internal-chat-unread">${unreadCount}</b>` : ""}
+    </button>`;
+  }).join("") : '<div class="empty">Nenhum usuário encontrado.</div>';
+}
+
+function wireInternalChatRows() {
+  document.querySelectorAll("[data-chat-user]").forEach((button) => button.addEventListener("click", () => openInternalChatThread(button.dataset.chatUser)));
+}
+
+function renderInternalChatList() {
+  internalChatRecipientId = null;
+  const panel = document.getElementById("internal-chat-panel");
+  if (!panel) return;
+  panel.innerHTML = `<div class="internal-chat-search"><input id="internal-chat-search" type="search" placeholder="Pesquisar pessoas ou mensagens..." value="${esc(internalChatQuery)}"></div>
+    <div class="internal-chat-contacts" id="internal-chat-contacts">${internalChatRowsHtml()}</div>`;
+  document.getElementById("internal-chat-search").addEventListener("input", (event) => {
+    internalChatQuery = event.target.value;
+    document.getElementById("internal-chat-contacts").innerHTML = internalChatRowsHtml();
+    wireInternalChatRows();
+  });
+  wireInternalChatRows();
+}
+
+function renderInternalChatMessages({ scroll = false } = {}) {
+  const log = document.getElementById("internal-chat-log");
+  if (!log || !internalChatRecipientId) return;
+  const messages = directConversationMessages(internalChatRecipientId);
+  log.innerHTML = messages.length ? messages.map((message) => `<div class="internal-chat-message ${message.sender_id === activeProfileId() ? "mine" : "theirs"}">
+      <strong>${esc(userDisplayName(message.sender_id, cache, "Usuário"))}</strong>
+      <p>${esc(message.body)}</p><span class="internal-chat-message-meta"><time>${esc(new Date(message.created_at).toLocaleString("pt-BR"))}</time>${message.sender_id === activeProfileId() ? `<span>${message.read_at ? "Lida" : "Enviada"}</span>` : ""}</span>
+    </div>`).join("") : '<div class="empty">Comece a conversa.</div>';
+  if (scroll) log.scrollTop = log.scrollHeight;
+}
+
+async function markDirectMessagesRead(senderId) {
+  const recipientId = activeProfileId();
+  if (!recipientId) return;
+  const unread = internalChatMessages.filter((message) => message.sender_id === senderId && message.recipient_id === recipientId && !message.read_at);
+  if (!unread.length) return;
+  const readAt = new Date().toISOString();
+  if (isLive()) {
+    await api(`direct_messages?sender_id=eq.${encodeURIComponent(senderId)}&recipient_id=eq.${encodeURIComponent(recipientId)}&read_at=is.null`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ read_at: readAt })
+    });
+  }
+  unread.forEach((message) => { message.read_at = readAt; });
 }
 
 async function refreshInternalChat({ scroll = false } = {}) {
-  const log = document.getElementById("internal-chat-log");
-  if (!log || !internalChatRecipientId) return;
+  if (!document.getElementById("internal-chat-panel")) return;
   try {
-    const messages = await fetchDirectMessages(internalChatRecipientId);
-    log.innerHTML = messages.length ? messages.map((message) => `<div class="internal-chat-message ${message.sender_id === activeProfileId() ? "mine" : "theirs"}">
-      <strong>${esc(userDisplayName(message.sender_id, cache, "Usuário"))}</strong>
-      <p>${esc(message.body)}</p><time>${esc(new Date(message.created_at).toLocaleString("pt-BR"))}</time>
-    </div>`).join("") : '<div class="empty">Comece a conversa.</div>';
-    if (scroll) log.scrollTop = log.scrollHeight;
+    internalChatMessages = await fetchAllDirectMessages();
+    if (internalChatRecipientId) {
+      await markDirectMessagesRead(internalChatRecipientId);
+      renderInternalChatMessages({ scroll });
+    } else {
+      const contacts = document.getElementById("internal-chat-contacts");
+      if (contacts) { contacts.innerHTML = internalChatRowsHtml(); wireInternalChatRows(); }
+    }
   } catch (error) {
-    log.innerHTML = `<div class="empty">Não foi possível carregar o chat.<br>${esc(error.message)}</div>`;
+    const target = document.getElementById("internal-chat-log") || document.getElementById("internal-chat-contacts");
+    if (target) target.innerHTML = `<div class="empty">Não foi possível carregar o chat.<br>${esc(error.message)}</div>`;
   }
 }
 
 async function sendDirectMessage(recipientId, body) {
   const senderId = activeProfileId();
   if (!senderId) throw new Error("Usuário ativo não encontrado.");
-  const message = { id: crypto.randomUUID(), sender_id: senderId, recipient_id: recipientId, body, created_at: new Date().toISOString() };
+  const message = { id: crypto.randomUUID(), sender_id: senderId, recipient_id: recipientId, body, read_at: null, created_at: new Date().toISOString() };
   if (!isLive()) {
     cache.directMessages.push(message);
     return message;
@@ -10520,35 +10617,26 @@ async function sendDirectMessage(recipientId, body) {
   return Array.isArray(result) ? result[0] : result;
 }
 
-function openInternalChat() {
-  stopInternalChatPolling();
-  const users = (cache.users || []).filter((user) => user.status === "active" && user.id !== activeProfileId());
-  internalChatRecipientId = users.some((user) => user.id === internalChatRecipientId) ? internalChatRecipientId : users[0]?.id || null;
-  const options = users.map((user) => `<option value="${esc(user.id)}"${user.id === internalChatRecipientId ? " selected" : ""}>${esc(userDisplayName(user.id, cache, "Usuário"))}</option>`).join("");
-  const closeChat = () => {
-    stopInternalChatPolling();
-    modalCloseOverride = null;
-    closeModal();
-  };
-  sidePanel("Chat", users.length ? `<div class="internal-chat-panel">
-    <label class="internal-chat-user">Conversar com<select id="internal-chat-user">${options}</select></label>
-    <div class="internal-chat-log" id="internal-chat-log"><div class="empty">Carregando conversa...</div></div>
-    <form class="internal-chat-form" id="internal-chat-form"><textarea id="internal-chat-body" maxlength="4000" placeholder="Digite uma mensagem..." required></textarea><button class="btn primary" type="submit">Enviar</button></form>
-  </div>` : '<div class="panel-list">Nenhum outro usuário ativo está disponível.</div>', { onClose: closeChat });
-  if (!users.length) return;
-  document.getElementById("internal-chat-user").addEventListener("change", (event) => {
-    internalChatRecipientId = event.target.value;
-    refreshInternalChat({ scroll: true });
-  });
-  document.getElementById("internal-chat-form").addEventListener("submit", async (event) => {
+function openInternalChatThread(recipientId) {
+  const user = (cache.users || []).find((item) => item.id === recipientId);
+  if (!user) return;
+  internalChatRecipientId = recipientId;
+  const isActive = user.status === "active";
+  const panel = document.getElementById("internal-chat-panel");
+  panel.innerHTML = `<div class="internal-chat-thread-head"><button class="btn internal-chat-back" id="internal-chat-back" type="button" title="Voltar">‹</button><span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span><span><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><small class="user-presence ${isActive ? "active" : "inactive"}">${isActive ? "Ativo" : "Inativo"}</small></span></div>
+    <div class="internal-chat-log" id="internal-chat-log"></div>
+    ${isActive ? '<form class="internal-chat-form" id="internal-chat-form"><textarea id="internal-chat-body" maxlength="4000" placeholder="Digite uma mensagem..." required></textarea><button class="btn primary" type="submit">Enviar</button></form>' : '<div class="internal-chat-disabled">Este usuário está inativo. O histórico permanece disponível para consulta.</div>'}`;
+  document.getElementById("internal-chat-back").addEventListener("click", () => { renderInternalChatList(); refreshInternalChat(); });
+  document.getElementById("internal-chat-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const input = document.getElementById("internal-chat-body");
     const body = input.value.trim();
-    if (!body || !internalChatRecipientId) return;
+    if (!body) return;
     const button = event.currentTarget.querySelector("button");
     button.disabled = true;
     try {
-      await sendDirectMessage(internalChatRecipientId, body);
+      const saved = await sendDirectMessage(recipientId, body);
+      if (isLive()) internalChatMessages.push(saved);
       input.value = "";
       await refreshInternalChat({ scroll: true });
     } catch (error) {
@@ -10558,7 +10646,23 @@ function openInternalChat() {
       input.focus();
     }
   });
+  renderInternalChatMessages({ scroll: true });
   refreshInternalChat({ scroll: true });
+}
+
+function openInternalChat() {
+  stopInternalChatPolling();
+  internalChatRecipientId = null;
+  internalChatQuery = "";
+  internalChatMessages = [];
+  const closeChat = () => {
+    stopInternalChatPolling();
+    modalCloseOverride = null;
+    closeModal();
+  };
+  sidePanel("Chat", '<div class="internal-chat-panel" id="internal-chat-panel"></div>', { onClose: closeChat });
+  renderInternalChatList();
+  refreshInternalChat();
   internalChatTimer = setInterval(() => refreshInternalChat(), 5000);
 }
 
