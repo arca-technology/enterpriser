@@ -951,7 +951,7 @@
     .brand-home{height:48px;display:flex;align-items:center;flex:1 1 auto;font-size:12px}
     header .actions{height:48px;flex:0 0 auto;gap:0}
     header .actions .ico{width:40px;height:40px;padding:9px}
-    header .actions [data-action="notifications"],header .actions [data-action="integrations"],header .actions [data-action="settings"]{display:none}
+    header .actions [data-action="notifications"],header .actions [data-action="chat"],header .actions [data-action="integrations"],header .actions [data-action="settings"]{display:none}
     header nav{order:3;position:static;transform:none;width:calc(100vw - 16px);height:45px;margin:0;justify-content:flex-start;gap:5px;overflow-x:auto;scrollbar-width:none}
     header nav::-webkit-scrollbar{display:none}
     header .tab{min-width:auto;height:34px;padding:0 14px;font-size:10.5px}
@@ -1036,6 +1036,25 @@
   .field.check{flex-direction:row;align-items:center;gap:8px}
   .modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border2)}
   .panel-list{padding:16px 18px;color:var(--muted);line-height:1.6}
+  .task-comments-open{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:4px;padding:4px 8px;font:inherit;font-weight:700;white-space:nowrap;cursor:pointer}
+  .task-comments-open:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .task-comments-panel,.internal-chat-panel{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}
+  .task-comments-list,.internal-chat-log{flex:1 1 auto;min-height:180px;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:9px;background:var(--bg)}
+  .task-comment-item{border:1px solid var(--border);background:var(--panel2);border-radius:6px;padding:10px 12px}
+  .task-comment-item>div{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .task-comment-item strong{font-size:11px;color:var(--text)}
+  .task-comment-item time,.internal-chat-message time{font-size:9px;color:var(--muted)}
+  .task-comment-item p,.internal-chat-message p{margin:7px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
+  .task-comment-form,.internal-chat-form{display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px;border-top:1px solid var(--border);background:var(--panel)}
+  .task-comment-form textarea,.internal-chat-form textarea{min-height:58px;max-height:140px;resize:vertical}
+  .task-comment-form .btn,.internal-chat-form .btn{align-self:end;height:34px}
+  .internal-chat-user{display:grid;gap:6px;padding:12px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;color:var(--muted)}
+  .internal-chat-user select{width:100%}
+  .internal-chat-message{max-width:84%;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--panel2)}
+  .internal-chat-message.mine{align-self:flex-end;border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--panel))}
+  .internal-chat-message.theirs{align-self:flex-start}
+  .internal-chat-message strong{font-size:10px;color:var(--accent)}
+  .internal-chat-message p{margin:4px 0 5px}
 
   .boot-gate{position:fixed;inset:0;z-index:210;background:var(--bg);display:grid;place-items:center;padding:24px}
   .boot-gate[hidden]{display:none}

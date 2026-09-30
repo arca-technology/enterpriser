@@ -289,7 +289,9 @@ const REMOTE_TABLE = {
   processes: "training_processes",
   documents: "company_documents",
   customTables: "custom_tables",
-  contactCompanies: "contact_companies"
+  contactCompanies: "contact_companies",
+  activityComments: "activity_comments",
+  directMessages: "direct_messages"
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
 const DATA_PERMISSION_MODULE = {
@@ -387,7 +389,9 @@ const DEMO = {
   processes: [],
   documents: [],
   customTables: [],
-  contactCompanies: []
+  contactCompanies: [],
+  activityComments: [],
+  directMessages: []
 };
 
 // ---------- REST Supabase ----------
@@ -1251,7 +1255,7 @@ async function loadAll() {
   // tiver nome diferente no banco, o módulo dela fica vazio em vez de
   // derrubar o carregamento inteiro (ex.: "companies" continua funcionando
   // mesmo que "deals"/"users" ainda não tenham sido migradas).
-  const [users, companies, contacts, products, deals, projects, pipelines, activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies] = await Promise.all([
+  const [users, companies, contacts, products, deals, projects, pipelines, activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies, activityComments] = await Promise.all([
     fetchTable("users").catch(() => []),
     fetchTable("companies"),
     fetchTable("contacts").catch(() => []),
@@ -1265,7 +1269,8 @@ async function loadAll() {
     fetchTable("productGoals").catch(() => []),
     fetchTable("deliveryObjectives").catch(() => []),
     fetchTable("deliveryGoals").catch(() => []),
-    fetchTable("contactCompanies").catch(() => null)
+    fetchTable("contactCompanies").catch(() => null),
+    fetchTable("activityComments").catch(() => [])
   ]);
   const byId = (arr, key = "id") => Object.fromEntries(arr.map((r) => [r[key], r]));
   const companyIdsByContact = new Map();
@@ -1286,7 +1291,7 @@ async function loadAll() {
   const conversations = loadConversations();
   const projectById = byId(projects);
   cache = { users, companies, contacts, products, deals, projects, pipelines, conversations,
-    activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [],
+    activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [], activityComments,
     companyById: byId(companies, pk("companies")), contactById: byId(contacts), productById: byId(products),
     userById: byId(users),
     userByAuthId: Object.fromEntries(users.filter((user) => user.auth_user_id).map((user) => [user.auth_user_id, user])),
@@ -1428,6 +1433,32 @@ function inlineTaskStatus(task, className = "inline-task-status") {
   const disabled = !currentUserCan("activities", "operate");
   return `<select class="${className}" data-id="${esc(task.id)}" title="Alterar status"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task))}</select>`;
 }
+function taskDeadlineState(task) {
+  const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
+  if (!planned || (task.status === "canceled" && !task.actual_end_date)) return "";
+  const actual = String(task.actual_end_date || "").slice(0, 10);
+  if (actual) return actual < planned ? "Adiantado" : actual > planned ? "Atrasado" : "Em dia";
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return today > planned ? "Atrasado" : "Em dia";
+}
+function taskDeadlineBadge(task) {
+  const value = task.deadline_state || taskDeadlineState(task);
+  if (!value) return "—";
+  const tone = value === "Atrasado" ? "lost" : value === "Adiantado" ? "qualification" : "won";
+  return badge(tone, value);
+}
+function taskComments(taskId) {
+  return (cache?.activityComments || []).filter((comment) => comment.activity_id === taskId)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+function taskCommentCount(task) {
+  return taskComments(task.id).length + (String(task.notes || "").trim() ? 1 : 0);
+}
+function taskCommentsButton(task) {
+  const count = taskCommentCount(task);
+  return `<button class="task-comments-open" type="button" data-id="${esc(task.id)}" title="Abrir comentários">${count ? `${count} comentário${count === 1 ? "" : "s"}` : "+ Comentar"}</button>`;
+}
 
 // Quando um negócio entra em "Ganho", um projeto nasce sozinho — carrega
 // cliente/produto do negócio e calcula o fim pela duração cadastrada no
@@ -1568,7 +1599,8 @@ function columns(tab, c) {
       { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "actual_end_date", h: "TÉRMINO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "status", h: "STATUS", fmt: (_v, row) => inlineTaskStatus(row) },
-      { k: "notes", h: "NOTAS", cls: "muted" }];
+      { k: "deadline_state", h: "PRAZO", fmt: (_v, row) => taskDeadlineBadge(row) },
+      { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
       { k: "contact", h: "CONTATO", fmt: (_v, row) => contactForConversation(row) || "—" },
@@ -1961,6 +1993,8 @@ function renderTable(c) {
   }));
   document.querySelectorAll(".checklist-open").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
+  document.querySelectorAll(".task-comments-open").forEach((button) =>
+    button.addEventListener("click", () => openTaskComments(button.dataset.id)));
   document.querySelectorAll(".main-task-edit").forEach((button) =>
     button.addEventListener("click", () => openDeliveryTaskDrawer(button.dataset.projectId, button.dataset.id)));
   document.querySelectorAll(".row-select").forEach((box) =>
@@ -2348,7 +2382,9 @@ function refreshActivityCache() {
       company_id: project?.company_id || null,
       client_name: project?.client_name || company?.legal_name || company?.trade_name || "Sem cliente",
       activity_origin: task.source_template_id ? "product" : "daily",
-      objective_name: objective?.name || "—"
+      objective_name: objective?.name || "—",
+      deadline_state: taskDeadlineState(task),
+      comment_count: taskCommentCount(task)
     };
   });
 }
@@ -3589,7 +3625,7 @@ function taskCardHtml(task) {
       <span class="muted">${esc(owners)}</span>
       <span class="muted">${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")} → ${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</span>
     </div>
-    <textarea class="task-notes" placeholder="Notas, checklist ou contexto">${esc(task.notes || "")}</textarea>
+    ${taskCommentsButton(task)}
     ${terminal
       ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}" type="button">Checklist ${checklist.done}/${checklist.total}</button>`
       : `<div class="task-subtask-summary">Subtarefas ${subtasks.done}/${subtasks.total} · checklist nas subtarefas</div>`}
@@ -3696,7 +3732,8 @@ function renderTaskTable(tasks) {
       <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
       <td>${esc(task.actual_end_date ? dt(task.actual_end_date) : "—")}</td>
       <td>${inlineTaskStatus(task, "project-inline-task-status")}</td>
-      <td class="muted">${esc(task.notes || "—")}</td>
+      <td>${taskDeadlineBadge(task)}</td>
+      <td>${taskCommentsButton(task)}</td>
       <td class="table-actions-cell">${tableActionButtons({
         open: terminal && checklist.total ? { className: "checklist-open", attrs: { "data-id": task.id }, title: "Abrir checklist" } : null,
         edit: { className: "task-edit", attrs: { "data-id": task.id }, title: "Editar tarefa" },
@@ -3706,8 +3743,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th>Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th>Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Notas</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="20" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th>Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th>Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="21" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -3905,7 +3942,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Notas"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
   objectives: ["Objetivo", "Critério de conclusão", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
@@ -3929,7 +3966,8 @@ function projectSectionValues(item, tasks = []) {
       item.actual_start_date ? dt(item.actual_start_date) : "—",
       item.actual_end_date ? dt(item.actual_end_date) : "—",
       taskStatusLabel(item.status || "todo"),
-      item.notes || "—"
+      taskDeadlineState(item) || "—",
+      `${taskCommentCount(item)} comentário(s)`
     ];
   }
   if (projectBoardState.section === "objectives") {
@@ -4347,7 +4385,6 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       <div class="field"><label>Término previsto</label><input id="project-task-planned-end" type="date" value="${esc(taskPlannedEnd(current) || "")}"></div>
       <div class="field"><label>Início real</label><input id="project-task-actual-start" type="date" value="${esc(current.actual_start_date || "")}"></div>
       <div class="field"><label>Término real</label><input id="project-task-actual-end" type="date" value="${esc(current.actual_end_date || "")}"></div>
-      <div class="field task-form-wide"><label>Notas</label><textarea id="project-task-notes" rows="3">${esc(current.notes || "")}</textarea></div>
       ${editId && !parentId ? `<div class="field full task-subtasks-editor"><label>Subtarefas</label><div class="task-subtask-list">${subtasks.map((subtask) => {
         const progress = checklistProgress(subtask.checklist);
         return `<button class="task-subtask-edit" data-id="${esc(subtask.id)}"><span>${esc(activityDisplayName(subtask))}</span><small>${progress.done}/${progress.total} no checklist</small></button>`;
@@ -4405,7 +4442,7 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       actual_start_date: actualStart,
       actual_end_date: actualEnd,
       due_date: plannedEnd,
-      notes: document.getElementById("project-task-notes").value.trim(),
+      notes: current.notes || null,
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
       checklist: parentId ? (editId ? normalizeChecklist(current.checklist) : inheritedChecklist) : (subtasks.length ? [] : normalizeChecklist(current.checklist)),
       status: current.status || "todo",
@@ -4624,6 +4661,8 @@ function wireProjectBoard(projectId) {
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
   document.querySelectorAll("#project-board-root .checklist-open").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
+  document.querySelectorAll("#project-board-root .task-comments-open").forEach((button) =>
+    button.addEventListener("click", () => openTaskComments(button.dataset.id)));
   document.querySelectorAll("#project-board-root .task-add-subtask[data-id]").forEach((button) =>
     button.addEventListener("click", () => openDeliveryTaskDrawer(projectId, null, button.dataset.id)));
   document.querySelectorAll("#project-board-root .task-edit[data-id]").forEach((button) =>
@@ -4644,7 +4683,6 @@ function wireProjectBoard(projectId) {
     card.querySelector(".task-title-input")?.addEventListener("change", async (e) => updateProjectTask(id, { title: e.target.value.trim() }));
     card.querySelector(".task-add-subtask")?.addEventListener("click", () => openDeliveryTaskDrawer(projectId, null, id));
     card.querySelector(".task-edit")?.addEventListener("click", () => openDeliveryTaskDrawer(projectId, id));
-    card.querySelector(".task-notes")?.addEventListener("change", async (e) => updateProjectTask(id, { notes: e.target.value }));
     card.querySelector(".task-status")?.addEventListener("change", async (e) => { await updateProjectTask(id, { status: e.target.value }); rerender(); });
     card.querySelector(".del-task")?.addEventListener("click", () => deleteDeliveryTask(projectId, id));
   });
@@ -5916,7 +5954,7 @@ function helpContentHtml() {
 
     <section class="help-section" id="help-start"><h4>Acesso e navegação</h4>
       <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CRM. O tema claro ou escuro fica salvo neste navegador.</p></div>
-      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
+      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, chat interno, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
       <p class="help-note">Notificações ainda não possuem automação ativa. O LOG aparece apenas para administradores.</p>
     </section>
 
@@ -5927,7 +5965,7 @@ function helpContentHtml() {
       <li><b>Conversas:</b> histórico importado ou capturado, associação a pessoas e conversão individual ou em lote para negócio.</li>
       <li><b>Negócios:</b> empresa, contato, produto, responsável, pipeline, etapa, origem, valor, previsão e situação aberto, ganho ou perdido.</li>
       <li><b>Entregas:</b> projetos e serviços pós-venda com cliente, produto, período, status, tarefas, objetivos e metas.</li>
-      <li><b>Tarefas:</b> visão consolidada de todas as entregas com origem, prioridade, dependências, checklist, objetivo, responsáveis, prazo e status.</li>
+      <li><b>Tarefas:</b> visão consolidada de todas as entregas com origem, prioridade, dependências, checklist, objetivo, responsáveis, datas, status, prazo calculado e comentários por usuário.</li>
     </ul></section>
 
     <section class="help-section" id="help-tables"><h4>Tabelas, busca e filtros</h4><ul>
@@ -5956,7 +5994,7 @@ function helpContentHtml() {
 
     <section class="help-section" id="help-deliveries"><h4>Detalhes da entrega</h4>
       <p>Abra uma entrega para acessar as abas <b>Tarefas</b>, <b>Objetivos</b> e <b>Metas</b>. Todas possuem busca, seleção de colunas e os modos Tabela, Matriz e Dashboard.</p><ul>
-      <li><b>Tarefas:</b> crie tarefas do dia a dia, altere status e prazo, acompanhe checklists, notas, responsáveis e bloqueios.</li>
+      <li><b>Tarefas:</b> crie tarefas do dia a dia, altere status e datas, acompanhe checklists, comentários, responsáveis e bloqueios. Clique em Comentários para registrar várias mensagens identificadas pelo usuário.</li>
       <li><b>Objetivos:</b> acompanhe progresso calculado pelas tarefas vinculadas, responsável, prazo, dependências e status.</li>
       <li><b>Metas:</b> atualize valor atual, indicador, valor-alvo, prazo, dependências e status. Metas atingidas podem ser concluídas.</li>
       <li><b>Matriz:</b> distribui itens por Em aberto, Em andamento, Atendido e Cancelado. <b>Dashboard:</b> resume andamento, atendidos, atrasados e bloqueados.</li>
@@ -5965,7 +6003,7 @@ function helpContentHtml() {
     <section class="help-section" id="help-conversations"><h4>Conversas e integrações</h4>
       <p>Na web, importe arquivos <b>.txt</b> ou <b>.zip</b> exportados do WhatsApp. Abra o histórico dentro do CRM, associe a uma pessoa ou selecione várias conversas para criar uma negociação em lote.</p>
       <p>Na extensão Chrome, WhatsApp Web e Reddit Chat podem alimentar a fila automaticamente. Google Contatos permite selecionar pessoas, criar ou atualizar contatos e criar empresas identificadas pelos dados do Google.</p>
-      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento.</p>
+      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento. O Chat do cabeçalho permite conversas internas entre usuários ativos do CRM.</p>
     </section>
 
     <section class="help-section" id="help-tools"><h4>Ferramentas</h4><ul>
@@ -10357,6 +10395,173 @@ function openAdminLog() {
   document.getElementById("log-close").addEventListener("click", closeModal);
 }
 
+function activeProfileId() {
+  return currentProfile?.id || cache?.users?.[0]?.id || null;
+}
+
+function commentAuthorName(comment) {
+  return userDisplayName(comment.author_id, cache, "Usuário");
+}
+
+function taskCommentsListHtml(task) {
+  const legacy = String(task.notes || "").trim();
+  const comments = taskComments(task.id);
+  const items = [
+    ...(legacy ? [{ id: "legacy", author_id: null, body: legacy, created_at: task.created_at, legacy: true }] : []),
+    ...comments
+  ];
+  return items.length ? items.map((comment) => `<article class="task-comment-item">
+    <div><strong>${esc(comment.legacy ? "Nota anterior" : commentAuthorName(comment))}</strong><time>${esc(comment.created_at ? new Date(comment.created_at).toLocaleString("pt-BR") : "")}</time></div>
+    <p>${esc(comment.body)}</p>
+  </article>`).join("") : '<div class="empty">Nenhum comentário nesta tarefa.</div>';
+}
+
+async function addTaskComment(activityId, body) {
+  const authorId = activeProfileId();
+  if (!authorId) throw new Error("Usuário ativo não encontrado.");
+  const comment = { id: crypto.randomUUID(), activity_id: activityId, author_id: authorId, body, created_at: new Date().toISOString() };
+  if (!isLive()) return comment;
+  const result = await api("activity_comments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify({ activity_id: activityId, author_id: authorId, body })
+  });
+  return Array.isArray(result) ? result[0] : result;
+}
+
+function openTaskComments(activityId) {
+  const task = (cache.activityRecords || []).find((item) => item.id === activityId);
+  if (!task) return;
+  const inner = `<div class="task-comments-panel">
+    <div class="task-comments-list" id="task-comments-list">${taskCommentsListHtml(task)}</div>
+    <form class="task-comment-form" id="task-comment-form">
+      <textarea id="task-comment-body" maxlength="4000" placeholder="Escreva um comentário..." required></textarea>
+      <button class="btn primary" type="submit">Enviar</button>
+    </form>
+  </div>`;
+  const insideProject = Boolean(document.getElementById("project-board-root"));
+  if (insideProject) nestedSidePanel(`Comentários · ${activityDisplayName(task)}`, inner);
+  else sidePanel(`Comentários · ${activityDisplayName(task)}`, inner, { closeOnOverlay: true });
+  const form = document.getElementById("task-comment-form");
+  const input = document.getElementById("task-comment-body");
+  input?.focus();
+  form?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = input.value.trim();
+    if (!body) return;
+    const button = form.querySelector("button");
+    button.disabled = true;
+    try {
+      const saved = await addTaskComment(activityId, body);
+      cache.activityComments.push(saved);
+      input.value = "";
+      document.getElementById("task-comments-list").innerHTML = taskCommentsListHtml(task);
+      document.getElementById("task-comments-list").scrollTop = document.getElementById("task-comments-list").scrollHeight;
+      refreshActivityCache();
+      if (insideProject) renderProjectBoard(projectBoardState.projectId);
+      else render();
+    } catch (error) {
+      toast("Erro ao adicionar comentário · " + error.message, true);
+    } finally {
+      button.disabled = false;
+      input.focus();
+    }
+  });
+}
+
+let internalChatTimer = null;
+let internalChatRecipientId = null;
+
+function stopInternalChatPolling() {
+  if (internalChatTimer) clearInterval(internalChatTimer);
+  internalChatTimer = null;
+}
+
+async function fetchDirectMessages(recipientId) {
+  const profileId = activeProfileId();
+  if (!profileId) throw new Error("Usuário ativo não encontrado.");
+  if (!isLive()) return (cache.directMessages || []).filter((message) =>
+    (message.sender_id === profileId && message.recipient_id === recipientId)
+    || (message.sender_id === recipientId && message.recipient_id === profileId)
+  ).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const me = encodeURIComponent(profileId);
+  const other = encodeURIComponent(recipientId);
+  return api(`direct_messages?select=*&or=(and(sender_id.eq.${me},recipient_id.eq.${other}),and(sender_id.eq.${other},recipient_id.eq.${me}))&order=created_at.asc&limit=200`);
+}
+
+async function refreshInternalChat({ scroll = false } = {}) {
+  const log = document.getElementById("internal-chat-log");
+  if (!log || !internalChatRecipientId) return;
+  try {
+    const messages = await fetchDirectMessages(internalChatRecipientId);
+    log.innerHTML = messages.length ? messages.map((message) => `<div class="internal-chat-message ${message.sender_id === activeProfileId() ? "mine" : "theirs"}">
+      <strong>${esc(userDisplayName(message.sender_id, cache, "Usuário"))}</strong>
+      <p>${esc(message.body)}</p><time>${esc(new Date(message.created_at).toLocaleString("pt-BR"))}</time>
+    </div>`).join("") : '<div class="empty">Comece a conversa.</div>';
+    if (scroll) log.scrollTop = log.scrollHeight;
+  } catch (error) {
+    log.innerHTML = `<div class="empty">Não foi possível carregar o chat.<br>${esc(error.message)}</div>`;
+  }
+}
+
+async function sendDirectMessage(recipientId, body) {
+  const senderId = activeProfileId();
+  if (!senderId) throw new Error("Usuário ativo não encontrado.");
+  const message = { id: crypto.randomUUID(), sender_id: senderId, recipient_id: recipientId, body, created_at: new Date().toISOString() };
+  if (!isLive()) {
+    cache.directMessages.push(message);
+    return message;
+  }
+  const result = await api("direct_messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify({ sender_id: senderId, recipient_id: recipientId, body })
+  });
+  return Array.isArray(result) ? result[0] : result;
+}
+
+function openInternalChat() {
+  stopInternalChatPolling();
+  const users = (cache.users || []).filter((user) => user.status === "active" && user.id !== activeProfileId());
+  internalChatRecipientId = users.some((user) => user.id === internalChatRecipientId) ? internalChatRecipientId : users[0]?.id || null;
+  const options = users.map((user) => `<option value="${esc(user.id)}"${user.id === internalChatRecipientId ? " selected" : ""}>${esc(userDisplayName(user.id, cache, "Usuário"))}</option>`).join("");
+  const closeChat = () => {
+    stopInternalChatPolling();
+    modalCloseOverride = null;
+    closeModal();
+  };
+  sidePanel("Chat", users.length ? `<div class="internal-chat-panel">
+    <label class="internal-chat-user">Conversar com<select id="internal-chat-user">${options}</select></label>
+    <div class="internal-chat-log" id="internal-chat-log"><div class="empty">Carregando conversa...</div></div>
+    <form class="internal-chat-form" id="internal-chat-form"><textarea id="internal-chat-body" maxlength="4000" placeholder="Digite uma mensagem..." required></textarea><button class="btn primary" type="submit">Enviar</button></form>
+  </div>` : '<div class="panel-list">Nenhum outro usuário ativo está disponível.</div>', { onClose: closeChat });
+  if (!users.length) return;
+  document.getElementById("internal-chat-user").addEventListener("change", (event) => {
+    internalChatRecipientId = event.target.value;
+    refreshInternalChat({ scroll: true });
+  });
+  document.getElementById("internal-chat-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = document.getElementById("internal-chat-body");
+    const body = input.value.trim();
+    if (!body || !internalChatRecipientId) return;
+    const button = event.currentTarget.querySelector("button");
+    button.disabled = true;
+    try {
+      await sendDirectMessage(internalChatRecipientId, body);
+      input.value = "";
+      await refreshInternalChat({ scroll: true });
+    } catch (error) {
+      toast("Erro ao enviar mensagem · " + error.message, true);
+    } finally {
+      button.disabled = false;
+      input.focus();
+    }
+  });
+  refreshInternalChat({ scroll: true });
+  internalChatTimer = setInterval(() => refreshInternalChat(), 5000);
+}
+
 function handleAction(action) {
   if (action === "theme") { setTheme(!document.body.classList.contains("light")); return; }
   if (action === "settings") { openSettings(); return; }
@@ -10372,6 +10577,7 @@ function handleAction(action) {
     sidePanel("Notificações", `<div class="panel-list">Nenhuma notificação por enquanto.</div>`, { closeOnOverlay: true });
     return;
   }
+  if (action === "chat") { openInternalChat(); return; }
   if (action === "integrations") {
     sidePanel("Integrações", integrationsHtml(), { closeOnOverlay: true });
     wireIntegrations();
