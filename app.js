@@ -1401,6 +1401,10 @@ function multiLineCell(value, formatter = (item) => item) {
   const values = splitMultiValues(value).map(formatter).filter(Boolean);
   return values.length ? `<div class="multi-value">${values.map((item) => `<span>${esc(item)}</span>`).join("")}</div>` : "—";
 }
+function stackedCell(values) {
+  const items = [...new Set((Array.isArray(values) ? values : [values]).map((item) => String(item || "").trim()).filter((item) => item && item !== "—"))];
+  return items.length ? `<div class="stacked-cell">${items.map((item) => `<span>${esc(item)}</span>`).join("")}</div>` : "—";
+}
 const activityDisplayName = (item) => {
   if (!item) return "—";
   const parts = [item.group, item.sector, item.channel, item.type, item.activity || item.title]
@@ -1578,7 +1582,7 @@ function columns(tab, c) {
       { k: "activity_origin", h: "ORIGEM", fmt: (v, row) => row.parent_activity_id ? badge("lead", "Subtarefa") : badge(v === "product" ? "qualification" : "proposal", v === "product" ? "Produto" : "Dia a dia") },
       { k: "title", h: "TAREFA", fmt: (_v, row) => `${row.parent_activity_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(row))}` },
       { k: "priority", h: "PRIORIDADE", fmt: (v) => priorityBadge(v) },
-      { k: "dependency_ids", h: "DEPENDE DE", fmt: (v, row) => esc(dependencyNames(v, row.depends_on_activity_id, c.activityRecords)) },
+      { k: "dependency_ids", h: "DEPENDE DE", fmt: (v, row) => stackedCell(dependencyNameList(v, row.depends_on_activity_id, c.activityRecords)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "information", h: "INFORMAÇÃO", cls: "muted" },
       { k: "group", h: "GRUPO" },
       { k: "sector", h: "SETOR" },
@@ -1593,7 +1597,7 @@ function columns(tab, c) {
         return `<button class="btn checklist-open${complete ? " complete" : ""}" data-id="${esc(row.id)}" title="Abrir checklist">${progress.done}/${progress.total}</button>`;
       } },
       { k: "objective_name", h: "OBJETIVO" },
-      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => esc(responsibilityNames(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)) },
+      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => stackedCell(responsibilityNameList(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
       { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => dt(v || row.due_date) || "—" },
       { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
@@ -2625,18 +2629,18 @@ function renderProductObjectives() {
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
   const activities = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const rows = objectives.map((item) => {
-    const owner = assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
+    const owners = assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const activityCount = activities.filter((activity) => activity.objective_template_id === item.id).length;
     const dependencyObjectives = normalizeIdList(item.dependency_objective_template_ids)
       .map((id) => objectives.find((objective) => objective.id === id)?.name).filter(Boolean);
     const dependencyActivities = normalizeIdList(item.dependency_activity_template_ids)
       .map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
-    const dependencies = [...dependencyObjectives, ...dependencyActivities].join(", ") || "—";
+    const dependencies = [...dependencyObjectives, ...dependencyActivities];
     return `<tr>
       <td><strong>${esc(item.name)}</strong></td>
       <td>${esc(item.completion_criteria || "—")}</td>
-      <td>${esc(dependencies)}</td>
-      <td>${esc(owner)}</td>
+      <td class="compact-multi-cell">${stackedCell(dependencies)}</td>
+      <td class="compact-multi-cell">${stackedCell(owners)}</td>
       <td>${item.target_days == null || item.target_days === "" ? "—" : `${esc(item.target_days)} dia(s)`}</td>
       <td>${activityCount}</td>
       <td class="act table-actions-cell">${tableActionButtons({
@@ -2648,7 +2652,7 @@ function renderProductObjectives() {
   }).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${objectives.length} objetivo(s) do produto</span><button class="btn primary" id="po-new">+ Objetivo</button></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th>Objetivo</th><th>Critério de conclusão</th><th>Depende de</th><th>Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
+      <th>Objetivo</th><th>Critério de conclusão</th><th class="compact-multi-cell">Depende de</th><th class="compact-multi-cell">Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
@@ -2802,20 +2806,20 @@ function renderProductGoals() {
     .filter((item) => item.product_id === productActivityState.productId)
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
   const rows = goals.map((item) => {
-    const owner = assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
+    const owners = assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const target = `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value).toLocaleString("pt-BR")} ${item.unit || ""}`.trim();
     const dependencyGoals = normalizeIdList(item.dependency_goal_template_ids)
       .map((id) => goals.find((goal) => goal.id === id)?.name).filter(Boolean);
     const dependencyActivities = normalizeIdList(item.dependency_activity_template_ids)
       .map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
-    const dependencies = [...dependencyGoals, ...dependencyActivities].join(", ") || "—";
+    const dependencies = [...dependencyGoals, ...dependencyActivities];
     return `<tr>
       <td><strong>${esc(item.name)}</strong></td>
       <td>${esc(item.metric)}</td>
       <td>${esc(target)}</td>
-      <td>${esc(dependencies)}</td>
+      <td class="compact-multi-cell">${stackedCell(dependencies)}</td>
       <td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
-      <td>${esc(owner)}</td>
+      <td class="compact-multi-cell">${stackedCell(owners)}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "pg-edit", attrs: { "data-id": item.id }, title: "Editar meta" },
         clone: { className: "pg-clone", attrs: { "data-id": item.id }, title: "Clonar meta" },
@@ -2825,7 +2829,7 @@ function renderProductGoals() {
   }).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${goals.length} meta(s) do produto</span><button class="btn primary" id="pg-new">+ Meta</button></div>
     <div class="product-activity-list"><table><thead><tr>
-    <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th>Depende de</th><th>Prazo sugerido</th><th>Responsável padrão</th>${tableActionsHead()}
+    <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th class="compact-multi-cell">Depende de</th><th>Prazo sugerido</th><th class="compact-multi-cell">Responsável padrão</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="7" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
@@ -3421,10 +3425,14 @@ function userOptions(selected = "") {
   return ['<option value="">Sem responsável</option>', ...options].join("");
 }
 
-function assigneeNames(ids, fallbackId = null, assignToClient = false) {
+function assigneeNameList(ids, fallbackId = null, assignToClient = false) {
   const names = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
   if (assignToClient) names.push("Cliente");
-  return names.join(", ") || "—";
+  return [...new Set(names.filter((name) => name && name !== "—"))];
+}
+
+function assigneeNames(ids, fallbackId = null, assignToClient = false) {
+  return assigneeNameList(ids, fallbackId, assignToClient).join(", ") || "—";
 }
 
 function assigneeJobTitleOptions() {
@@ -3436,21 +3444,27 @@ function assigneeJobTitleOptions() {
     })).values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }));
 }
 
-function responsibilityNames(ids, fallbackId = null, jobTitles = [], assignToClient = false) {
-  const direct = normalizeIdList(ids, fallbackId).map((id) => userDisplayName(id));
-  if (assignToClient) direct.push("Cliente");
+function responsibilityNameList(ids, fallbackId = null, jobTitles = [], assignToClient = false) {
+  const direct = assigneeNameList(ids, fallbackId, assignToClient);
   const roles = normalizeTextList(jobTitles).map((title) => {
     const eligible = (cache?.users || []).filter((user) =>
       user.status === "active" && String(user.job_title || "").trim().toLocaleLowerCase("pt-BR") === title.toLocaleLowerCase("pt-BR")
     ).map((user) => user.nickname || user.full_name || user.name || user.email).filter(Boolean);
     return eligible.length ? `Cargo: ${title} (${eligible.join(", ")})` : `Cargo: ${title}`;
   });
-  return [...new Set([...direct, ...roles])].join(", ") || "—";
+  return [...new Set([...direct, ...roles])];
+}
+
+function responsibilityNames(ids, fallbackId = null, jobTitles = [], assignToClient = false) {
+  return responsibilityNameList(ids, fallbackId, jobTitles, assignToClient).join(", ") || "—";
+}
+
+function dependencyNameList(ids, fallbackId, rows = loadProjectTasks()) {
+  return [...new Set(normalizeIdList(ids, fallbackId).map((id) => activityDisplayName(rows.find((item) => item.id === id))).filter((name) => name !== "—"))];
 }
 
 function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
-  const names = normalizeIdList(ids, fallbackId).map((id) => activityDisplayName(rows.find((item) => item.id === id))).filter((name) => name !== "—");
-  return names.join(", ") || "—";
+  return dependencyNameList(ids, fallbackId, rows).join(", ") || "—";
 }
 
 function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false) {
@@ -3717,7 +3731,7 @@ function renderTaskTable(tasks) {
       <td><span class="task-table-title">${parent ? '<span class="task-subtask-branch">↳</span>' : ""}<span>${esc(activityDisplayName(task))}</span>${parent ? '<small>Subtarefa</small>' : ""}</span></td>
       <td>${badge(task.source_template_id ? "qualification" : "proposal", task.source_template_id ? "Produto" : "Dia a dia")}</td>
       <td>${priorityBadge(task.priority)}</td>
-      <td>${esc(dependencyNames(task.dependency_ids, task.depends_on_activity_id, tasks))}</td>
+      <td class="compact-multi-cell">${stackedCell(dependencyNameList(task.dependency_ids, task.depends_on_activity_id, tasks))}</td>
       <td>${esc(task.information || "—")}</td>
       <td>${esc(task.group || "—")}</td>
       <td>${esc(task.sector || "—")}</td>
@@ -3726,7 +3740,7 @@ function renderTaskTable(tasks) {
       <td>${terminal ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}">${checklist.done}/${checklist.total}</button>` : '<span class="muted">Nas subtarefas</span>'}</td>
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
-      <td>${esc(responsibilityNames(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
+      <td class="compact-multi-cell">${stackedCell(responsibilityNameList(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
       <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
       <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
       <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
@@ -3743,7 +3757,7 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th>Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th>Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="21" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
@@ -6546,9 +6560,9 @@ function renderRegistrationsSection() {
       const products = [...new Set(linked.map((candidate) => registrationProductName(candidate.product_id)))].join(", ");
       const ownerIds = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.default_assignee_ids, candidate.default_owner_id)))];
       const ownerJobTitles = normalizeTextList(linked.flatMap((candidate) => normalizeTextList(candidate.default_assignee_job_titles)));
-      const owners = responsibilityNames(ownerIds, null, ownerJobTitles, linked.some((candidate) => candidate.assign_to_client));
+      const owners = responsibilityNameList(ownerIds, null, ownerJobTitles, linked.some((candidate) => candidate.assign_to_client));
       const objectives = [...new Set(linked.map((candidate) => loadProductObjectives().find((objective) => objective.id === candidate.objective_template_id)?.name).filter(Boolean))].join(", ") || "—";
-      const dependencies = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.dependency_template_ids, candidate.depends_on_template_id)).map((id) => activityDisplayName(items.find((other) => other.id === id))).filter((name) => name !== "—"))].join(", ") || "—";
+      const dependencies = [...new Set(linked.flatMap((candidate) => normalizeIdList(candidate.dependency_template_ids, candidate.depends_on_template_id)).map((id) => activityDisplayName(items.find((other) => other.id === id))).filter((name) => name !== "—"))];
       return { products, owners, objectives, dependencies };
     };
     const rows = roots.map((group) => {
@@ -6572,21 +6586,21 @@ function renderRegistrationsSection() {
           <td>${esc(child.item.information || "—")}</td>
           <td>${checklist.length} item(ns)</td>
           <td>${esc(childDetails.objectives)}</td>
-          <td>${esc(childDetails.owners)}</td>
-          <td>${esc(childDetails.dependencies)}</td>
+          <td class="compact-multi-cell">${stackedCell(childDetails.owners)}</td>
+          <td class="compact-multi-cell">${stackedCell(childDetails.dependencies)}</td>
           <td class="act table-actions-cell">${tableActionButtons({
             edit: { className: "edit reg-template-edit", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Editar subtarefa" },
             clone: { className: "reg-template-clone", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Clonar subtarefa" }
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${esc(details.products)}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${priorityBadge(item.priority)}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${esc(item.information || "—")}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td>${esc(details.owners)}</td><td>${esc(details.dependencies)}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}"><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${esc(details.products)}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${priorityBadge(item.priority)}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${esc(item.information || "—")}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
       })}</td></tr>${childRows}`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Tarefa", "<th>Produtos</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Prioridade</th><th>Recorrência</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Responsáveis padrão</th><th>Depende de</th>", rows, 14);
+    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Tarefa", "<th>Produtos</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Prioridade</th><th>Recorrência</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th class=\"compact-multi-cell\">Depende de</th>", rows, 14);
   } else if (section === "goals") {
     const items = loadProductGoals();
     const activities = loadProductActivities();
@@ -6594,13 +6608,13 @@ function renderRegistrationsSection() {
       const dependencies = [
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
-      ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(dependencies)}</td><td>${esc(assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      ].filter(Boolean);
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
         clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th>Depende de</th><th>Responsável padrão</th>", rows, 7);
+    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th class=\"compact-multi-cell\">Depende de</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 7);
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -6608,13 +6622,13 @@ function renderRegistrationsSection() {
       const dependencies = [
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
-      ].filter(Boolean).join(", ") || "—";
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(assigneeNames(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      ].filter(Boolean);
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
         clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th>Depende de</th><th>Prazo sugerido</th><th>Responsável padrão</th>", rows, 7);
+    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 7);
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
