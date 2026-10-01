@@ -2465,6 +2465,7 @@ let productActivityChecklistDraft = [];
 let productActivityRelatedIds = [];
 let productActivityDraftGroupId = null;
 let productActivityParentGroupId = null;
+let productActivitySavePending = false;
 let productObjectiveSavePending = false;
 let productGoalSavePending = false;
 const registrationExpandedTaskGroups = new Set();
@@ -2749,6 +2750,7 @@ async function saveProductObjective() {
   };
   const saveButton = document.getElementById("po-save");
   const saveButtonLabel = saveButton?.textContent || "Salvar";
+  let objectiveSaved = false;
   productObjectiveSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
@@ -2761,14 +2763,15 @@ async function saveProductObjective() {
     }
     if (isLive()) cache.productObjectives = rows;
     else saveProductObjectives(rows);
-    await syncProductObjectives();
-    await syncProductActivities();
-    refreshActivityCache();
+    objectiveSaved = true;
     closeProductActivityDrawer();
     if (document.getElementById("registrations-root")) renderRegistrationsSection();
     else renderProductObjectives();
     toast("Objetivo do produto salvo.");
-  } catch (err) { toast("Erro ao salvar objetivo · " + err.message, true); }
+    await syncProductObjectives();
+    await syncProductActivities();
+    refreshActivityCache();
+  } catch (err) { toast(`${objectiveSaved ? "Objetivo salvo, mas houve erro ao sincronizar" : "Erro ao salvar objetivo"} · ${err.message}`, true); }
   finally {
     productObjectiveSavePending = false;
     if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
@@ -2936,6 +2939,7 @@ async function saveProductGoal() {
   };
   const saveButton = document.getElementById("pg-save");
   const saveButtonLabel = saveButton?.textContent || "Salvar";
+  let goalSaved = false;
   productGoalSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
@@ -2948,13 +2952,14 @@ async function saveProductGoal() {
     }
     if (isLive()) cache.productGoals = rows;
     else saveProductGoals(rows);
-    await syncProductGoals();
-    await syncDeliveryGoalDependencies();
+    goalSaved = true;
     closeProductActivityDrawer();
     if (document.getElementById("registrations-root")) renderRegistrationsSection();
     else renderProductGoals();
     toast("Meta do produto salva.");
-  } catch (err) { toast("Erro ao salvar meta · " + err.message, true); }
+    await syncProductGoals();
+    await syncDeliveryGoalDependencies();
+  } catch (err) { toast(`${goalSaved ? "Meta salva, mas houve erro ao sincronizar" : "Erro ao salvar meta"} · ${err.message}`, true); }
   finally {
     productGoalSavePending = false;
     if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
@@ -3280,6 +3285,7 @@ function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
 
 async function saveProductActivity() {
   if (productActivityState.editId ? !requireCurrentUserPermission("activityTemplates", "edit", "Tarefas") : !(currentUserCan("activityTemplates", "create") || currentUserCan("activityTemplates", "clone"))) { if (!productActivityState.editId) toast("Sem permissão para cadastrar tarefas.", true); return; }
+  if (productActivitySavePending) return;
   const activity = document.getElementById("pa-activity").value.trim();
   if (!activity) { toast("Informe a tarefa.", true); return; }
   const rows = loadProductActivities();
@@ -3321,6 +3327,11 @@ async function saveProductActivity() {
     template_group_id: productActivityDraftGroupId || crypto.randomUUID(),
     updated_at: new Date().toISOString()
   };
+  const saveButton = document.getElementById("pa-save");
+  const saveButtonLabel = saveButton?.textContent || "Salvar";
+  let activitySaved = false;
+  productActivitySavePending = true;
+  if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
     const related = productActivityRelatedIds.map((id) => rows.find((item) => item.id === id)).filter(Boolean);
     const taskRows = loadProjectTasks();
@@ -3374,13 +3385,18 @@ async function saveProductActivity() {
     if (!isLive() && related.some((item) => !selectedProductIds.includes(item.product_id))) saveProjectTasks(taskRows);
     if (isLive()) cache.productActivities = rows;
     else saveProductActivities(rows);
-    await syncProductActivities();
-    refreshActivityCache();
+    activitySaved = true;
     closeProductActivityDrawer();
     if (document.getElementById("registrations-root")) renderRegistrationsSection();
     else renderProductActivities();
-    toast(`Tarefa salva em ${selectedProductIds.length} produto(s) e sincronizada com as entregas.`);
-  } catch (err) { toast("Erro ao salvar tarefa · " + err.message, true); }
+    toast(`Tarefa salva em ${selectedProductIds.length} produto(s). Sincronizando com as entregas...`);
+    await syncProductActivities();
+    refreshActivityCache();
+  } catch (err) { toast(`${activitySaved ? "Tarefa salva, mas houve erro ao sincronizar" : "Erro ao salvar tarefa"} · ${err.message}`, true); }
+  finally {
+    productActivitySavePending = false;
+    if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
+  }
 }
 
 const TASK_STATUS = [
@@ -4418,6 +4434,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, null, editId));
   document.getElementById("project-task-save").addEventListener("click", async () => {
+    const saveButton = document.getElementById("project-task-save");
+    if (saveButton?.disabled) return;
     const title = document.getElementById("project-task-title").value.trim();
     if (!title) { toast("Informe a tarefa.", true); return; }
     const dependencyIds = multiPickerValues("project-task-dependencies");
@@ -4462,6 +4480,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       status: current.status || "todo",
       created_at: current.created_at || now, updated_at: now
     };
+    const saveButtonLabel = saveButton?.textContent || "Salvar";
+    if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
     try {
       const allTasks = loadProjectTasks();
       if (editId) {
@@ -4483,7 +4503,10 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       close();
       renderProjectBoard(projectId);
       toast(editId ? (parentId ? "Subtarefa atualizada." : "Tarefa atualizada.") : (parentId ? "Subtarefa criada." : "Tarefa criada."));
-    } catch (err) { toast("Erro ao salvar tarefa · " + err.message, true); }
+    } catch (err) {
+      if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
+      toast("Erro ao salvar tarefa · " + err.message, true);
+    }
   });
   document.getElementById("project-task-title").focus();
 }
@@ -5798,6 +5821,51 @@ async function replaceContactCompanyLinks({ contactId = null, companyId = null, 
   });
 }
 
+function refreshEntityCacheIndexes() {
+  if (!cache) return;
+  const byId = (rows, key = "id") => Object.fromEntries((rows || []).map((row) => [row[key], row]));
+  cache.companyById = byId(cache.companies, pk("companies"));
+  cache.contactById = byId(cache.contacts);
+  cache.productById = byId(cache.products);
+  cache.userById = byId(cache.users);
+  cache.userByAuthId = Object.fromEntries((cache.users || []).filter((user) => user.auth_user_id).map((user) => [user.auth_user_id, user]));
+  cache.pipelineById = byId(cache.pipelines);
+  cache.projectById = byId(cache.projects);
+  refreshActivityCache();
+}
+
+function upsertCachedEntity(tab, saved) {
+  const rows = cache?.[tab];
+  if (!Array.isArray(rows) || !saved) return saved;
+  const key = pk(tab);
+  const index = rows.findIndex((row) => String(row[key]) === String(saved[key]));
+  if (index >= 0) rows[index] = { ...rows[index], ...saved };
+  else rows.unshift(saved);
+  refreshEntityCacheIndexes();
+  return index >= 0 ? rows[index] : saved;
+}
+
+function updateCachedContactCompanyLinks({ contactId = null, companyId = null, relatedIds = [] }) {
+  if (!cache) return;
+  const ids = [...new Set(normalizeIdList(relatedIds))];
+  const links = (cache.contactCompanies || []).filter((link) => contactId ? link.contact_id !== contactId : link.company_id !== companyId);
+  links.push(...ids.map((relatedId) => contactId
+    ? { contact_id: contactId, company_id: relatedId }
+    : { contact_id: relatedId, company_id: companyId }
+  ));
+  cache.contactCompanies = links;
+  const companyIdsByContact = new Map();
+  const contactIdsByCompany = new Map();
+  links.forEach((link) => {
+    if (!companyIdsByContact.has(link.contact_id)) companyIdsByContact.set(link.contact_id, []);
+    if (!contactIdsByCompany.has(link.company_id)) contactIdsByCompany.set(link.company_id, []);
+    companyIdsByContact.get(link.contact_id).push(link.company_id);
+    contactIdsByCompany.get(link.company_id).push(link.contact_id);
+  });
+  (cache.contacts || []).forEach((contact) => { contact.company_ids = [...new Set(companyIdsByContact.get(contact.id) || [])]; });
+  (cache.companies || []).forEach((company) => { company.contact_ids = [...new Set(contactIdsByCompany.get(company.tax_id) || [])]; });
+}
+
 async function saveForm(tab, id, fs, opts = {}) {
   if (!requireCurrentUserPermission(tab, id ? "edit" : "create", ENTITY_LABEL[tab] || modulePermissionLabel(tab))) return;
   const body = {};
@@ -5867,13 +5935,21 @@ async function saveForm(tab, id, fs, opts = {}) {
       if (dealId) await createProjectFromDeal({ id: dealId, company_id: body.company_id, contact_id: body.contact_id, product_id: body.product_id, title: body.title });
     }
     const deliveryForEmail = tab === "projects" && !effectiveId && saved?.id ? saved : null;
-    await init();
+    if (tab === "contacts") saved.company_ids = linkedCompanyIds;
+    if (tab === "companies") saved.contact_ids = linkedContactIds;
+    upsertCachedEntity(tab, saved);
+    if (tab === "contacts") updateCachedContactCompanyLinks({ contactId: saved.id, relatedIds: linkedCompanyIds });
+    if (tab === "companies") updateCachedContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
     if (opts.returnToRegistrations && document.getElementById("registrations-root")) {
       opts.closeAction?.();
       renderRegistrationsSection();
     } else if (opts.returnToRegistrations) openRegistrationsModal(opts.returnToRegistrations);
-    else closeModal();
+    else {
+      closeModal();
+      render();
+    }
     if (deliveryForEmail) provisionDeliveryEmail(deliveryForEmail);
+    void init();
   } catch (err) {
     if (saveButton) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
     toast("Erro ao salvar · " + err.message, true);
@@ -6385,6 +6461,8 @@ function wireUsersModal() {
       if (password) { await copyText(password); toast("Senha copiada."); }
     });
     document.getElementById("save-user")?.addEventListener("click", async () => {
+      const saveButton = document.getElementById("save-user");
+      if (saveButton?.disabled) return;
       const full_name = document.getElementById("u-name").value.trim();
       if (!full_name) { toast("Informe o nome.", true); return; }
       const email = (document.getElementById("u-email").value.trim() || umState.email || "").toLowerCase();
@@ -6403,21 +6481,32 @@ function wireUsersModal() {
         status: document.getElementById("u-status").value,
         permissions: document.getElementById("u-role").value === "admin" ? {} : readPermissionsMatrix()
       };
+      const saveButtonLabel = saveButton?.textContent || "Salvar";
+      if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
       try {
-        if (isLive()) await callUserAdmin("save-user", { profile_id: umState.editId, ...body });
-        else {
+        let savedProfile;
+        if (isLive()) {
+          const result = await callUserAdmin("save-user", { profile_id: umState.editId, ...body });
+          savedProfile = fromRemoteRow("users", result.profile);
+        } else {
           const { password: ignoredPassword, ...profileBody } = body;
-          if (umState.editId) await updateRow("users", umState.editId, { ...profileBody, auth_user_id: umState.hasAccess ? "demo-auth" : crypto.randomUUID() });
-          else await createRow("users", { ...profileBody, auth_user_id: crypto.randomUUID() });
+          savedProfile = umState.editId
+            ? await updateRow("users", umState.editId, { ...profileBody, auth_user_id: umState.hasAccess ? "demo-auth" : crypto.randomUUID() })
+            : await createRow("users", { ...profileBody, auth_user_id: crypto.randomUUID() });
         }
+        const cachedProfile = upsertCachedEntity("users", savedProfile);
+        if (currentProfile?.id === cachedProfile?.id) currentProfile = cachedProfile;
         toast("Usuário salvo.");
-        await init();
         if (password) {
           umState = { mode: "credentials", email, password };
           renderUsersModal();
         } else if (umReturnToRegistrations) closeUsersModal();
         else { umState = { mode: "list" }; renderUsersModal(); }
-      } catch (err) { toast("Erro ao salvar usuário · " + err.message, true); }
+        void init();
+      } catch (err) {
+        if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
+        toast("Erro ao salvar usuário · " + err.message, true);
+      }
     });
   }
 }
@@ -10540,7 +10629,14 @@ function internalChatRowsHtml() {
     const unreadCount = messages.filter((message) => message.sender_id === user.id && message.recipient_id === activeProfileId() && !message.read_at).length;
     return { user, latest, unreadCount, state: internalChatConversationState(latest, unreadCount) };
   }).filter(({ user, latest }) => !query || [userDisplayName(user.id, cache, "Usuário"), user.email, user.job_title, latest?.body]
-    .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query)));
+    .some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query)))
+    .sort((a, b) => {
+      if (a.latest && b.latest) return String(b.latest.created_at || "").localeCompare(String(a.latest.created_at || ""));
+      if (a.latest) return -1;
+      if (b.latest) return 1;
+      const statusOrder = Number(b.user.status === "active") - Number(a.user.status === "active");
+      return statusOrder || userDisplayName(a.user.id, cache, "Usuário").localeCompare(userDisplayName(b.user.id, cache, "Usuário"), "pt-BR", { sensitivity: "base" });
+    });
   return users.length ? users.map(({ user, latest, unreadCount, state }) => {
     const mine = latest?.sender_id === activeProfileId();
     return `<button class="internal-chat-contact${unreadCount ? " unread" : ""}" type="button" data-chat-user="${esc(user.id)}">
