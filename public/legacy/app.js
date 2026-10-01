@@ -6571,25 +6571,25 @@ function bulkClientCredentialsHtml() {
     <textarea id="client-accesses-value" hidden>${esc(accessText)}</textarea>
     <div class="modal-foot"><button class="btn primary" id="client-accesses-done">Concluir</button></div>`;
 }
+async function provisionActiveClientUsers(button, returnToRegistrations = false) {
+  if (!window.confirm("Criar ou vincular um acesso Cliente para cada empresa com entrega ativa?")) return;
+  const label = button?.textContent || "Criar clientes ativos";
+  if (button) { button.disabled = true; button.textContent = "Criando..."; }
+  try {
+    if (!isLive()) throw new Error("Esta ação exige conexão com o Supabase.");
+    const result = await callUserAdmin("provision-active-clients");
+    if (returnToRegistrations) openUsersModal(null, true);
+    umState = { mode: "bulk-credentials", credentials: result.credentials || [], results: result.results || [] };
+    renderUsersModal();
+    toast(`${result.processed || 0} acesso(s) de cliente processado(s).`);
+  } catch (err) {
+    if (button?.isConnected) { button.disabled = false; button.textContent = label; }
+    toast("Erro ao criar clientes · " + err.message, true);
+  }
+}
 function wireUsersModal() {
   if (umState.mode === "list") {
-    document.getElementById("provision-client-users")?.addEventListener("click", async (event) => {
-      if (!window.confirm("Criar ou vincular um acesso Cliente para cada empresa com entrega ativa?")) return;
-      const button = event.currentTarget;
-      const label = button.textContent;
-      button.disabled = true;
-      button.textContent = "Criando...";
-      try {
-        if (!isLive()) throw new Error("Esta ação exige conexão com o Supabase.");
-        const result = await callUserAdmin("provision-active-clients");
-        umState = { mode: "bulk-credentials", credentials: result.credentials || [], results: result.results || [] };
-        renderUsersModal();
-        toast(`${result.processed || 0} acesso(s) de cliente processado(s).`);
-      } catch (err) {
-        if (button?.isConnected) { button.disabled = false; button.textContent = label; }
-        toast("Erro ao criar clientes · " + err.message, true);
-      }
-    });
+    document.getElementById("provision-client-users")?.addEventListener("click", (event) => provisionActiveClientUsers(event.currentTarget));
     document.getElementById("new-user")?.addEventListener("click", () => {
       umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
       renderUsersModal();
@@ -6813,8 +6813,9 @@ function renderRegistrationsSection() {
   if (section === "users") {
     const users = cache.users || [];
     const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn" id="registration-provision-clients" title="Criar acessos para empresas com entregas ativas">Criar clientes ativos</button><button class="btn primary" id="registration-add">+ Usuário</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
+    document.getElementById("registration-provision-clients")?.addEventListener("click", (event) => provisionActiveClientUsers(event.currentTarget, true));
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
     wireRegistrationTable();
@@ -7024,6 +7025,7 @@ function setupRegistrationToolbar(root, table) {
   if (!toolbar || toolbar.classList.contains("registration-toolbar")) return;
   const count = toolbar.querySelector(".muted");
   const addButton = toolbar.querySelector("#registration-add");
+  const provisionClientsButton = toolbar.querySelector("#registration-provision-clients");
   const tableState = registrationTableState();
   toolbar.classList.add("registration-toolbar");
   const left = document.createElement("div");
@@ -7034,6 +7036,7 @@ function setupRegistrationToolbar(root, table) {
   right.className = "registration-toolbar-right";
   if (count) left.appendChild(count);
   center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
+  if (provisionClientsButton) center.appendChild(provisionClientsButton);
   if (addButton) {
     const originalLabel = addButton.textContent.trim().replace(/^\+\s*/, "");
     addButton.classList.add("plus");
