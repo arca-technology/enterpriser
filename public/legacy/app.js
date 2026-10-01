@@ -153,6 +153,29 @@ const PROJECT_STATUSES = ["active", "inactive", "closed"];
 const PROJECT_STATUS_LABEL = { active: "Ativo", inactive: "Inativo", closed: "Encerrado" };
 const PROJECT_SUBSTATUS = ["support", "closed"];
 const PROJECT_SUBSTATUS_LABEL = { support: "Suporte", closed: "Encerrado" };
+const DELIVERY_CHANNEL_OPTIONS = {
+  erp: ["BLING", "OLIST"],
+  marketplaces: ["AMAZON", "MAGAZINE LUIZA", "MERCADO LIVRE", "SHEIN", "SHOPEE", "TIKTOKSHOP"],
+  stores: ["BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
+  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "TOTAL EXPRESS"]
+};
+const MANAGED_DELIVERY_CHANNELS = new Set(Object.values(DELIVERY_CHANNEL_OPTIONS).flat().map(normalizeDeliveryChannel));
+const deliveryChannelOptions = (group) => DELIVERY_CHANNEL_OPTIONS[group].map((value) => ({ value, label: value }));
+function normalizeDeliveryChannel(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
+}
+function activatedDeliveryChannels(project) {
+  return new Set([
+    project?.erp_platform,
+    ...normalizeTextList(project?.marketplace_channels),
+    project?.store_platform,
+    ...normalizeTextList(project?.freight_channels)
+  ].filter(Boolean).map(normalizeDeliveryChannel));
+}
+function projectChannelEnabled(project, channel) {
+  const normalized = normalizeDeliveryChannel(channel);
+  return !normalized || !MANAGED_DELIVERY_CHANNELS.has(normalized) || activatedDeliveryChannels(project).has(normalized);
+}
 const MAX_PIPELINES = 5;
 const SOURCES = ["Indicação", "Site", "Anúncio", "Evento", "LinkedIn", "Inbound", "Prospecção", "Outro"];
 const RECURRENCE_OPTIONS = [
@@ -544,6 +567,12 @@ function saveProjectTasks(rows) {
   localStorage.setItem("crm_project_tasks", JSON.stringify(rows));
   if (cache && !isLive()) cache.activityRecords = rows;
 }
+function operationalProjectTasks(projectId = null) {
+  return loadProjectTasks().filter((task) => {
+    if (projectId && task.project_id !== projectId) return false;
+    return projectChannelEnabled(cache?.projectById?.[task.project_id], task.channel);
+  });
+}
 function loadProductActivities() {
   if (isLive() && cache?.productActivities) return cache.productActivities;
   try {
@@ -750,7 +779,7 @@ async function syncDeliveryObjectiveDependencies() {
   if (!cache) return;
   const templates = loadProductObjectives();
   const objectives = loadDeliveryObjectives();
-  const tasks = loadProjectTasks();
+  const tasks = operationalProjectTasks();
   let changed = false;
   for (const objective of objectives) {
     const template = templates.find((item) => item.id === objective.source_template_id);
@@ -834,7 +863,7 @@ async function syncDeliveryGoalDependencies() {
   if (!cache) return;
   const templates = loadProductGoals();
   const goals = loadDeliveryGoals();
-  const tasks = loadProjectTasks();
+  const tasks = operationalProjectTasks();
   let changed = false;
   for (const goal of goals) {
     const template = templates.find((item) => item.id === goal.source_template_id);
@@ -866,7 +895,7 @@ async function syncProductActivities() {
   const tasks = loadProjectTasks();
   let changed = false;
   for (const project of cache.projects || []) {
-    for (const template of templates.filter((item) => item.product_id === project.product_id)) {
+    for (const template of templates.filter((item) => item.product_id === project.product_id && projectChannelEnabled(project, item.channel))) {
       const hasSubtasks = templates.some((item) => item.parent_template_id === template.id);
       const objective = template.objective_template_id
         ? loadDeliveryObjectives().find((item) => item.project_id === project.id && item.source_template_id === template.objective_template_id)
@@ -937,11 +966,13 @@ async function syncProductActivities() {
     }
   }
   for (const project of cache.projects || []) {
-    const projectTemplates = templates.filter((item) => item.product_id === project.product_id);
+    const projectTemplates = templates.filter((item) => item.product_id === project.product_id && projectChannelEnabled(project, item.channel));
+    const projectTemplateIds = new Set(projectTemplates.map((item) => item.id));
     for (const template of projectTemplates) {
-      const occurrences = tasks.filter((task) => task.project_id === project.id && task.source_template_id === template.id).sort(activityOccurrenceSort);
-      const dependencyTemplateIds = normalizeIdList(template.dependency_template_ids, template.depends_on_template_id);
-      const parentOccurrences = template.parent_template_id
+      const occurrences = tasks.filter((task) => task.project_id === project.id && task.source_template_id === template.id && projectChannelEnabled(project, task.channel)).sort(activityOccurrenceSort);
+      const dependencyTemplateIds = normalizeIdList(template.dependency_template_ids, template.depends_on_template_id)
+        .filter((templateId) => projectTemplateIds.has(templateId));
+      const parentOccurrences = template.parent_template_id && projectTemplateIds.has(template.parent_template_id)
         ? tasks.filter((task) => task.project_id === project.id && task.source_template_id === template.parent_template_id).sort(activityOccurrenceSort)
         : [];
       for (let index = 0; index < occurrences.length; index += 1) {
@@ -1005,7 +1036,7 @@ function activityOccurrenceDates(project, recurrence) {
   return dates.length ? dates : [start];
 }
 function projectTasks(projectId) {
-  const tasks = loadProjectTasks().filter((task) => task.project_id === projectId);
+  const tasks = operationalProjectTasks(projectId);
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const children = new Map();
   const compare = (a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
@@ -1725,7 +1756,11 @@ function fields(tab, c) {
       { k: "status", label: "Status", type: "select", options: PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })), def: "active" },
       { k: "substatus", label: "Substatus", type: "select", options: PROJECT_SUBSTATUS.map((s) => ({ value: s, label: PROJECT_SUBSTATUS_LABEL[s] })) },
       { k: "start_date", label: "Início", type: "date" },
-      { k: "end_date", label: "Fim", type: "date" }];
+      { k: "end_date", label: "Fim", type: "date" },
+      { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
+      { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
+      { k: "store_platform", label: "Loja", type: "select", options: deliveryChannelOptions("stores"), lockWhenSet: true, full: true },
+      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" }];
   }
 }
 
@@ -2126,7 +2161,7 @@ function isoDay(date) {
 }
 
 function deliveryGanttProgress(projectId) {
-  const allTasks = loadProjectTasks().filter((task) => task.project_id === projectId);
+  const allTasks = operationalProjectTasks(projectId);
   const tasks = allTasks.filter((task) => task.status !== "canceled" && !allTasks.some((candidate) => candidate.parent_activity_id === task.id));
   const objectives = loadDeliveryObjectives().filter((objective) => objective.project_id === projectId && objective.status !== "canceled");
   const goals = loadDeliveryGoals().filter((goal) => goal.project_id === projectId && goal.status !== "canceled");
@@ -2411,10 +2446,11 @@ function renderDashboard(c) {
 
 function refreshActivityCache() {
   if (!cache) return;
-  const tasks = loadProjectTasks();
+  const allTasks = loadProjectTasks();
+  const tasks = operationalProjectTasks();
   const objectives = loadDeliveryObjectives();
   cache.deliveryObjectiveById = Object.fromEntries(objectives.map((objective) => [objective.id, objective]));
-  cache.activityById = Object.fromEntries(tasks.map((task) => [task.id, task]));
+  cache.activityById = Object.fromEntries(allTasks.map((task) => [task.id, task]));
   cache.activities = tasks.map((task) => {
     const project = cache.projectById[task.project_id];
     const company = project ? cache.companyById[project.company_id] : null;
@@ -3523,9 +3559,13 @@ function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
   return dependencyNameList(ids, fallbackId, rows).join(", ") || "—";
 }
 
-function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false) {
+function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false, lockedIds = new Set()) {
   const selected = new Set(selectedIds);
-  const rows = options.map((option) => `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}"${disabled ? " disabled" : ""}><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`).join("");
+  const locked = new Set(lockedIds);
+  const rows = options.map((option) => {
+    const optionLocked = locked.has(option.value);
+    return `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}${optionLocked ? " locked" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" data-locked="${optionLocked}"${disabled || optionLocked ? " disabled" : ""}><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`;
+  }).join("");
   return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}">
     <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
     <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div><div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
@@ -3558,7 +3598,7 @@ function wireMultiPicker(id) {
   const drawSelection = () => {
     const active = [...root.querySelectorAll(".multi-picker-option.active")];
     root.querySelector(".multi-picker-selection").innerHTML = active.length
-      ? active.map((option) => disabled
+      ? active.map((option) => disabled || option.dataset.locked === "true"
         ? `<span class="multi-picker-chip"><span>${esc(option.dataset.label)}</span></span>`
         : `<button type="button" class="multi-picker-chip" data-value="${esc(option.dataset.value)}" title="Remover"><span>${esc(option.dataset.label)}</span><b>×</b></button>`).join("")
       : `<span class="multi-picker-placeholder">${esc(root.dataset.placeholder || "Selecione")}</span>`;
@@ -3671,7 +3711,7 @@ function taskIsBlocked(task, tasks = loadProjectTasks()) {
 }
 
 function taskCardHtml(task) {
-  const allTasks = loadProjectTasks();
+  const allTasks = operationalProjectTasks(task.project_id);
   const owners = assigneeNames(task.assignee_ids, task.owner_id, task.assign_to_client);
   const objective = cache.deliveryObjectiveById?.[task.objective_id];
   const dependencies = taskDependencies(task, allTasks);
@@ -3773,7 +3813,7 @@ function renderTaskMatrix(tasks) {
 }
 
 function renderTaskTable(tasks) {
-  const allTasks = loadProjectTasks();
+  const allTasks = operationalProjectTasks(projectBoardState.projectId);
   const totalPages = Math.max(1, Math.ceil(tasks.length / projectBoardState.pageSize));
   projectBoardState.page = Math.min(Math.max(1, projectBoardState.page || 1), totalPages);
   const start = (projectBoardState.page - 1) * projectBoardState.pageSize;
@@ -3887,7 +3927,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
 
 function deliveryObjectiveDependencyState(objective) {
   const objectives = loadDeliveryObjectives();
-  const tasks = loadProjectTasks();
+  const tasks = operationalProjectTasks(objective.project_id);
   const dependencyObjectives = normalizeIdList(objective.dependency_objective_ids)
     .map((id) => objectives.find((item) => item.id === id)).filter(Boolean);
   const dependencyActivities = normalizeIdList(objective.dependency_activity_ids)
@@ -3914,7 +3954,7 @@ function deliveryGoalReached(goal, value = Number(goal.current_value || 0)) {
 
 function deliveryGoalDependencyState(goal) {
   const goals = loadDeliveryGoals();
-  const tasks = loadProjectTasks();
+  const tasks = operationalProjectTasks(goal.project_id);
   const dependencyGoals = normalizeIdList(goal.dependency_goal_ids)
     .map((id) => goals.find((item) => item.id === id)).filter(Boolean);
   const dependencyActivities = normalizeIdList(goal.dependency_activity_ids)
@@ -4250,13 +4290,14 @@ async function updateProjectTask(taskId, patch) {
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
-  if (patch.status && !["todo", "canceled"].includes(patch.status) && taskIsBlocked(task, tasks)) {
-    const dependency = taskDependencies(task, tasks).find((item) => item.status !== "done");
+  const operationalTasks = operationalProjectTasks(task.project_id);
+  if (patch.status && !["todo", "canceled"].includes(patch.status) && taskIsBlocked(task, operationalTasks)) {
+    const dependency = taskDependencies(task, operationalTasks).find((item) => item.status !== "done");
     toast(`Conclua "${dependency ? activityDisplayName(dependency) : "a tarefa anterior"}" antes de iniciar esta tarefa.`, true);
     return false;
   }
   if (patch.status && patch.status !== "done" && task.status === "done") {
-    const activeDependent = tasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
+    const activeDependent = operationalTasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
     if (activeDependent) {
       toast(`Volte "${activityDisplayName(activeDependent)}" para Em aberto antes de reabrir esta tarefa.`, true);
       return false;
@@ -5641,10 +5682,11 @@ function openForm(tab, id, opts = {}) {
   const inputs = fs.map((f) => {
     let val = record ? record[f.k] : f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
-    const isLocked = Boolean(f.generated);
+    const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
     let ctrl;
     if (f.type === "multi") {
-      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], new Set(normalizeIdList(val)), f.placeholder || "Selecionar", Boolean(f.searchOnly));
+      const selected = new Set(normalizeIdList(val));
+      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set());
     } else if (f.type === "search") {
       ctrl = singleSearchPickerHtml(`form-${f.k}`, f.options || [], val, f.placeholder);
     } else if (f.searchableRef) {
@@ -5676,7 +5718,7 @@ function openForm(tab, id, opts = {}) {
 
   const title = (id ? "Editar " : "Novo ") + SINGULAR[tab];
   const generatedNotice = tab === "projects"
-    ? `<div class="panel-list" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.</div>`
+    ? `<div class="panel-list" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.<br><span class="muted">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</span></div>`
     : "";
   const body = `${generatedNotice}<div class="form">${inputs}</div>
     <div class="modal-foot">
@@ -5937,6 +5979,13 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (body.status === "active") body.substatus = null;
     if (body.status === "closed") body.substatus = "closed";
     if (body.status === "inactive" && !body.substatus) { toast("Selecione o substatus da entrega inativa: Suporte ou Encerrado.", true); return; }
+    const current = id ? cache.projects.find((project) => project.id === id) : null;
+    if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
+    if (current?.store_platform && body.store_platform !== current.store_platform) { toast("A loja ativada não pode ser alterada ou removida.", true); return; }
+    const removedMarketplace = normalizeTextList(current?.marketplace_channels).find((channel) => !normalizeTextList(body.marketplace_channels).includes(channel));
+    if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
+    const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
+    if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { toast(`Preencha: ${req.label}`, true); return; }
