@@ -283,11 +283,11 @@ function defaultPermissionsForRole(role) {
   if (role === "developer") {
     Object.values(permissions).forEach((actions) => { actions.view = true; });
   } else if (role === "client") {
-    ["companies", "contacts", "projects", "activities", "files", "documents"].forEach((moduleId) => {
+    ["companies", "contacts", "projects", "activities", "files"].forEach((moduleId) => {
       permissions[moduleId].view = true;
     });
   } else if (role === "supplier") {
-    ["companies", "contacts", "projects", "activities", "files", "documents"].forEach((moduleId) => {
+    ["companies", "contacts", "projects", "activities", "files"].forEach((moduleId) => {
       permissions[moduleId].view = true;
     });
     permissions.activities.operate = true;
@@ -6459,7 +6459,13 @@ function closeUsersModal() {
 function renderUsersModal() {
   const el = document.getElementById("um-body");
   if (!el) return;
-  el.innerHTML = umState.mode === "list" ? usersListHtml() : umState.mode === "credentials" ? userCredentialsHtml() : userFormHtml();
+  el.innerHTML = umState.mode === "list"
+    ? usersListHtml()
+    : umState.mode === "credentials"
+      ? userCredentialsHtml()
+      : umState.mode === "bulk-credentials"
+        ? bulkClientCredentialsHtml()
+        : userFormHtml();
   if (umState.mode === "form") {
     const emailInput = document.getElementById("u-email");
     if (emailInput) emailInput.value = umState.email || "";
@@ -6478,7 +6484,7 @@ function usersListHtml() {
       </div></div>`).join("");
   return `<div class="modal-toolbar">
       <span class="muted">${list.length} usuário(s)</span>
-      <button class="btn primary plus" id="new-user" title="Novo usuário">+</button>
+      <div class="modal-toolbar-actions"><button class="btn" id="provision-client-users" title="Criar acessos para empresas com entregas ativas">Criar clientes ativos</button><button class="btn primary plus" id="new-user" title="Novo usuário">+</button></div>
     </div>
     <div class="entity-list">${rows || '<div class="empty">Nenhum usuário cadastrado.</div>'}</div>`;
 }
@@ -6554,8 +6560,36 @@ function userCredentialsHtml() {
     <div class="modal-foot"><button class="btn primary" id="credentials-done">Concluir</button></div>
     <textarea id="credentials-value" hidden>${esc(access)}</textarea>`;
 }
+function bulkClientCredentialsHtml() {
+  const credentials = umState.credentials || [];
+  const results = umState.results || [];
+  const accessText = credentials.map((item) => `${item.company}\nE-mail: ${item.email}\nSenha: ${item.password}`).join("\n\n");
+  const rows = credentials.map((item) => `<div class="entity-row"><div class="entity-main"><b>${esc(item.company)}</b><div class="muted">${esc(item.email)}</div><div style="margin-top:4px"><code>${esc(item.password)}</code></div></div></div>`).join("");
+  return `<div class="panel-list"><b>Acessos de clientes criados</b><p>Foram processadas ${results.length} empresa(s). ${credentials.length} novo(s) acesso(s) receberam senha. Copie estas credenciais agora; elas não poderão ser consultadas depois.</p></div>
+    <div class="modal-toolbar"><span class="muted">${credentials.length} nova(s) credencial(is)</span><button class="btn primary" id="copy-client-accesses"${credentials.length ? "" : " disabled"}>Copiar credenciais</button></div>
+    <div class="entity-list">${rows || '<div class="empty">Todos os acessos já existiam e foram apenas vinculados às empresas.</div>'}</div>
+    <textarea id="client-accesses-value" hidden>${esc(accessText)}</textarea>
+    <div class="modal-foot"><button class="btn primary" id="client-accesses-done">Concluir</button></div>`;
+}
 function wireUsersModal() {
   if (umState.mode === "list") {
+    document.getElementById("provision-client-users")?.addEventListener("click", async (event) => {
+      if (!window.confirm("Criar ou vincular um acesso Cliente para cada empresa com entrega ativa?")) return;
+      const button = event.currentTarget;
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = "Criando...";
+      try {
+        if (!isLive()) throw new Error("Esta ação exige conexão com o Supabase.");
+        const result = await callUserAdmin("provision-active-clients");
+        umState = { mode: "bulk-credentials", credentials: result.credentials || [], results: result.results || [] };
+        renderUsersModal();
+        toast(`${result.processed || 0} acesso(s) de cliente processado(s).`);
+      } catch (err) {
+        if (button?.isConnected) { button.disabled = false; button.textContent = label; }
+        toast("Erro ao criar clientes · " + err.message, true);
+      }
+    });
     document.getElementById("new-user")?.addEventListener("click", () => {
       umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
       renderUsersModal();
@@ -6583,6 +6617,16 @@ function wireUsersModal() {
     });
     document.getElementById("credentials-done")?.addEventListener("click", () => {
       closeUsersModal();
+    });
+  } else if (umState.mode === "bulk-credentials") {
+    document.getElementById("copy-client-accesses")?.addEventListener("click", async () => {
+      await copyText(document.getElementById("client-accesses-value")?.value || "");
+      toast("Credenciais copiadas.");
+    });
+    document.getElementById("client-accesses-done")?.addEventListener("click", async () => {
+      umState = { mode: "list" };
+      await init();
+      renderUsersModal();
     });
   } else {
     wireMultiPicker("u-companies");

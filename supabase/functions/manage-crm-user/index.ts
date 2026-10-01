@@ -29,6 +29,33 @@ function sanitizePermissions(value: unknown) {
   }));
 }
 
+function clientPermissions() {
+  const permissions = sanitizePermissions({});
+  for (const moduleId of ["contacts", "companies", "projects", "activities", "files"]) {
+    permissions[moduleId].view = true;
+  }
+  return permissions;
+}
+
+function randomIndex(max: number) {
+  const limit = 256 - (256 % max);
+  let value = 256;
+  while (value >= limit) value = crypto.getRandomValues(new Uint8Array(1))[0];
+  return value % max;
+}
+
+function securePassword() {
+  const groups = ["ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnopqrstuvwxyz", "23456789", "!@#$%&*_-" ];
+  const chars = groups.map((group) => group[randomIndex(group.length)]);
+  const alphabet = groups.join("");
+  while (chars.length < 20) chars.push(alphabet[randomIndex(alphabet.length)]);
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomIndex(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "Método não permitido." }, 405);
@@ -90,6 +117,82 @@ Deno.serve(async (req) => {
       }
     }
     if (!actor || actor.role !== "admin" || actor.status !== "active") return json({ error: "Apenas administradores podem gerenciar acessos." }, 403);
+
+    if (action === "provision-active-clients") {
+      const deliveriesResult = await admin.from("deliveries")
+        .select("id, company_id, client_name")
+        .eq("status", "active");
+      if (deliveriesResult.error) throw deliveriesResult.error;
+
+      const companyIds = [...new Set((deliveriesResult.data || []).map((delivery) => String(delivery.company_id || "").trim()).filter(Boolean))];
+      if (!companyIds.length) return json({ processed: 0, credentials: [], results: [] });
+      const companiesResult = await admin.from("companies")
+        .select("tax_id, legal_name, trade_name")
+        .in("tax_id", companyIds);
+      if (companiesResult.error) throw companiesResult.error;
+
+      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (listed.error) throw listed.error;
+      const authByEmail = new Map((listed.data.users || []).map((user) => [String(user.email || "").toLowerCase(), user]));
+      type CompanyRow = { tax_id: string; legal_name: string | null; trade_name: string | null };
+      const groups = new Map<string, { email: string; companyIds: string[]; company: CompanyRow }>();
+      for (const company of companiesResult.data || []) {
+        const digits = String(company.tax_id || "").replace(/\D/g, "");
+        if (digits.length !== 14) continue;
+        const email = `${digits.slice(0, 8)}@ecommerce365.com.br`;
+        const existing = groups.get(email);
+        if (existing) existing.companyIds.push(company.tax_id);
+        else groups.set(email, { email, companyIds: [company.tax_id], company });
+      }
+
+      const credentials: Array<{ company: string; email: string; password: string }> = [];
+      const results: Array<Record<string, unknown>> = [];
+      for (const group of groups.values()) {
+        const displayName = group.company.trade_name || group.company.legal_name || "Cliente";
+        let authUser = authByEmail.get(group.email);
+        let createdAuth = false;
+        let password = "";
+        if (!authUser) {
+          password = securePassword();
+          const created = await admin.auth.admin.createUser({
+            email: group.email,
+            password,
+            email_confirm: true,
+            user_metadata: { full_name: displayName, nickname: displayName },
+          });
+          if (created.error || !created.data.user) throw created.error || new Error(`Acesso não criado para ${group.email}.`);
+          authUser = created.data.user;
+          authByEmail.set(group.email, authUser);
+          createdAuth = true;
+        }
+
+        const existingProfile = await admin.from("profiles").select("id").eq("email", group.email).maybeSingle();
+        if (existingProfile.error) throw existingProfile.error;
+        const profileBody = {
+          full_name: displayName,
+          nickname: displayName,
+          email: group.email,
+          role: "client",
+          company_ids: group.companyIds,
+          status: "active",
+          function_name: "Cliente",
+          job_title: null,
+          auth_user_id: authUser.id,
+          permissions: clientPermissions(),
+          updated_at: new Date().toISOString(),
+        };
+        const saved = existingProfile.data
+          ? await admin.from("profiles").update(profileBody).eq("id", existingProfile.data.id)
+          : await admin.from("profiles").insert(profileBody);
+        if (saved.error) {
+          if (createdAuth) await admin.auth.admin.deleteUser(authUser.id);
+          throw saved.error;
+        }
+        if (createdAuth) credentials.push({ company: displayName, email: group.email, password });
+        results.push({ company: displayName, email: group.email, company_ids: group.companyIds, created: createdAuth });
+      }
+      return json({ processed: results.length, credentials, results });
+    }
 
     if (action === "save-user") {
       const profileId = body.profile_id ? String(body.profile_id) : null;
