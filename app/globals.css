@@ -1063,6 +1063,7 @@
   .task-comment-form .btn,.internal-chat-form .btn{align-self:end;height:34px}
   .internal-chat-user{display:grid;gap:6px;padding:12px;border-bottom:1px solid var(--border);font-size:10px;font-weight:700;text-transform:uppercase;color:var(--muted)}
   .internal-chat-user select{width:100%}
+  .internal-chat-user small{color:var(--muted);font-size:9px;font-weight:500;line-height:1.35;text-transform:none}
   .internal-chat-message{max-width:84%;border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--panel2)}
   .internal-chat-message.mine{align-self:flex-end;border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--panel))}
   .internal-chat-message.theirs{align-self:flex-start}
@@ -1127,6 +1128,18 @@
 .user-presence::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--muted)}
 .user-presence.active{color:var(--green)}
 .user-presence.active::before{background:var(--green)}
+.user-presence.available{color:#0f9f5a}
+.user-presence.available::before{background:#0f9f5a}
+.user-presence.away{color:#b7791f}
+.user-presence.away::before{background:#b7791f}
+.user-presence.off-hours{color:#64748b}
+.user-presence.off-hours::before{background:#64748b}
+body:not(.light) .user-presence.available{color:#34d399}
+body:not(.light) .user-presence.available::before{background:#34d399}
+body:not(.light) .user-presence.away{color:#fbbf24}
+body:not(.light) .user-presence.away::before{background:#fbbf24}
+body:not(.light) .user-presence.off-hours{color:#94a3b8}
+body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
 .user-presence.inactive::before{background:var(--red)}
 .conversation-state{color:var(--muted)}
 .internal-chat-unread{min-width:18px;height:18px;padding:0 5px;border-radius:9px;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:9px}

@@ -10666,6 +10666,85 @@ let internalChatRecipientId = null;
 let internalChatMessages = [];
 let internalChatQuery = "";
 
+const INTERNAL_CHAT_STATUS = {
+  available: { label: "Disponível", className: "available" },
+  away: { label: "Ausente", className: "away" },
+  off_hours: { label: "Fora do expediente", className: "off-hours" },
+  inactive: { label: "Inativo", className: "inactive" },
+};
+
+function isInternalChatOffHours(date = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(date));
+  return hour >= 18 || hour < 8;
+}
+
+function internalChatEffectiveStatus(user, date = new Date()) {
+  if (user?.status !== "active") return "inactive";
+  if (isInternalChatOffHours(date)) return "off_hours";
+  return INTERNAL_CHAT_STATUS[user?.chat_status] ? user.chat_status : "available";
+}
+
+function internalChatPresence(user) {
+  return INTERNAL_CHAT_STATUS[internalChatEffectiveStatus(user)] || INTERNAL_CHAT_STATUS.available;
+}
+
+function internalChatStatusOptions(selected) {
+  return [
+    ["available", "Disponível"],
+    ["away", "Ausente"],
+    ["off_hours", "Fora do expediente"],
+  ].map(([value, label]) => `<option value="${value}"${selected === value ? " selected" : ""}>${label}</option>`).join("");
+}
+
+async function saveInternalChatStatus(status) {
+  if (!INTERNAL_CHAT_STATUS[status] || status === "inactive") return;
+  const select = byId("internal-chat-status");
+  if (select) select.disabled = true;
+  try {
+    const rows = await api("rpc/set_my_chat_status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ p_status: status }),
+    });
+    const updated = Array.isArray(rows) ? rows[0] : rows;
+    if (updated) {
+      currentProfile = { ...currentProfile, ...updated };
+      const index = cache.users.findIndex((user) => user.id === updated.id);
+      if (index >= 0) cache.users[index] = { ...cache.users[index], ...updated };
+    }
+    renderInternalChatList();
+  } catch (error) {
+    toast(`Erro ao atualizar status · ${error.message || error}`, true);
+    if (select) select.disabled = false;
+  }
+}
+
+async function refreshInternalChatPresence() {
+  try {
+    const profiles = await api("profiles?select=id,status,chat_status,chat_status_updated_at");
+    const profileMap = new Map((profiles || []).map((profile) => [profile.id, profile]));
+    cache.users = cache.users.map((user) => ({ ...user, ...(profileMap.get(user.id) || {}) }));
+    const own = profileMap.get(currentProfile?.id);
+    if (own) currentProfile = { ...currentProfile, ...own };
+  } catch {
+    // A lista continua utilizável com o último estado carregado.
+  }
+}
+
+function renderInternalChatRecipientPresence() {
+  if (!internalChatRecipientId) return;
+  const user = (cache.users || []).find((item) => item.id === internalChatRecipientId);
+  const badge = document.querySelector(".internal-chat-thread-head .user-presence");
+  if (!user || !badge) return;
+  const presence = internalChatPresence(user);
+  badge.className = `user-presence ${presence.className}`;
+  badge.textContent = presence.label;
+}
+
 function stopInternalChatPolling() {
   if (internalChatTimer) clearInterval(internalChatTimer);
   internalChatTimer = null;
@@ -10728,11 +10807,12 @@ function internalChatRowsHtml() {
     });
   return users.length ? users.map(({ user, latest, unreadCount, state }) => {
     const mine = latest?.sender_id === activeProfileId();
+    const presence = internalChatPresence(user);
     return `<button class="internal-chat-contact${unreadCount ? " unread" : ""}" type="button" data-chat-user="${esc(user.id)}">
       <span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span>
       <span class="internal-chat-contact-main"><span class="internal-chat-contact-head"><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><time>${esc(internalChatTime(latest?.created_at))}</time></span>
         <span class="internal-chat-preview">${latest ? `${mine ? "Você: " : ""}${esc(latest.body)}` : "Clique para iniciar uma conversa"}</span>
-        <span class="internal-chat-contact-meta"><span class="user-presence ${user.status === "active" ? "active" : "inactive"}">${user.status === "active" ? "Ativo" : "Inativo"}</span><span class="conversation-state">${esc(state)}</span></span>
+        <span class="internal-chat-contact-meta"><span class="user-presence ${presence.className}">${presence.label}</span><span class="conversation-state">${esc(state)}</span></span>
       </span>${unreadCount ? `<b class="internal-chat-unread">${unreadCount}</b>` : ""}
     </button>`;
   }).join("") : '<div class="empty">Nenhum usuário encontrado.</div>';
@@ -10746,8 +10826,12 @@ function renderInternalChatList() {
   internalChatRecipientId = null;
   const panel = document.getElementById("internal-chat-panel");
   if (!panel) return;
+  const ownStatus = INTERNAL_CHAT_STATUS[currentProfile?.chat_status] ? currentProfile.chat_status : "available";
+  const automaticStatus = isInternalChatOffHours();
   panel.innerHTML = `<div class="internal-chat-search"><input id="internal-chat-search" type="search" placeholder="Pesquisar pessoas ou mensagens..." value="${esc(internalChatQuery)}"></div>
+    <label class="internal-chat-user"><span>Meu status</span><select id="internal-chat-status" aria-label="Meu status no chat">${internalChatStatusOptions(ownStatus)}</select><small>${automaticStatus ? "Fora do expediente automático até 08:00. Sua escolha será retomada depois." : "Fora do expediente automático das 18:00 às 08:00."}</small></label>
     <div class="internal-chat-contacts" id="internal-chat-contacts">${internalChatRowsHtml()}</div>`;
+  document.getElementById("internal-chat-status").addEventListener("change", (event) => saveInternalChatStatus(event.target.value));
   document.getElementById("internal-chat-search").addEventListener("input", (event) => {
     internalChatQuery = event.target.value;
     document.getElementById("internal-chat-contacts").innerHTML = internalChatRowsHtml();
@@ -10786,10 +10870,12 @@ async function markDirectMessagesRead(senderId) {
 async function refreshInternalChat({ scroll = false } = {}) {
   if (!document.getElementById("internal-chat-panel")) return;
   try {
+    await refreshInternalChatPresence();
     internalChatMessages = await fetchAllDirectMessages();
     if (internalChatRecipientId) {
       await markDirectMessagesRead(internalChatRecipientId);
       renderInternalChatMessages({ scroll });
+      renderInternalChatRecipientPresence();
     } else {
       const contacts = document.getElementById("internal-chat-contacts");
       if (contacts) { contacts.innerHTML = internalChatRowsHtml(); wireInternalChatRows(); }
@@ -10821,8 +10907,9 @@ function openInternalChatThread(recipientId) {
   if (!user) return;
   internalChatRecipientId = recipientId;
   const isActive = user.status === "active";
+  const presence = internalChatPresence(user);
   const panel = document.getElementById("internal-chat-panel");
-  panel.innerHTML = `<div class="internal-chat-thread-head"><button class="btn internal-chat-back" id="internal-chat-back" type="button" title="Voltar">‹</button><span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span><span><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><small class="user-presence ${isActive ? "active" : "inactive"}">${isActive ? "Ativo" : "Inativo"}</small></span></div>
+  panel.innerHTML = `<div class="internal-chat-thread-head"><button class="btn internal-chat-back" id="internal-chat-back" type="button" title="Voltar">‹</button><span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span><span><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><small class="user-presence ${presence.className}">${presence.label}</small></span></div>
     <div class="internal-chat-log" id="internal-chat-log"></div>
     ${isActive ? '<form class="internal-chat-form" id="internal-chat-form"><textarea id="internal-chat-body" maxlength="4000" placeholder="Digite uma mensagem..." required></textarea><button class="btn primary" type="submit">Enviar</button></form>' : '<div class="internal-chat-disabled">Este usuário está inativo. O histórico permanece disponível para consulta.</div>'}`;
   document.getElementById("internal-chat-back").addEventListener("click", () => { renderInternalChatList(); refreshInternalChat(); });
