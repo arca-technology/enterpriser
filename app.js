@@ -565,6 +565,43 @@ async function provisionDeliveryEmail(project, { notify = true } = {}) {
   }
 }
 
+function showDeliveryClientCredentials(credential) {
+  if (!credential?.email || !credential?.password) return;
+  const access = `ENTERPRISER • CRM\nEmpresa: ${credential.company || "Cliente"}\nE-mail: ${credential.email}\nSenha: ${credential.password}`;
+  sidePanel("Acesso do cliente", `<div class="panel-list"><b>Acesso criado automaticamente</b><p>Copie estes dados agora. Por segurança, a senha não poderá ser consultada depois.</p></div>
+    <div class="form">
+      <div class="field full"><label>Empresa</label><input value="${esc(credential.company || "Cliente")}" readonly></div>
+      <div class="field full"><label>E-mail</label><input value="${esc(credential.email)}" readonly></div>
+      <div class="field full"><label>Senha</label><div class="input-action-row"><input value="${esc(credential.password)}" readonly><button class="btn primary" id="copy-delivery-client-access" type="button">Copiar acesso</button></div></div>
+    </div>`, { closeOnOverlay: true });
+  document.getElementById("copy-delivery-client-access")?.addEventListener("click", async () => {
+    await copyText(access);
+    toast("Acesso do cliente copiado.");
+  });
+}
+
+async function provisionDeliveryClientAccess(project, { notify = true } = {}) {
+  if (APP_VARIANT !== "web" || !isLive() || !project?.id) return null;
+  try {
+    const result = await callUserAdmin("provision-delivery-client", { delivery_id: project.id });
+    if (result.profile) upsertCachedEntity("users", result.profile);
+    if (notify) toast(result.created ? `Acesso ${result.email} criado para o cliente.` : `Acesso ${result.email} vinculado ao cliente.`);
+    if (result.credential) setTimeout(() => showDeliveryClientCredentials(result.credential), 0);
+    return result;
+  } catch (err) {
+    if (notify) toast("Entrega salva, mas o acesso do cliente não foi criado · " + err.message, true);
+    return null;
+  }
+}
+
+async function provisionDeliveryResources(project) {
+  const [emailAccount, clientAccess] = await Promise.all([
+    provisionDeliveryEmail(project),
+    provisionDeliveryClientAccess(project),
+  ]);
+  return { emailAccount, clientAccess };
+}
+
 // ---------- Cache ----------
 let cache = null;
 function loadConversations() {
@@ -1555,7 +1592,7 @@ async function createProjectFromDeal(deal) {
       end_date: end
     });
     toast("Entrega criada automaticamente a partir do negócio ganho.");
-    await provisionDeliveryEmail(savedProject);
+    await provisionDeliveryResources(savedProject);
   } catch (err) {
     toast("Erro ao criar entrega automática · " + err.message, true);
   }
@@ -1624,7 +1661,6 @@ function columns(tab, c) {
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
       { k: "lead_source", h: "Origem", cls: "muted" },
       { k: "amount", h: "Valor", num: true, fmt: brl, cls: "pos" },
-      { k: "owner_id", h: "Responsável", fmt: (v) => userDisplayName(v, c, "—"), cls: "muted" },
       { k: "expected_close_date", h: "Previsão", fmt: dt }];
     case "projects": return [
       { k: "delivery_type", h: "TIPO" },
@@ -1692,6 +1728,16 @@ function companyRefOptions(c) {
     detail: company.tax_id,
     search: [company.trade_name, company.legal_name, company.tax_id].filter(Boolean).join(" ")
   }));
+}
+
+function dealContactOptions(c, companyId) {
+  if (!companyId) return [];
+  const linkedIds = new Set((c.contactCompanies || [])
+    .filter((link) => String(link.company_id) === String(companyId))
+    .map((link) => String(link.contact_id)));
+  return (c.contacts || [])
+    .filter((contact) => linkedIds.has(String(contact.id)))
+    .map((contact) => ({ value: contact.id, label: contact.name || "Contato sem nome" }));
 }
 
 function companyNames(ids, c = cache) {
@@ -1767,9 +1813,8 @@ function fields(tab, c) {
     case "deals": return [
       { k: "title", label: "Título", req: true, full: true },
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), req: true, full: true, placeholder: "Buscar por nome ou CNPJ" },
-      { k: "contact_id", label: "Contato", type: "select", options: refOptions("contacts", c) },
+      { k: "contact_id", label: "Contato", type: "select", options: [] },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c) },
-      { k: "owner_id", label: "Responsável", type: "select", options: refOptions("users", c) },
       { k: "pipeline_id", label: "Pipeline", type: "select", options: (c.pipelines || []).map((p) => ({ value: p.id, label: p.name })), req: true },
       { k: "stage", label: "Etapa", type: "select", options: pipelineStageOptions(c, null) },
       { k: "status", label: "Status", type: "select", options: STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] })), def: "open" },
@@ -3681,6 +3726,12 @@ function wireSingleSearchPicker(id) {
   const hidden = root.querySelector('input[type="hidden"]');
   const menu = root.querySelector(".single-search-menu");
   const options = [...root.querySelectorAll(".single-search-option")];
+  const setHiddenValue = (value) => {
+    const next = String(value || "");
+    if (hidden.value === next) return;
+    hidden.value = next;
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
+  };
   const filter = () => {
     const query = input.value.trim().toLocaleLowerCase("pt-BR");
     const queryDigits = query.replace(/\D/g, "");
@@ -3696,13 +3747,13 @@ function wireSingleSearchPicker(id) {
         || option.dataset.value.toLocaleLowerCase("pt-BR") === query
         || (queryDigits.length === 14 && option.dataset.value.replace(/\D/g, "") === queryDigits)
     );
-    hidden.value = exact?.dataset.value || "";
+    setHiddenValue(exact?.dataset.value || "");
     menu.hidden = !query;
     root.querySelector(".single-search-hint").textContent = visible ? "Selecione uma empresa." : "Nenhuma empresa encontrada.";
   };
   options.forEach((option) => option.addEventListener("click", () => {
     input.value = option.dataset.label;
-    hidden.value = option.dataset.value;
+    setHiddenValue(option.dataset.value);
     menu.hidden = true;
   }));
   input.addEventListener("input", filter);
@@ -5528,6 +5579,7 @@ function render() {
   if (state.tab !== "home" && !currentUserCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
+  document.querySelector('[data-action="chat"]')?.toggleAttribute("hidden", !currentUserCanUseChat());
   document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !currentUserCan(tab.dataset.tab, "view")));
   document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.values(REGISTRATION_PERMISSION_MODULE)));
   document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(["files", "emails", "processes", "documents", "tables"]));
@@ -5796,8 +5848,20 @@ function openForm(tab, id, opts = {}) {
   // Etapa depende do pipeline escolhido — repopula ao trocar.
   if (tab === "deals") {
     const form = document.querySelector("#modal-root .form");
+    const companyEl = form?.querySelector('[data-k="company_id"]');
+    const contactEl = form?.querySelector('[data-k="contact_id"]');
     const pipelineEl = form?.querySelector('[data-k="pipeline_id"]');
     const stageEl = form?.querySelector('[data-k="stage"]');
+    const syncDealContacts = () => {
+      if (!contactEl) return;
+      const selected = String(contactEl.value || record?.contact_id || "");
+      const options = dealContactOptions(c, companyEl?.value);
+      contactEl.innerHTML = ['<option value="">—</option>']
+        .concat(options.map((option) => `<option value="${esc(option.value)}"${String(option.value) === selected ? " selected" : ""}>${esc(option.label)}</option>`)).join("");
+      if (!options.some((option) => String(option.value) === selected)) contactEl.value = "";
+    };
+    companyEl?.addEventListener("change", syncDealContacts);
+    syncDealContacts();
     pipelineEl?.addEventListener("change", () => {
       const stages = pipelineStageOptions(c, pipelineEl.value);
       stageEl.innerHTML = ['<option value="">—</option>']
@@ -6053,7 +6117,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       const dealId = effectiveId || saved?.id;
       if (dealId) await createProjectFromDeal({ id: dealId, company_id: body.company_id, contact_id: body.contact_id, product_id: body.product_id, title: body.title });
     }
-    const deliveryForEmail = tab === "projects" && !effectiveId && saved?.id ? saved : null;
+    const newDelivery = tab === "projects" && !effectiveId && saved?.id ? saved : null;
     if (tab === "contacts") saved.company_ids = linkedCompanyIds;
     if (tab === "companies") saved.contact_ids = linkedContactIds;
     upsertCachedEntity(tab, saved);
@@ -6067,7 +6131,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       closeModal();
       render();
     }
-    if (deliveryForEmail) provisionDeliveryEmail(deliveryForEmail);
+    if (newDelivery) await provisionDeliveryResources(newDelivery);
     void init();
   } catch (err) {
     if (saveButton) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
@@ -6463,9 +6527,7 @@ function renderUsersModal() {
     ? usersListHtml()
     : umState.mode === "credentials"
       ? userCredentialsHtml()
-      : umState.mode === "bulk-credentials"
-        ? bulkClientCredentialsHtml()
-        : userFormHtml();
+      : userFormHtml();
   if (umState.mode === "form") {
     const emailInput = document.getElementById("u-email");
     if (emailInput) emailInput.value = umState.email || "";
@@ -6484,7 +6546,7 @@ function usersListHtml() {
       </div></div>`).join("");
   return `<div class="modal-toolbar">
       <span class="muted">${list.length} usuário(s)</span>
-      <div class="modal-toolbar-actions"><button class="btn" id="provision-client-users" title="Criar acessos para empresas com entregas ativas">Criar clientes ativos</button><button class="btn primary plus" id="new-user" title="Novo usuário">+</button></div>
+      <div class="modal-toolbar-actions"><button class="btn primary plus" id="new-user" title="Novo usuário">+</button></div>
     </div>
     <div class="entity-list">${rows || '<div class="empty">Nenhum usuário cadastrado.</div>'}</div>`;
 }
@@ -6560,36 +6622,8 @@ function userCredentialsHtml() {
     <div class="modal-foot"><button class="btn primary" id="credentials-done">Concluir</button></div>
     <textarea id="credentials-value" hidden>${esc(access)}</textarea>`;
 }
-function bulkClientCredentialsHtml() {
-  const credentials = umState.credentials || [];
-  const results = umState.results || [];
-  const accessText = credentials.map((item) => `${item.company}\nE-mail: ${item.email}\nSenha: ${item.password}`).join("\n\n");
-  const rows = credentials.map((item) => `<div class="entity-row"><div class="entity-main"><b>${esc(item.company)}</b><div class="muted">${esc(item.email)}</div><div style="margin-top:4px"><code>${esc(item.password)}</code></div></div></div>`).join("");
-  return `<div class="panel-list"><b>Acessos de clientes criados</b><p>Foram processadas ${results.length} empresa(s). ${credentials.length} novo(s) acesso(s) receberam senha. Copie estas credenciais agora; elas não poderão ser consultadas depois.</p></div>
-    <div class="modal-toolbar"><span class="muted">${credentials.length} nova(s) credencial(is)</span><button class="btn primary" id="copy-client-accesses"${credentials.length ? "" : " disabled"}>Copiar credenciais</button></div>
-    <div class="entity-list">${rows || '<div class="empty">Todos os acessos já existiam e foram apenas vinculados às empresas.</div>'}</div>
-    <textarea id="client-accesses-value" hidden>${esc(accessText)}</textarea>
-    <div class="modal-foot"><button class="btn primary" id="client-accesses-done">Concluir</button></div>`;
-}
-async function provisionActiveClientUsers(button, returnToRegistrations = false) {
-  if (!window.confirm("Criar ou vincular um acesso Cliente para cada empresa com entrega ativa?")) return;
-  const label = button?.textContent || "Criar clientes ativos";
-  if (button) { button.disabled = true; button.textContent = "Criando..."; }
-  try {
-    if (!isLive()) throw new Error("Esta ação exige conexão com o Supabase.");
-    const result = await callUserAdmin("provision-active-clients");
-    if (returnToRegistrations) openUsersModal(null, true);
-    umState = { mode: "bulk-credentials", credentials: result.credentials || [], results: result.results || [] };
-    renderUsersModal();
-    toast(`${result.processed || 0} acesso(s) de cliente processado(s).`);
-  } catch (err) {
-    if (button?.isConnected) { button.disabled = false; button.textContent = label; }
-    toast("Erro ao criar clientes · " + err.message, true);
-  }
-}
 function wireUsersModal() {
   if (umState.mode === "list") {
-    document.getElementById("provision-client-users")?.addEventListener("click", (event) => provisionActiveClientUsers(event.currentTarget));
     document.getElementById("new-user")?.addEventListener("click", () => {
       umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
       renderUsersModal();
@@ -6617,16 +6651,6 @@ function wireUsersModal() {
     });
     document.getElementById("credentials-done")?.addEventListener("click", () => {
       closeUsersModal();
-    });
-  } else if (umState.mode === "bulk-credentials") {
-    document.getElementById("copy-client-accesses")?.addEventListener("click", async () => {
-      await copyText(document.getElementById("client-accesses-value")?.value || "");
-      toast("Credenciais copiadas.");
-    });
-    document.getElementById("client-accesses-done")?.addEventListener("click", async () => {
-      umState = { mode: "list" };
-      await init();
-      renderUsersModal();
     });
   } else {
     wireMultiPicker("u-companies");
@@ -6813,9 +6837,8 @@ function renderRegistrationsSection() {
   if (section === "users") {
     const users = cache.users || [];
     const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn" id="registration-provision-clients" title="Criar acessos para empresas com entregas ativas">Criar clientes ativos</button><button class="btn primary" id="registration-add">+ Usuário</button></div>
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
-    document.getElementById("registration-provision-clients")?.addEventListener("click", (event) => provisionActiveClientUsers(event.currentTarget, true));
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
     wireRegistrationTable();
@@ -7025,7 +7048,6 @@ function setupRegistrationToolbar(root, table) {
   if (!toolbar || toolbar.classList.contains("registration-toolbar")) return;
   const count = toolbar.querySelector(".muted");
   const addButton = toolbar.querySelector("#registration-add");
-  const provisionClientsButton = toolbar.querySelector("#registration-provision-clients");
   const tableState = registrationTableState();
   toolbar.classList.add("registration-toolbar");
   const left = document.createElement("div");
@@ -7036,7 +7058,6 @@ function setupRegistrationToolbar(root, table) {
   right.className = "registration-toolbar-right";
   if (count) left.appendChild(count);
   center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
-  if (provisionClientsButton) center.appendChild(provisionClientsButton);
   if (addButton) {
     const originalLabel = addButton.textContent.trim().replace(/^\+\s*/, "");
     addButton.classList.add("plus");
@@ -7754,6 +7775,12 @@ async function disconnectGoogleAccount() {
 
 function currentUserIsAdmin() {
   return !isLive() || currentProfile?.role === "admin";
+}
+
+function currentUserCanUseChat() {
+  if (!isLive()) return true;
+  return currentProfile?.status === "active"
+    && ["admin", "collaborator"].includes(normalizedProfileRole(currentProfile?.role));
 }
 
 function currentUserCan(moduleId, action = "view") {
@@ -10863,7 +10890,8 @@ function stopInternalChatPolling() {
 }
 
 function internalChatUsers() {
-  return (cache.users || []).filter((user) => user.id !== activeProfileId()).sort((a, b) => {
+  return (cache.users || []).filter((user) => user.id !== activeProfileId()
+    && ["admin", "collaborator"].includes(normalizedProfileRole(user.role))).sort((a, b) => {
     const statusOrder = Number(b.status === "active") - Number(a.status === "active");
     return statusOrder || userDisplayName(a.id, cache, "Usuário").localeCompare(userDisplayName(b.id, cache, "Usuário"), "pt-BR", { sensitivity: "base" });
   });
@@ -11049,6 +11077,10 @@ function openInternalChatThread(recipientId) {
 }
 
 function openInternalChat() {
+  if (!currentUserCanUseChat()) {
+    toast("O chat interno está disponível apenas para colaboradores e administradores.", true);
+    return;
+  }
   stopInternalChatPolling();
   internalChatRecipientId = null;
   internalChatQuery = "";

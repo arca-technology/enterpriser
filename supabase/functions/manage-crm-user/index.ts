@@ -1,4 +1,4 @@
-import { createClient } from "npm:@supabase/supabase-js@2.95.0";
+import { createClient, type User } from "npm:@supabase/supabase-js@2.95.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -116,83 +116,87 @@ Deno.serve(async (req) => {
         await admin.from("profiles").update({ auth_user_id: authData.user.id }).eq("id", actor.id);
       }
     }
-    if (!actor || actor.role !== "admin" || actor.status !== "active") return json({ error: "Apenas administradores podem gerenciar acessos." }, 403);
+    if (!actor || actor.status !== "active") return json({ error: "Perfil ativo não encontrado." }, 403);
 
-    if (action === "provision-active-clients") {
-      const deliveriesResult = await admin.from("deliveries")
-        .select("id, company_id, client_name")
-        .eq("status", "active");
-      if (deliveriesResult.error) throw deliveriesResult.error;
+    if (action === "provision-delivery-client") {
+      if (!["admin", "collaborator"].includes(actor.role)) return json({ error: "Apenas colaboradores e administradores podem criar o acesso do cliente." }, 403);
+      const deliveryId = String(body.delivery_id || "").trim();
+      if (!deliveryId) return json({ error: "Entrega não informada." }, 400);
 
-      const companyIds = [...new Set((deliveriesResult.data || []).map((delivery) => String(delivery.company_id || "").trim()).filter(Boolean))];
-      if (!companyIds.length) return json({ processed: 0, credentials: [], results: [] });
-      const companiesResult = await admin.from("companies")
-        .select("tax_id, legal_name, trade_name")
-        .in("tax_id", companyIds);
-      if (companiesResult.error) throw companiesResult.error;
+      const deliveryResult = await admin.from("deliveries").select("id,company_id,client_name").eq("id", deliveryId).maybeSingle();
+      if (deliveryResult.error) throw deliveryResult.error;
+      const delivery = deliveryResult.data;
+      if (!delivery?.company_id) return json({ error: "A entrega precisa estar vinculada a uma empresa." }, 400);
 
-      const listed = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-      if (listed.error) throw listed.error;
-      const authByEmail = new Map((listed.data.users || []).map((user) => [String(user.email || "").toLowerCase(), user]));
-      type CompanyRow = { tax_id: string; legal_name: string | null; trade_name: string | null };
-      const groups = new Map<string, { email: string; companyIds: string[]; company: CompanyRow }>();
-      for (const company of companiesResult.data || []) {
-        const digits = String(company.tax_id || "").replace(/\D/g, "");
-        if (digits.length !== 14) continue;
-        const email = `${digits.slice(0, 8)}@ecommerce365.com.br`;
-        const existing = groups.get(email);
-        if (existing) existing.companyIds.push(company.tax_id);
-        else groups.set(email, { email, companyIds: [company.tax_id], company });
+      const companyResult = await admin.from("companies").select("tax_id,legal_name,trade_name").eq("tax_id", delivery.company_id).maybeSingle();
+      if (companyResult.error) throw companyResult.error;
+      const company = companyResult.data;
+      if (!company) return json({ error: "Empresa da entrega não encontrada." }, 404);
+      const digits = String(company.tax_id || "").replace(/\D/g, "");
+      if (digits.length !== 14) return json({ error: "O CNPJ da empresa está inválido para gerar o acesso." }, 400);
+
+      const email = `${digits.slice(0, 8)}@ecommerce365.com.br`;
+      const displayName = company.trade_name || company.legal_name || delivery.client_name || "Cliente";
+      let authUser: User | null = null;
+      for (let page = 1; !authUser; page += 1) {
+        const listed = await admin.auth.admin.listUsers({ page, perPage: 200 });
+        if (listed.error) throw listed.error;
+        authUser = (listed.data.users || []).find((user) => String(user.email || "").toLowerCase() === email) || null;
+        if ((listed.data.users || []).length < 200) break;
       }
 
-      const credentials: Array<{ company: string; email: string; password: string }> = [];
-      const results: Array<Record<string, unknown>> = [];
-      for (const group of groups.values()) {
-        const displayName = group.company.trade_name || group.company.legal_name || "Cliente";
-        let authUser = authByEmail.get(group.email);
-        let createdAuth = false;
-        let password = "";
-        if (!authUser) {
-          password = securePassword();
-          const created = await admin.auth.admin.createUser({
-            email: group.email,
-            password,
-            email_confirm: true,
-            user_metadata: { full_name: displayName, nickname: displayName },
-          });
-          if (created.error || !created.data.user) throw created.error || new Error(`Acesso não criado para ${group.email}.`);
-          authUser = created.data.user;
-          authByEmail.set(group.email, authUser);
-          createdAuth = true;
-        }
-
-        const existingProfile = await admin.from("profiles").select("id").eq("email", group.email).maybeSingle();
-        if (existingProfile.error) throw existingProfile.error;
-        const profileBody = {
-          full_name: displayName,
-          nickname: displayName,
-          email: group.email,
-          role: "client",
-          company_ids: group.companyIds,
-          status: "active",
-          function_name: "Cliente",
-          job_title: null,
-          auth_user_id: authUser.id,
-          permissions: clientPermissions(),
-          updated_at: new Date().toISOString(),
-        };
-        const saved = existingProfile.data
-          ? await admin.from("profiles").update(profileBody).eq("id", existingProfile.data.id)
-          : await admin.from("profiles").insert(profileBody);
-        if (saved.error) {
-          if (createdAuth) await admin.auth.admin.deleteUser(authUser.id);
-          throw saved.error;
-        }
-        if (createdAuth) credentials.push({ company: displayName, email: group.email, password });
-        results.push({ company: displayName, email: group.email, company_ids: group.companyIds, created: createdAuth });
+      let createdAuth = false;
+      let password = "";
+      if (!authUser) {
+        password = securePassword();
+        const created = await admin.auth.admin.createUser({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: { full_name: displayName, nickname: displayName },
+        });
+        if (created.error || !created.data.user) throw created.error || new Error(`Acesso não criado para ${email}.`);
+        authUser = created.data.user;
+        createdAuth = true;
       }
-      return json({ processed: results.length, credentials, results });
+
+      const existingProfile = await admin.from("profiles").select("id,role,company_ids").eq("email", email).maybeSingle();
+      if (existingProfile.error) throw existingProfile.error;
+      if (existingProfile.data && existingProfile.data.role !== "client") {
+        if (createdAuth) await admin.auth.admin.deleteUser(authUser.id);
+        return json({ error: `O e-mail ${email} já pertence a outro perfil.` }, 409);
+      }
+      const companyIds = [...new Set([...(Array.isArray(existingProfile.data?.company_ids) ? existingProfile.data.company_ids : []), company.tax_id])];
+      const profileBody = {
+        full_name: displayName,
+        nickname: displayName,
+        email,
+        role: "client",
+        company_ids: companyIds,
+        status: "active",
+        function_name: "Cliente",
+        job_title: null,
+        auth_user_id: authUser.id,
+        permissions: clientPermissions(),
+        updated_at: new Date().toISOString(),
+      };
+      const saved = existingProfile.data
+        ? await admin.from("profiles").update(profileBody).eq("id", existingProfile.data.id).select("*").single()
+        : await admin.from("profiles").insert(profileBody).select("*").single();
+      if (saved.error) {
+        if (createdAuth) await admin.auth.admin.deleteUser(authUser.id);
+        throw saved.error;
+      }
+      return json({
+        profile: saved.data,
+        created: createdAuth,
+        email,
+        company_ids: companyIds,
+        credential: createdAuth ? { company: displayName, email, password } : null,
+      });
     }
+
+    if (actor.role !== "admin") return json({ error: "Apenas administradores podem gerenciar acessos." }, 403);
 
     if (action === "save-user") {
       const profileId = body.profile_id ? String(body.profile_id) : null;
