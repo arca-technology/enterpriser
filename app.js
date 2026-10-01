@@ -2125,15 +2125,46 @@ function isoDay(date) {
   return `${year}-${month}-${day}`;
 }
 
+function deliveryGanttProgress(projectId) {
+  const allTasks = loadProjectTasks().filter((task) => task.project_id === projectId);
+  const tasks = allTasks.filter((task) => task.status !== "canceled" && !allTasks.some((candidate) => candidate.parent_activity_id === task.id));
+  const objectives = loadDeliveryObjectives().filter((objective) => objective.project_id === projectId && objective.status !== "canceled");
+  const goals = loadDeliveryGoals().filter((goal) => goal.project_id === projectId && goal.status !== "canceled");
+  const metric = (rows) => ({
+    total: rows.length,
+    done: rows.filter((row) => row.status === "done").length,
+    percent: rows.length ? Math.round(rows.filter((row) => row.status === "done").length / rows.length * 100) : null
+  });
+  const taskMetric = metric(tasks);
+  const objectiveMetric = metric(objectives);
+  const goalMetric = metric(goals);
+  const available = [taskMetric.percent, objectiveMetric.percent, goalMetric.percent].filter((value) => value != null);
+  const percent = available.length ? Math.round(available.reduce((sum, value) => sum + value, 0) / available.length) : 0;
+  return { percent, tasks: taskMetric, objectives: objectiveMetric, goals: goalMetric };
+}
+
+function deliveryGanttProgressLabel(progress) {
+  const parts = [
+    progress.tasks.total ? `Tarefas ${progress.tasks.done}/${progress.tasks.total} (${progress.tasks.percent}%)` : "",
+    progress.objectives.total ? `Objetivos ${progress.objectives.done}/${progress.objectives.total} (${progress.objectives.percent}%)` : "",
+    progress.goals.total ? `Metas ${progress.goals.done}/${progress.goals.total} (${progress.goals.percent}%)` : ""
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Sem tarefas, objetivos ou metas";
+}
+
 function timelineItem(tab, row, c) {
   if (tab === "deals") return {
     id: row.id, title: row.title, detail: c.companyById[row.company_id]?.legal_name || c.companyById[row.company_id]?.name || "Sem empresa",
     start: row.expected_close_date, end: row.expected_close_date, status: row.status
   };
-  if (tab === "projects") return {
-    id: row.id, title: c.productById[row.product_id]?.name || row.name || "Entrega",
-    detail: c.companyById[row.company_id]?.legal_name || "Sem cliente", start: row.start_date, end: row.end_date || row.start_date, status: row.status
-  };
+  if (tab === "projects") {
+    const progress = deliveryGanttProgress(row.id);
+    return {
+      id: row.id, title: c.productById[row.product_id]?.name || row.name || "Entrega",
+      detail: c.companyById[row.company_id]?.legal_name || "Sem cliente", start: row.start_date, end: row.end_date || row.start_date, status: row.status,
+      progress: { ...progress, label: deliveryGanttProgressLabel(progress) }
+    };
+  }
   if (tab === "activities") return {
     id: row.id, title: activityDisplayName(row), detail: `${row.client_name || "Sem cliente"} · ${row.product_name || "Sem produto"}`,
     start: taskPlannedStart(row) || taskPlannedEnd(row), end: taskPlannedEnd(row) || taskPlannedStart(row), status: row.status
@@ -2192,15 +2223,16 @@ function ganttScale(items) {
 }
 
 function ganttItemState(item) {
-  if (["done", "won"].includes(item.status)) return "done";
+  if (["done", "won", "closed"].includes(item.status)) return "done";
   const end = dateOnly(item.end || item.start);
   if (end && end < dateOnly(isoDay(new Date()))) return "overdue";
-  if (["in_progress", "doing", "negotiation"].includes(item.status)) return "active";
+  if (["active", "in_progress", "doing", "negotiation"].includes(item.status)) return "active";
   return "planned";
 }
 
 function ganttTimelineMarkup(items, label = "Registro", itemClass = "", footer = "") {
   const scale = ganttScale(items);
+  const showsProgress = items.some((item) => item.progress);
   const grid = `<div class="gantt-grid" style="grid-template-columns:repeat(${scale.ticks.length},1fr)">${scale.ticks.map(() => "<span></span>").join("")}</div>`;
   const axis = `<div class="gantt-axis" style="width:${scale.width}px;grid-template-columns:repeat(${scale.ticks.length},1fr)">${scale.ticks.map((tick) => `<span>${esc(tick)}</span>`).join("")}</div>`;
   const today = dateOnly(isoDay(new Date()));
@@ -2218,15 +2250,23 @@ function ganttTimelineMarkup(items, label = "Registro", itemClass = "", footer =
     const period = isMilestone ? dt(item.start) : `${dt(item.start)} a ${dt(item.end)}`;
     const stateClass = ganttItemState(item);
     const title = esc(`${item.title} · ${period}`);
-    const control = isMilestone
-      ? `<button class="gantt-milestone ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px" title="${title}"><span></span></button>`
-      : `<button class="gantt-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${title}">${esc(item.title)}</button>`;
-    return `<div class="gantt-row"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span></div>
-      <div class="gantt-track" style="width:${scale.width}px">${grid}${todayLine}${control}</div></div>`;
+    const progressPercent = Math.max(0, Math.min(100, Number(item.progress?.percent || 0)));
+    const progressTitle = item.progress ? esc(`Andamento ${progressPercent}% · ${item.progress.label}`) : "";
+    const control = item.progress
+      ? `<button class="gantt-bar gantt-contract-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="Contrato · ${title}">${esc(item.title)}</button>
+        <button class="gantt-progress-rail ${itemClass}${progressPercent >= 100 ? " complete" : ""}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${progressTitle}"><span style="width:${progressPercent}%"></span><b>${progressPercent}%</b></button>`
+      : isMilestone
+        ? `<button class="gantt-milestone ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px" title="${title}"><span></span></button>`
+        : `<button class="gantt-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${title}">${esc(item.title)}</button>`;
+    return `<div class="gantt-row${item.progress ? " has-progress" : ""}"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span>${item.progress ? `<small class="gantt-progress-summary">${esc(`${progressPercent}% · ${item.progress.label}`)}</small>` : ""}</div>
+      <div class="gantt-track${item.progress ? " has-progress" : ""}" style="width:${scale.width}px">${grid}${todayLine}${control}</div></div>`;
   }).join("");
+  const legend = showsProgress
+    ? '<span><i class="planned"></i>Contrato</span><span><i class="active"></i>Andamento</span><span><i class="done"></i>Concluído</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">Linha vermelha: hoje</span>'
+    : '<span><i class="planned"></i>Planejado</span><span><i class="active"></i>Em andamento</span><span><i class="done"></i>Atendido</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">◆ data única</span>';
   return `<div class="gantt-shell"><div class="gantt-view"><div class="gantt-board">
     <div class="gantt-head"><div>${esc(label)}</div><div class="gantt-axis-wrap">${axis}</div></div>${rows}
-    <div class="gantt-legend"><span><i class="planned"></i>Planejado</span><span><i class="active"></i>Em andamento</span><span><i class="done"></i>Atendido</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">◆ data única</span></div>
+    <div class="gantt-legend">${legend}</div>
   </div></div><div class="gantt-bottom-scroll" aria-label="Rolagem horizontal do Gantt"><div style="width:${scale.width + 262}px"></div></div>${footer}</div>`;
 }
 
@@ -2309,7 +2349,7 @@ function renderGantt(c) {
   const main = document.getElementById("main");
   main.innerHTML = ganttTimelineMarkup(items, state.tab === "activities" ? "Tarefa" : "Registro", "", pagination);
   wireGanttScrolling(main);
-  document.querySelectorAll(".gantt-bar,.gantt-milestone").forEach((button) =>
+  document.querySelectorAll(".gantt-bar,.gantt-milestone,.gantt-progress-rail").forEach((button) =>
     button.addEventListener("click", () => openTimelineRecord(state.tab, button.dataset.id)));
   document.getElementById("gantt-page-prev")?.addEventListener("click", () => { state.pages[state.tab] -= 1; render(); });
   document.getElementById("gantt-page-next")?.addEventListener("click", () => { state.pages[state.tab] += 1; render(); });
