@@ -95,7 +95,7 @@ Deno.serve(async (req) => {
       const profileId = body.profile_id ? String(body.profile_id) : null;
       const email = String(body.email || "").trim().toLowerCase();
       const password = String(body.password || "");
-      const role = ["admin", "developer", "user"].includes(body.role) ? body.role : "user";
+      const role = ["admin", "developer", "collaborator", "client", "supplier"].includes(body.role) ? body.role : "collaborator";
       const status = body.status === "inactive" ? "inactive" : "active";
       if (!email) return json({ error: "Informe o e-mail." }, 400);
       if (password && password.length < 10) return json({ error: "A senha deve ter pelo menos 10 caracteres." }, 400);
@@ -135,6 +135,7 @@ Deno.serve(async (req) => {
         email,
         phone: String(body.phone || "").trim() || null,
         role,
+        company_ids: Array.isArray(body.company_ids) ? [...new Set(body.company_ids.map((value: unknown) => String(value || "").trim()).filter(Boolean))] : [],
         status,
         function_name: String(body.function_name || "").trim() || null,
         job_title: String(body.job_title || "").trim() || null,

@@ -269,6 +269,31 @@ function defaultUserPermissions() {
   }));
   return permissions;
 }
+function emptyUserPermissions() {
+  const permissions = {};
+  PERMISSION_GROUPS.forEach((group) => group.modules.forEach(([moduleId]) => {
+    permissions[moduleId] = Object.fromEntries(PERMISSION_ACTIONS.map(({ id }) => [id, false]));
+  }));
+  return permissions;
+}
+function defaultPermissionsForRole(role) {
+  if (role === "admin") return {};
+  if (role === "collaborator" || role === "user") return defaultUserPermissions();
+  const permissions = emptyUserPermissions();
+  if (role === "developer") {
+    Object.values(permissions).forEach((actions) => { actions.view = true; });
+  } else if (role === "client") {
+    ["companies", "contacts", "projects", "activities", "files", "documents"].forEach((moduleId) => {
+      permissions[moduleId].view = true;
+    });
+  } else if (role === "supplier") {
+    ["companies", "contacts", "projects", "activities", "files", "documents"].forEach((moduleId) => {
+      permissions[moduleId].view = true;
+    });
+    permissions.activities.operate = true;
+  }
+  return permissions;
+}
 function normalizeUserPermissions(value) {
   const defaults = defaultUserPermissions();
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -366,7 +391,7 @@ function fromRemoteRow(tab, row) {
 const DEMO = {
   users: [
     { id: "u1", full_name: "Ana Ferreira", nickname: "Ana", email: "ana@upgferreira.com", phone: "", role: "admin", status: "active" },
-    { id: "u2", full_name: "Bruno Lima", nickname: "Bruno", email: "bruno@upgferreira.com", phone: "", role: "user", status: "active" }
+    { id: "u2", full_name: "Bruno Lima", nickname: "Bruno", email: "bruno@upgferreira.com", phone: "", role: "collaborator", status: "active" }
   ],
   pipelines: [
     { id: "pl1", name: "Padrão", stages: ["Lead", "Qualificação", "Diagnóstico", "Proposta", "Negociação"] }
@@ -424,6 +449,11 @@ async function api(path, opts = {}) {
   if (isLive() && !token) {
     showLogin("Sua sessão expirou. Entre novamente.");
     throw new Error("Sessão expirada");
+  }
+  const method = String(opts.method || "GET").toUpperCase();
+  if (currentProfile && ["developer", "client"].includes(currentProfile.role) && !["GET", "HEAD"].includes(method)) {
+    const label = currentProfile.role === "developer" ? "Desenvolvedor" : "Cliente";
+    throw new Error(`Perfil ${label}: alterações no banco estão bloqueadas.`);
   }
   const headers = { apikey: c.anonKey, Authorization: `Bearer ${token || c.anonKey}`, ...(opts.headers || {}) };
   const res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
@@ -6362,7 +6392,23 @@ function wirePipelineForm({ rerender, onCancel, onSaved }) {
 }
 
 // ---------- Usuários (responsáveis pelos negócios) ----------
-const ROLE_LABEL = { admin: "Administrador", developer: "Desenvolvedor", user: "Usuário" };
+const ROLE_LABEL = {
+  collaborator: "Colaborador",
+  developer: "Desenvolvedor",
+  admin: "Administrador",
+  client: "Cliente",
+  supplier: "Fornecedor",
+};
+const ROLE_DESCRIPTION = {
+  collaborator: "Realiza operações conforme as permissões por módulo.",
+  developer: "Acesso para testes. Nenhuma alteração é gravada no banco.",
+  admin: "Pode fazer tudo no sistema, inclusive gerenciar acessos.",
+  client: "Acesso somente para visualizar os dados liberados da própria empresa.",
+  supplier: "Acesso limitado para empresas terceiras que apoiam a operação.",
+};
+function normalizedProfileRole(role) {
+  return role === "user" || !ROLE_LABEL[role] ? "collaborator" : role;
+}
 let umState = { mode: "list" };
 let umReturnToRegistrations = false;
 let umCloseAction = null;
@@ -6390,8 +6436,8 @@ function openUsersModal(editId = null, returnToRegistrations = false) {
   if (!requireCurrentUserAdmin("Usuários")) return;
   const user = editId && editId !== "new" ? cache.users.find((item) => item.id === editId) : null;
   umReturnToRegistrations = returnToRegistrations;
-  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: user.role || "user", function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id), permissions: normalizeUserPermissions(user.permissions) };
-  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultUserPermissions() };
+  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: normalizedProfileRole(user.role), company_ids: normalizeTextList(user.company_ids), function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id), permissions: normalizeUserPermissions(user.permissions) };
+  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
   else umState = { mode: "list" };
   const title = user ? "Editar usuário" : editId === "new" ? "Novo usuário" : "Usuários · Responsáveis";
   const nestedRegistration = Boolean(returnToRegistrations && document.getElementById("registrations-root"));
@@ -6465,6 +6511,12 @@ function readPermissionsMatrix() {
   return permissions;
 }
 function userFormHtml() {
+  const companyOptions = (cache?.companies || []).map((company) => ({
+    value: company.tax_id,
+    label: company.trade_name || company.legal_name || company.name || company.tax_id,
+    detail: company.tax_id,
+  }));
+  const showCompanies = ["client", "supplier"].includes(umState.role);
   return `<div class="form">
       <div class="field full"><label>Nome completo</label><input id="u-name" value="${esc(umState.full_name)}"></div>
       <div class="field"><label>Apelido</label><input id="u-nickname" value="${esc(umState.nickname || "")}" placeholder="Nome exibido nos responsáveis"></div>
@@ -6472,13 +6524,14 @@ function userFormHtml() {
       <div class="field"><label>Telefone</label><input id="u-phone" value="${esc(umState.phone)}"></div>
       <div class="field"><label>Perfil</label><select id="u-role">
         ${Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}"${umState.role === v ? " selected" : ""}>${l}</option>`).join("")}
-      </select></div>
+      </select><small class="muted">${esc(ROLE_DESCRIPTION[umState.role] || "")}</small></div>
       <div class="field"><label>Função</label><input id="u-function" value="${esc(umState.function_name)}" placeholder="Ex.: Gestão de projetos"></div>
       <div class="field"><label>Cargo</label><input id="u-job-title" value="${esc(umState.job_title)}" placeholder="Ex.: Analista de implantação"></div>
       <div class="field"><label>Status</label><select id="u-status">
         <option value="active"${umState.status === "active" ? " selected" : ""}>Ativo</option>
         <option value="inactive"${umState.status === "inactive" ? " selected" : ""}>Inativo</option>
       </select></div>
+      ${showCompanies ? `<div class="field full"><label>Empresa(s) vinculada(s)</label>${multiPickerHtml("u-companies", companyOptions, umState.company_ids || [], "Buscar empresa por nome ou CNPJ", true)}<small class="muted">Este perfil visualizará somente registros relacionados às empresas selecionadas.</small></div>` : ""}
       ${permissionsMatrixHtml()}
       <div class="field full"><label>${umState.hasAccess ? "Nova senha (deixe em branco para manter a atual)" : "Senha de acesso"}</label>
         <div class="input-action-row"><input id="u-password" type="text" value="${esc(umState.password)}" readonly placeholder="Gere uma senha segura">
@@ -6504,14 +6557,14 @@ function userCredentialsHtml() {
 function wireUsersModal() {
   if (umState.mode === "list") {
     document.getElementById("new-user")?.addEventListener("click", () => {
-      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "user", function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultUserPermissions() };
+      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
       renderUsersModal();
     });
     document.querySelectorAll("#um-body .rowbtn.edit").forEach((b) =>
       b.addEventListener("click", () => {
         const u = cache.users.find((x) => x.id === b.dataset.id);
         if (!u) return;
-        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: u.role || "user", function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id), permissions: normalizeUserPermissions(u.permissions) };
+        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: normalizedProfileRole(u.role), company_ids: normalizeTextList(u.company_ids), function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id), permissions: normalizeUserPermissions(u.permissions) };
         renderUsersModal();
       }));
     document.querySelectorAll("#um-body .rowbtn.del").forEach((b) =>
@@ -6532,10 +6585,20 @@ function wireUsersModal() {
       closeUsersModal();
     });
   } else {
+    wireMultiPicker("u-companies");
     document.getElementById("u-role")?.addEventListener("change", (event) => {
-      umState.permissions = readPermissionsMatrix();
+      umState.full_name = document.getElementById("u-name")?.value || "";
+      umState.nickname = document.getElementById("u-nickname")?.value || "";
+      umState.email = document.getElementById("u-email")?.value || "";
+      umState.phone = document.getElementById("u-phone")?.value || "";
+      umState.function_name = document.getElementById("u-function")?.value || "";
+      umState.job_title = document.getElementById("u-job-title")?.value || "";
+      umState.status = document.getElementById("u-status")?.value || "active";
+      umState.password = document.getElementById("u-password")?.value || "";
+      umState.company_ids = multiPickerValues("u-companies");
       umState.role = event.target.value;
-      document.querySelector("#um-body .user-permissions-field")?.replaceWith(document.createRange().createContextualFragment(permissionsMatrixHtml()));
+      umState.permissions = defaultPermissionsForRole(umState.role);
+      renderUsersModal();
     });
     document.getElementById("cancel-form")?.addEventListener("click", () => {
       closeUsersModal();
@@ -6564,6 +6627,7 @@ function wireUsersModal() {
         email,
         phone: document.getElementById("u-phone").value.trim() || null,
         role: document.getElementById("u-role").value,
+        company_ids: multiPickerValues("u-companies"),
         function_name: document.getElementById("u-function").value.trim() || null,
         job_title: document.getElementById("u-job-title").value.trim() || null,
         password,
@@ -7648,6 +7712,7 @@ function currentUserIsAdmin() {
 function currentUserCan(moduleId, action = "view") {
   if (currentUserIsAdmin()) return true;
   if (!currentProfile || currentProfile.status !== "active") return false;
+  if (["developer", "client"].includes(currentProfile.role) && action !== "view") return false;
   return Boolean(normalizeUserPermissions(currentProfile.permissions)[moduleId]?.[action]);
 }
 
