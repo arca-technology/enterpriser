@@ -120,6 +120,9 @@ Deno.serve(async (req) => {
 
     if (action === "provision-delivery-client") {
       if (!["admin", "collaborator"].includes(actor.role)) return json({ error: "Apenas colaboradores e administradores podem criar o acesso do cliente." }, 403);
+      if (actor.role === "collaborator" && actor.permissions?.projects?.create !== true) {
+        return json({ error: "Este colaborador não possui permissão para cadastrar entregas." }, 403);
+      }
       const deliveryId = String(body.delivery_id || "").trim();
       if (!deliveryId) return json({ error: "Entrega não informada." }, 400);
 
