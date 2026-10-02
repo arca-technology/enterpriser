@@ -185,6 +185,8 @@ const RECURRENCE_OPTIONS = [
 const RECURRENCE_LABEL = Object.fromEntries(RECURRENCE_OPTIONS);
 const PRIORITY_OPTIONS = [["low", "Baixa"], ["normal", "Normal"], ["high", "Alta"], ["urgent", "Urgente"]];
 const PRIORITY_LABEL = Object.fromEntries(PRIORITY_OPTIONS);
+const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
+const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
   let ids = value;
   if (typeof ids === "string") {
@@ -1631,7 +1633,7 @@ function columns(tab, c) {
       { k: "name", h: "NOME COMPLETO", cls: "person-sticky-col person-sticky-col-1", thCls: "person-sticky-col person-sticky-col-1" },
       { k: "phone", h: "TELEFONE/CELULAR", cls: "muted person-sticky-col person-sticky-col-2", thCls: "person-sticky-col person-sticky-col-2", fmt: (v) => multiLineCell(v, normalizePhoneNumber) },
       { k: "email", h: "EMAIL(S)", cls: "muted", fmt: (v) => multiLineCell(v) },
-      { k: "contact_type", h: "TIPO DE CONTATO" },
+      { k: "contact_type", h: "TIPO DE CONTATO", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((type) => `<span class="tool-tag">${esc(type)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "channel", h: "CANAL" },
       { k: "job_title", h: "CARGO" },
       { k: "company_ids", h: "EMPRESA(S)", fmt: (v, row) => companyNames(v?.length ? v : [row.company_id], c) },
@@ -1794,8 +1796,8 @@ function fields(tab, c) {
       { k: "name", label: "Nome completo", req: true, full: true },
       { k: "phone", label: "Telefone/celular" },
       { k: "email", label: "Email(s)" },
-      { k: "contact_type", label: "Tipo de contato", placeholder: "Ex.: Cliente, Sócio, Fornecedor", help: "Relação da pessoa com a operação ou com a empresa." },
-      { k: "channel", label: "Canal", placeholder: "Ex.: WhatsApp, LinkedIn, Indicação", help: "Origem ou meio pelo qual esse contato chegou." },
+      { k: "contact_type", label: "Tipo de contato", type: "multi", options: CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, full: true, placeholder: "Selecionar tipos", help: "Relação da pessoa com a operação ou com a empresa; aceita mais de uma opção." },
+      { k: "channel", label: "Canal", type: "select", options: CONTACT_CHANNEL_OPTIONS.map((value) => ({ value, label: value })), help: "Origem do primeiro contato com a empresa." },
       { k: "job_title", label: "Cargo" },
       { k: "company_ids", label: "Empresa(s)", type: "multi", options: companyRefOptions(c), full: true, placeholder: "Buscar por nome ou CNPJ", searchOnly: true },
       { k: "linkedin", label: "LinkedIn" },
@@ -5582,8 +5584,8 @@ async function convertImportToDeal(id) {
         name: row.contact_name,
         phone: row.phone || row.contact || null,
         email: row.email || null,
-        contact_type: "Importado",
-        channel: row.source || "WhatsApp",
+        contact_type: null,
+        channel: contactChannelFromSource(row.source),
         whatsapp: String(row.source || "").toLowerCase().includes("whatsapp") ? (row.phone || row.contact || null) : null
       });
     }
@@ -6104,17 +6106,69 @@ async function replaceContactCompanyLinks({ contactId = null, companyId = null, 
   });
 }
 
-async function companyQsaContactIds(companyId) {
+async function companyQsaContactIds(companyId, qsaValue = null) {
+  const company = cache?.companyById?.[companyId] || (DEMO.companies || []).find((item) => item.tax_id === companyId);
+  const qsaNames = qsaPartnerNames(qsaValue ?? company?.qsa);
+  if (!qsaNames.length) return [];
   if (!companyId) return [];
   if (!isLive()) {
     const linkedIds = new Set((DEMO.contactCompanies || []).filter((link) => link.company_id === companyId).map((link) => link.contact_id));
-    return (DEMO.contacts || []).filter((contact) => linkedIds.has(contact.id) && (contact.channel === "QSA" || contact.contact_type === "Sócio")).map((contact) => contact.id);
+    return (DEMO.contacts || []).filter((contact) => linkedIds.has(contact.id) && qsaNames.some((name) => likelySamePersonName(contact.name, name))).map((contact) => contact.id);
   }
   const links = await api(`${remoteTable("contactCompanies")}?select=contact_id&company_id=eq.${encodeURIComponent(companyId)}`);
   const ids = normalizeIdList((links || []).map((link) => link.contact_id));
   if (!ids.length) return [];
-  const people = await api(`${remoteTable("contacts")}?select=id,channel,contact_type&id=in.(${ids.map(encodeURIComponent).join(",")})`);
-  return (people || []).filter((contact) => contact.channel === "QSA" || contact.contact_type === "Sócio").map((contact) => contact.id);
+  const people = await api(`${remoteTable("contacts")}?select=id,name&id=in.(${ids.map(encodeURIComponent).join(",")})`);
+  return (people || []).filter((contact) => qsaNames.some((name) => likelySamePersonName(contact.name, name))).map((contact) => contact.id);
+}
+
+function qsaPartnerNames(value) {
+  const names = [];
+  const pattern = /Nome\/Nome Empresarial\s*:\s*(.*?)\s*\|\s*Qualifica(?:ção|cao)\s*:/gi;
+  let match;
+  while ((match = pattern.exec(String(value || "")))) names.push(match[1].trim());
+  return normalizeTextList(names);
+}
+
+function contactChannelFromSource(value) {
+  const source = normalizePersonNameValue(value);
+  const match = CONTACT_CHANNEL_OPTIONS.find((channel) => source.includes(normalizePersonNameValue(channel)));
+  if (match) return match;
+  if (source.includes("mail")) return "E-mail";
+  if (source.includes("fone") || source.includes("ligacao")) return "Telefone";
+  return source ? "Outros" : null;
+}
+
+function normalizePersonNameValue(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("pt-BR").replace(/\s+/g, " ").trim();
+}
+
+function personNameDistance(left, right) {
+  const a = normalizePersonNameValue(left);
+  const b = normalizePersonNameValue(right);
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const above = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[b.length];
+}
+
+function likelySamePersonName(left, right) {
+  const a = normalizePersonNameValue(left);
+  const b = normalizePersonNameValue(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const aParts = a.split(/\s+/);
+  const bParts = b.split(/\s+/);
+  return aParts.length >= 3 && aParts.length === bParts.length && aParts[0] === bParts[0]
+    && Math.abs(a.length - b.length) <= 1 && personNameDistance(a, b) <= 1;
 }
 
 function refreshEntityCacheIndexes() {
@@ -6184,6 +6238,7 @@ async function saveForm(tab, id, fs, opts = {}) {
   const linkedCompanyIds = tab === "contacts" ? normalizeIdList(body.company_ids) : null;
   const linkedContactIds = tab === "companies" ? normalizeIdList(body.contact_ids) : null;
   if (tab === "contacts") {
+    body.contact_type = normalizeTextList(body.contact_type).join("; ") || null;
     body.groups = normalizeTextList(body.groups).join("; ") || null;
     delete body.company_ids;
     body.company_id = linkedCompanyIds[0] || null;
@@ -6234,7 +6289,9 @@ async function saveForm(tab, id, fs, opts = {}) {
     }
     if (tab === "contacts") await replaceContactCompanyLinks({ contactId: saved.id, relatedIds: linkedCompanyIds });
     if (tab === "companies") {
-      const qsaContactIds = await companyQsaContactIds(saved.tax_id);
+      const cachedCompany = cache?.companyById?.[saved.tax_id];
+      if (cachedCompany) cachedCompany.qsa = saved.qsa;
+      const qsaContactIds = await companyQsaContactIds(saved.tax_id, saved.qsa);
       linkedContactIds.push(...qsaContactIds.filter((contactId) => !linkedContactIds.includes(contactId)));
       await replaceContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
     }
@@ -7679,8 +7736,8 @@ function googlePersonToContact(person) {
     name,
     phone: normalizePhoneList(phones.join("; ")),
     email: normalizeEmailList(emails.join("; ")),
-    contact_type: "Contato Google",
-    channel: "Google",
+    contact_type: null,
+    channel: null,
     job_title: organization.title || "",
     company_id: company?.tax_id || null,
     linkedin: social("linkedin.com"),
