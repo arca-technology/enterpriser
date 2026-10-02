@@ -6253,7 +6253,46 @@ function openForm(tab, id, opts = {}) {
     const statusEl = form?.querySelector('[data-k="status"]');
     const substatusEl = form?.querySelector('[data-k="substatus"]');
     const continuationEl = form?.querySelector('[data-k="continuation_of_id"]');
+    const erpEl = form?.querySelector('[data-k="erp_platform"]');
     const normalizeCnpj = (value) => String(value || "").replace(/\D/g, "");
+    const persistedChannels = {
+      marketplaces: normalizeTextList(record?.marketplace_channels),
+      stores: normalizeTextList(record?.store_platforms).length ? normalizeTextList(record.store_platforms) : normalizeTextList(record?.store_platform ? [record.store_platform] : []),
+      freight: normalizeTextList(record?.freight_channels)
+    };
+    let inheritedChannels = { marketplaces: [], stores: [], freight: [] };
+    let inheritedErp = "";
+    const replaceChannelPicker = (key, group, selected, locked) => {
+      const picker = document.getElementById(`form-${key}`);
+      if (!picker) return;
+      picker.outerHTML = multiPickerHtml(`form-${key}`, deliveryChannelOptions(group), new Set(selected), picker.dataset.placeholder || "Selecionar", false, false, new Set(locked));
+      wireMultiPicker(`form-${key}`);
+    };
+    const syncContinuationChannels = () => {
+      const previous = continuationEl?.value ? c.projects.find((project) => project.id === continuationEl.value) : null;
+      const previousInheritedErp = inheritedErp;
+      const currentSelections = {
+        marketplaces: multiPickerValues("form-marketplace_channels").filter((channel) => !inheritedChannels.marketplaces.includes(channel)),
+        stores: multiPickerValues("form-store_platforms").filter((channel) => !inheritedChannels.stores.includes(channel)),
+        freight: multiPickerValues("form-freight_channels").filter((channel) => !inheritedChannels.freight.includes(channel))
+      };
+      inheritedChannels = {
+        marketplaces: normalizeTextList(previous?.marketplace_channels),
+        stores: normalizeTextList(previous?.store_platforms).length ? normalizeTextList(previous.store_platforms) : normalizeTextList(previous?.store_platform ? [previous.store_platform] : []),
+        freight: normalizeTextList(previous?.freight_channels)
+      };
+      inheritedErp = previous?.erp_platform || "";
+      replaceChannelPicker("marketplace_channels", "marketplaces", normalizeTextList([...currentSelections.marketplaces, ...inheritedChannels.marketplaces]), normalizeTextList([...persistedChannels.marketplaces, ...inheritedChannels.marketplaces]));
+      replaceChannelPicker("store_platforms", "stores", normalizeTextList([...currentSelections.stores, ...inheritedChannels.stores]), normalizeTextList([...persistedChannels.stores, ...inheritedChannels.stores]));
+      replaceChannelPicker("freight_channels", "freight", normalizeTextList([...currentSelections.freight, ...inheritedChannels.freight]), normalizeTextList([...persistedChannels.freight, ...inheritedChannels.freight]));
+      if (erpEl) {
+        const persistedErp = record?.erp_platform || "";
+        const userErp = erpEl.value === previousInheritedErp && !persistedErp ? "" : erpEl.value;
+        erpEl.value = persistedErp || inheritedErp || userErp;
+        erpEl.disabled = Boolean(persistedErp || inheritedErp);
+        erpEl.closest(".field")?.classList.toggle("field-disabled", Boolean(persistedErp || inheritedErp));
+      }
+    };
     const syncContinuityOptions = () => {
       if (!continuationEl) return;
       const companyCnpj = normalizeCnpj(companyEl?.value);
@@ -6280,13 +6319,15 @@ function openForm(tab, id, opts = {}) {
       if (startEl?.value && prod?.duration_days) endEl.value = addDaysRoundedToMonthEnd(startEl.value, prod.duration_days);
     };
     startEl?.addEventListener("change", recalcEnd);
-    companyEl?.addEventListener("change", syncContinuityOptions);
+    companyEl?.addEventListener("change", () => { syncContinuityOptions(); syncContinuationChannels(); });
+    continuationEl?.addEventListener("change", syncContinuationChannels);
     clientEl?.addEventListener("input", recalcName);
     productEl?.addEventListener("change", () => { recalcEnd(); recalcName(); });
     statusEl?.addEventListener("change", syncSubstatus);
     recalcName();
     recalcEnd();
     syncContinuityOptions();
+    syncContinuationChannels();
     syncSubstatus();
   }
 }
@@ -6604,6 +6645,18 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (body.status === "closed") body.substatus = "closed";
     if (body.status === "inactive" && !body.substatus) { toast("Selecione o substatus da entrega inativa: Suporte ou Encerrado.", true); return; }
     const current = id ? cache.projects.find((project) => project.id === id) : null;
+    const previousDelivery = body.continuation_of_id ? cache.projects.find((project) => project.id === body.continuation_of_id) : null;
+    if (body.continuation_of_id && body.continuation_of_id === id) { toast("Uma entrega não pode ser continuidade dela mesma.", true); return; }
+    const sameCompanyCnpj = previousDelivery && String(previousDelivery.company_id || "").replace(/\D/g, "") === String(body.company_id || "").replace(/\D/g, "");
+    if (previousDelivery && !sameCompanyCnpj) { toast("A continuidade deve pertencer ao mesmo CNPJ.", true); return; }
+    if (previousDelivery) {
+      if (previousDelivery.erp_platform && body.erp_platform && previousDelivery.erp_platform !== body.erp_platform) { toast(`A continuidade deve manter o ERP ${previousDelivery.erp_platform}.`, true); return; }
+      body.erp_platform = previousDelivery.erp_platform || body.erp_platform || null;
+      body.marketplace_channels = normalizeTextList([...normalizeTextList(previousDelivery.marketplace_channels), ...normalizeTextList(body.marketplace_channels)]);
+      const previousStores = normalizeTextList(previousDelivery.store_platforms).length ? normalizeTextList(previousDelivery.store_platforms) : normalizeTextList(previousDelivery.store_platform ? [previousDelivery.store_platform] : []);
+      body.store_platforms = normalizeTextList([...previousStores, ...normalizeTextList(body.store_platforms)]);
+      body.freight_channels = normalizeTextList([...normalizeTextList(previousDelivery.freight_channels), ...normalizeTextList(body.freight_channels)]);
+    }
     if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
     const currentStores = normalizeTextList(current?.store_platforms).length ? normalizeTextList(current.store_platforms) : normalizeTextList(current?.store_platform ? [current.store_platform] : []);
     const removedStore = currentStores.find((channel) => !normalizeTextList(body.store_platforms).includes(channel));
@@ -6612,10 +6665,6 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
     const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
-    const previousDelivery = body.continuation_of_id ? cache.projects.find((project) => project.id === body.continuation_of_id) : null;
-    if (body.continuation_of_id && body.continuation_of_id === id) { toast("Uma entrega não pode ser continuidade dela mesma.", true); return; }
-    const sameCompanyCnpj = previousDelivery && String(previousDelivery.company_id || "").replace(/\D/g, "") === String(body.company_id || "").replace(/\D/g, "");
-    if (previousDelivery && !sameCompanyCnpj) { toast("A continuidade deve pertencer ao mesmo CNPJ.", true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { toast(`Preencha: ${req.label}`, true); return; }
