@@ -1610,8 +1610,8 @@ function toast(msg, isErr) {
 function columns(tab, c) {
   switch (tab) {
     case "companies": return [
-      { k: "tax_id", h: "CNPJ", cls: "muted" },
-      { k: "legal_name", h: "NOME EMPRESARIAL" },
+      { k: "tax_id", h: "CNPJ", cls: "muted company-sticky-col company-sticky-col-1", thCls: "company-sticky-col company-sticky-col-1" },
+      { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2" },
       { k: "trade_name", h: "NOME FANTASIA" },
       { k: "email", h: "E-MAIL", cls: "muted" },
       { k: "phone", h: "TELEFONE", cls: "muted" },
@@ -2059,6 +2059,13 @@ function renderTable(c) {
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
+    if (state.tab === "companies") {
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+        open: { className: "company-details-btn", attrs: { "data-id": rid }, title: "Abrir empresa", enabled: currentUserCan("companies", "view") },
+        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar empresa", enabled: currentUserCan("companies", "edit") },
+        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir empresa", enabled: currentUserCan("companies", "delete") }
+      })}</td></tr>`;
+    }
     return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
@@ -2097,6 +2104,8 @@ function renderTable(c) {
     b.addEventListener("click", () => openProjectBoard(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.product-activities-btn").forEach((b) =>
     b.addEventListener("click", () => openProductActivities(b.dataset.id)));
+  document.querySelectorAll("#main .rowbtn.company-details-btn").forEach((b) =>
+    b.addEventListener("click", () => openCompanyDetails(b.dataset.id)));
   document.querySelectorAll("#main .inline-task-status").forEach((select) => select.addEventListener("change", async () => {
     const previous = cache.activityRecords.find((task) => task.id === select.dataset.id)?.status || "todo";
     try {
@@ -5900,6 +5909,55 @@ function openForm(tab, id, opts = {}) {
 }
 
 let lastCompanyLookup = "";
+function companyRegistryPayload(data, fallbackCnpj) {
+  const address = data.address || {};
+  const activity = data.mainActivity || data.company?.mainActivity;
+  const phone = data.phones?.map((item) => {
+    if (typeof item === "string") return item;
+    return [item.area, item.number].filter(Boolean).join(" ");
+  }).filter(Boolean).join("; ") || "";
+  const qsa = [...new Set((data.company?.members || []).map((member) => {
+    const name = String(member?.person?.name || "").trim();
+    const role = [member?.role?.id, member?.role?.text]
+      .filter((value) => value != null && value !== "")
+      .join("-");
+    return name && role ? `Nome/Nome Empresarial: ${name} | Qualificação: ${role}` : "";
+  }).filter(Boolean))].join("; ");
+  return {
+    tax_id: String(data.taxId || fallbackCnpj).replace(/\D/g, "").replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5"),
+    legal_name: data.company?.name || "",
+    trade_name: data.alias || "",
+    email: data.emails?.map((item) => typeof item === "string" ? item : item.address).filter(Boolean).join("; ") || "",
+    phone: phone ? normalizePhoneList(phone) : "",
+    headquarters: data.head === false ? "Filial" : "Matriz",
+    founded_at: String(data.founded || data.openedAt || "").slice(0, 10),
+    registration_status: data.status?.text || data.status?.name || data.status || "",
+    qsa,
+    share_capital: data.company?.equity ?? null,
+    activities: activity ? [activity.id, activity.text].filter(Boolean).join(" — ") : "",
+    address: [address.street, address.number, address.details, address.district].filter(Boolean).join(", "),
+    zip_code: address.zip || "",
+    city: address.city || "",
+    state: address.state || "",
+  };
+}
+
+async function fetchCompanyRegistryData(cnpjValue) {
+  const cnpj = String(cnpjValue || "").replace(/\D/g, "");
+  if (cnpj.length !== 14) throw new Error("Informe um CNPJ com 14 dígitos.");
+  const response = await fetch(`https://open.cnpja.com/office/${cnpj}`, { headers: { Accept: "application/json" } });
+  if (response.status === 429) throw new Error("Limite de consultas atingido. Aguarde alguns segundos.");
+  if (!response.ok) throw new Error(`CNPJ não encontrado (${response.status})`);
+  return companyRegistryPayload(await response.json(), cnpj);
+}
+
+function fillCompanyForm(form, companyData) {
+  Object.entries(companyData).forEach(([key, value]) => {
+    const field = form?.querySelector(`[data-k="${key}"]`);
+    if (field && value != null && value !== "") field.value = value;
+  });
+}
+
 async function lookupCompanyByCnpj(form, button) {
   const input = form?.querySelector('[data-k="tax_id"]');
   const cnpj = input?.value.replace(/\D/g, "") || "";
@@ -5908,47 +5966,7 @@ async function lookupCompanyByCnpj(form, button) {
   const originalText = button?.textContent;
   if (button) { button.disabled = true; button.textContent = "Buscando..."; }
   try {
-    const response = await fetch(`https://open.cnpja.com/office/${cnpj}`, { headers: { Accept: "application/json" } });
-    if (response.status === 429) throw new Error("Limite de consultas atingido. Aguarde alguns segundos.");
-    if (!response.ok) throw new Error(`CNPJ não encontrado (${response.status})`);
-    const data = await response.json();
-    const set = (key, value) => {
-      const field = form.querySelector(`[data-k="${key}"]`);
-      if (field && value != null && value !== "") field.value = value;
-    };
-    const taxId = String(data.taxId || cnpj).replace(/\D/g, "").replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
-    const address = data.address || {};
-    const addressText = [address.street, address.number, address.details, address.district].filter(Boolean).join(", ");
-    const email = data.emails?.map((item) => typeof item === "string" ? item : item.address).filter(Boolean).join("; ") || "";
-    const phone = data.phones?.map((item) => {
-      if (typeof item === "string") return item;
-      return [item.area, item.number].filter(Boolean).join(" ");
-    }).filter(Boolean).join("; ") || "";
-    const activity = data.mainActivity || data.company?.mainActivity;
-    set("tax_id", taxId);
-    set("legal_name", data.company?.name);
-    set("trade_name", data.alias);
-    set("email", email);
-    set("phone", phone ? normalizePhoneList(phone) : "");
-    set("headquarters", data.head === false ? "Filial" : "Matriz");
-    set("founded_at", String(data.founded || data.openedAt || "").slice(0, 10));
-    set("registration_status", data.status?.text || data.status?.name || data.status);
-    const qsa = [...new Set((data.company?.members || []).map((member) => {
-      const name = String(member?.person?.name || "").trim();
-      const role = [member?.role?.id, member?.role?.text]
-        .filter((value) => value != null && value !== "")
-        .join("-");
-      return name && role
-        ? `Nome/Nome Empresarial: ${name} | Qualificação: ${role}`
-        : "";
-    }).filter(Boolean))].join("; ");
-    set("qsa", qsa);
-    set("share_capital", data.company?.equity);
-    set("activities", activity ? [activity.id, activity.text].filter(Boolean).join(" — ") : "");
-    set("address", addressText);
-    set("zip_code", address.zip);
-    set("city", address.city);
-    set("state", address.state);
+    fillCompanyForm(form, await fetchCompanyRegistryData(cnpj));
     lastCompanyLookup = cnpj;
     toast("Dados da empresa preenchidos.");
   } catch (err) {
@@ -5957,6 +5975,57 @@ async function lookupCompanyByCnpj(form, button) {
   } finally {
     if (button) { button.disabled = false; button.textContent = originalText || "Buscar dados"; }
   }
+}
+
+function companyDetailValue(label, value) {
+  return `<div class="company-detail-item"><span>${esc(label)}</span><strong>${value || "—"}</strong></div>`;
+}
+
+function openCompanyDetails(taxId) {
+  if (!requireCurrentUserPermission("companies", "view", "Empresas")) return;
+  const company = cache?.companies?.find((item) => String(item.tax_id) === String(taxId));
+  if (!company) return;
+  const contacts = normalizeIdList(company.contact_ids).map((id) => cache.contactById?.[id]?.name).filter(Boolean).join("; ");
+  const content = `<div class="company-detail-grid">
+      ${companyDetailValue("CNPJ", esc(company.tax_id))}
+      ${companyDetailValue("Nome empresarial", esc(company.legal_name))}
+      ${companyDetailValue("Nome fantasia", esc(company.trade_name))}
+      ${companyDetailValue("Situação cadastral", esc(company.registration_status))}
+      ${companyDetailValue("E-mail", esc(company.email))}
+      ${companyDetailValue("Telefone", esc(company.phone))}
+      ${companyDetailValue("Abertura", esc(dt(company.founded_at)))}
+      ${companyDetailValue("Capital social", company.share_capital == null ? "—" : esc(brl(company.share_capital)))}
+      ${companyDetailValue("Endereço", esc([company.address, company.city, company.state, company.zip_code].filter(Boolean).join(" · ")))}
+      ${companyDetailValue("Atividade principal", esc(company.activities))}
+      ${companyDetailValue("Pessoas vinculadas", esc(contacts))}
+      ${companyDetailValue("QSA", multiLineCell(company.qsa))}
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="company-detail-edit"${currentUserCan("companies", "edit") ? "" : " disabled"}>Editar</button>
+      <button class="btn primary" id="company-detail-refresh"${currentUserCan("companies", "edit") ? "" : " disabled"}>Atualizar dados</button>
+    </div>`;
+  sidePanel(company.trade_name || company.legal_name || "Empresa", content, { closeOnOverlay: true });
+  document.getElementById("company-detail-edit")?.addEventListener("click", () => openForm("companies", company.tax_id));
+  document.getElementById("company-detail-refresh")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Atualizando...";
+    try {
+      const enriched = await fetchCompanyRegistryData(company.tax_id);
+      delete enriched.tax_id;
+      const payload = Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== ""));
+      const saved = await updateRow("companies", company.tax_id, payload);
+      upsertCachedEntity("companies", saved);
+      render();
+      toast("Dados da empresa atualizados.");
+      openCompanyDetails(company.tax_id);
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = originalText;
+      toast("Erro ao atualizar empresa · " + err.message, true);
+    }
+  });
 }
 
 async function replaceContactCompanyLinks({ contactId = null, companyId = null, relatedIds = [] }) {
