@@ -754,6 +754,7 @@ function productActivityRemoteBody(template) {
     objective_template_id: template.objective_template_id || null,
     recurrence: template.recurrence || "once",
     target_days: template.target_days == null ? null : Number(template.target_days),
+    consider_business_days: Boolean(template.consider_business_days),
     checklist: normalizeChecklist(template.checklist).map((item) => ({ ...item, checked: false })),
     sort_order: Number(template.sort_order || 0),
     created_at: template.created_at || new Date().toISOString(),
@@ -972,7 +973,7 @@ async function syncProductActivities() {
       const objective = template.objective_template_id
         ? loadDeliveryObjectives().find((item) => item.project_id === project.id && item.source_template_id === template.objective_template_id)
         : null;
-      const dates = activityOccurrenceDates(project, template.recurrence || "once");
+      const dates = activityOccurrenceDates(project, template.recurrence || "once", template.consider_business_days);
       const existing = tasks
         .filter((task) => task.project_id === project.id && task.source_template_id === template.id)
         .sort(activityOccurrenceSort);
@@ -981,7 +982,7 @@ async function syncProductActivities() {
         const occurrenceDate = dates[occurrenceIndex];
         const plannedStartDate = occurrenceDate || project.start_date || null;
         const dueDate = plannedStartDate && template.target_days != null
-          ? addDays(plannedStartDate, Number(template.target_days))
+          ? (template.consider_business_days ? addBusinessDays(plannedStartDate, Number(template.target_days)) : addDays(plannedStartDate, Number(template.target_days)))
           : occurrenceDate;
         const structural = {
           title: template.activity,
@@ -993,11 +994,16 @@ async function syncProductActivities() {
           channel: template.channel || "",
           type: template.type || "",
           recurrence: template.recurrence || "once",
+          consider_business_days: Boolean(template.consider_business_days),
+          target_days: template.target_days == null ? null : Number(template.target_days),
           occurrence_index: occurrenceIndex,
           objective_id: objective?.id || null
         };
         if (current) {
           const recurrenceChanged = (current.recurrence || "once") !== structural.recurrence;
+          const scheduleChanged = recurrenceChanged
+            || Boolean(current.consider_business_days) !== structural.consider_business_days
+            || (current.target_days == null ? null : Number(current.target_days)) !== structural.target_days;
           const updates = { ...structural, checklist: hasSubtasks ? [] : mergeTemplateChecklist(template.checklist, current.checklist) };
           const defaultAssignees = normalizeIdList(template.default_assignee_ids, template.default_owner_id);
           if (!normalizeIdList(current.assignee_ids, current.owner_id).length && defaultAssignees.length) {
@@ -1009,8 +1015,8 @@ async function syncProductActivities() {
             updates.assignee_job_titles = defaultJobTitles;
           }
           if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
-          if (plannedStartDate && (!current.planned_start_date || recurrenceChanged)) updates.planned_start_date = plannedStartDate;
-          if (dueDate && (!current.due_date || recurrenceChanged)) {
+          if (plannedStartDate && (!current.planned_start_date || scheduleChanged)) updates.planned_start_date = plannedStartDate;
+          if (scheduleChanged || (dueDate && !current.due_date)) {
             updates.due_date = dueDate;
             updates.planned_end_date = dueDate;
           }
@@ -1096,7 +1102,7 @@ function addMonthsClamped(isoDate, months) {
   target.setDate(Math.min(day, lastDay));
   return target.toISOString().slice(0, 10);
 }
-function activityOccurrenceDates(project, recurrence) {
+function activityOccurrenceDates(project, recurrence, considerBusinessDays = false) {
   if (!recurrence || recurrence === "once") return [null];
   const start = project.start_date;
   const end = project.end_date;
@@ -1107,7 +1113,8 @@ function activityOccurrenceDates(project, recurrence) {
   const monthStep = { monthly: 1, bimonthly: 2, quarterly: 3, semiannual: 6, annual: 12 }[recurrence];
   const dayStep = recurrence === "daily" ? 1 : recurrence === "weekly" ? 7 : recurrence === "biweekly" ? 14 : null;
   for (let guard = 0; guard < 3660 && cursor < end; guard += 1) {
-    dates.push(cursor);
+    const weekday = new Date(`${cursor}T12:00:00`).getDay();
+    if (!(recurrence === "daily" && considerBusinessDays && [0, 6].includes(weekday))) dates.push(cursor);
     cursor = monthStep ? addMonthsClamped(cursor, monthStep) : addDays(cursor, dayStep || 1);
   }
   return dates.length ? dates : [start];
@@ -1525,6 +1532,15 @@ const addDays = (isoDate, days) => {
   d.setDate(d.getDate() + Number(days || 0));
   return d.toISOString().slice(0, 10);
 };
+const addBusinessDays = (isoDate, days) => {
+  const date = new Date(`${isoDate}T12:00:00`);
+  let remaining = Math.max(0, Number(days || 0));
+  while (remaining > 0) {
+    date.setDate(date.getDate() + 1);
+    if (![0, 6].includes(date.getDay())) remaining -= 1;
+  }
+  return date.toISOString().slice(0, 10);
+};
 function deliveryTypeForProduct(product) {
   const text = `${product?.category || ""} ${product?.name || ""}`.toLowerCase();
   if (text.includes("imers")) return "Imersão";
@@ -1699,6 +1715,8 @@ function columns(tab, c) {
       { k: "channel", h: "CANAL" },
       { k: "type", h: "TIPO" },
       { k: "recurrence", h: "RECORRÊNCIA", fmt: (v) => RECURRENCE_LABEL[v] || "Única" },
+      { k: "consider_business_days", h: "DIAS ÚTEIS", fmt: (v) => v ? "Sim" : "Não" },
+      { k: "target_days", h: "PRAZO SUGERIDO", fmt: (v) => v == null ? "—" : `${v} dia(s)` },
       { k: "checklist", h: "CHECKLIST", fmt: (v, row) => {
         const subtasks = taskSubtaskProgress(row.id, c.activityRecords);
         if (subtasks.total) return `<span class="muted">Subtarefas ${subtasks.done}/${subtasks.total}</span>`;
@@ -1804,16 +1822,6 @@ function readProjectBusinessMetrics(form = document.querySelector("#modal-root .
   })).filter((row) => row.revenue != null || row.skus != null || row.supplier_company_ids.length);
 }
 
-function renderProjectBusinessMetricsEditor(form, fallback = []) {
-  const root = form?.querySelector("#project-business-metrics");
-  if (!root) return;
-  const current = root.querySelector("[data-business-month]") ? readProjectBusinessMetrics(form) : normalizeProjectBusinessMetrics(fallback);
-  const start = form.querySelector('[data-k="start_date"]')?.value;
-  const end = form.querySelector('[data-k="end_date"]')?.value;
-  root.innerHTML = projectBusinessMetricsHtml(current, start, end);
-  projectMonthKeys(start, end, current).forEach((month) => wireMultiPicker(`business-suppliers-${month}`));
-}
-
 function dealContactOptions(c, companyId) {
   if (!companyId) return [];
   const linkedIds = new Set((c.contactCompanies || [])
@@ -1900,7 +1908,7 @@ function fields(tab, c) {
     case "deals": return [
       { k: "title", label: "Título", req: true, full: true },
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), placeholder: "Buscar por nome ou CNPJ" },
-      { k: "no_company", label: "Não possui empresa", type: "checkbox" },
+      { k: "no_company", label: "Não possui empresa", type: "checkbox", embedded: true },
       { k: "contact_id", label: "Contato", type: "select", options: [] },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c) },
       { k: "pipeline_id", label: "Pipeline", type: "select", options: (c.pipelines || []).map((p) => ({ value: p.id, label: p.name })), req: true },
@@ -1923,8 +1931,7 @@ function fields(tab, c) {
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
       { k: "store_platform", label: "Loja", type: "select", options: deliveryChannelOptions("stores"), lockWhenSet: true, full: true },
-      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" },
-      { k: "business_metrics", label: "Dados mensais do negócio", type: "business_metrics", full: true }];
+      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" }];
   }
 }
 
@@ -2808,7 +2815,7 @@ function renderProductActivities() {
   const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" draggable="true">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
     <td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td>
-    <td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
+    <td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
     <td>${item.parent_template_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}</td><td>${esc(item.information || "—")}</td>
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
@@ -2822,8 +2829,8 @@ function renderProductActivities() {
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th class="noclick"></th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th>${tableActionsHead()}
-    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="15" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+      <th class="noclick"></th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th>${tableActionsHead()}
+    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="16" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pa-ready").addEventListener("click", openReadyActivityPicker);
   document.querySelectorAll(".pa-edit").forEach((button) => button.addEventListener("click", () => openProductActivityDrawer(button.dataset.id)));
   document.querySelectorAll(".pa-clone").forEach((button) => button.addEventListener("click", () => cloneProductActivity(button.dataset.id)));
@@ -3447,6 +3454,8 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
       priority: requestedParent.priority || "normal",
+      target_days: requestedParent.target_days ?? null,
+      consider_business_days: Boolean(requestedParent.consider_business_days),
       objective_template_id: requestedParent.objective_template_id || null,
       default_owner_id: requestedParent.default_owner_id || null,
       default_assignee_ids: normalizeIdList(requestedParent.default_assignee_ids, requestedParent.default_owner_id),
@@ -3497,6 +3506,7 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
       <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
       <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
+      <div class="field check"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><label for="pa-business-days">Considerar somente dias úteis</label></div>
       <div class="field task-form-wide"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
@@ -3572,6 +3582,7 @@ async function saveProductActivity() {
     recurrence: document.getElementById("pa-recurrence").value || "once",
     priority: document.getElementById("pa-priority").value || "normal",
     target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
+    consider_business_days: document.getElementById("pa-business-days").checked,
     activity,
     information: document.getElementById("pa-information").value.trim(),
     checklist: productActivityChecklistDraft
@@ -4001,6 +4012,7 @@ function openProjectBoard(projectId) {
     <button class="modal-header-tab active" data-project-section="activities" role="tab">Tarefas</button>
     <button class="modal-header-tab" data-project-section="objectives" role="tab">Objetivos</button>
     <button class="modal-header-tab" data-project-section="goals" role="tab">Metas</button>
+    <button class="modal-header-tab" data-project-section="data" role="tab">Dados</button>
   </div>`;
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
@@ -4019,6 +4031,37 @@ function openProjectBoard(projectId) {
     renderProjectBoard(projectId);
   }));
   renderProjectBoard(projectId);
+}
+
+function renderProjectDataModule(project) {
+  const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
+  const product = cache.productById[project.product_id]?.name || "Sem produto";
+  return `<div class="project-data-module">
+    <div class="project-data-header"><div><strong>Dados mensais do negócio</strong><span>${esc(client)} · ${esc(product)}</span></div><button class="btn primary" id="project-data-save">Salvar dados</button></div>
+    <div class="project-data-period"><span>Período da entrega</span><strong>${project.start_date ? dt(project.start_date) : "—"} a ${project.end_date ? dt(project.end_date) : "—"}</strong></div>
+    <div id="project-business-metrics">${projectBusinessMetricsHtml(project.business_metrics, project.start_date, project.end_date)}</div>
+  </div>`;
+}
+
+function wireProjectDataModule(project) {
+  projectMonthKeys(project.start_date, project.end_date, project.business_metrics)
+    .forEach((month) => wireMultiPicker(`business-suppliers-${month}`));
+  document.getElementById("project-data-save")?.addEventListener("click", async (event) => {
+    if (!requireCurrentUserPermission("projects", "edit", "Entregas")) return;
+    const button = event.currentTarget;
+    const metrics = readProjectBusinessMetrics(document.getElementById("project-board-root"));
+    button.disabled = true;
+    button.textContent = "Salvando...";
+    try {
+      const saved = isLive() ? await updateRow("projects", project.id, { business_metrics: metrics, updated_at: new Date().toISOString() }) : { ...project, business_metrics: metrics };
+      Object.assign(project, saved, { business_metrics: metrics });
+      toast("Dados mensais atualizados.");
+    } catch (error) {
+      toast("Erro ao salvar dados mensais · " + error.message, true);
+    } finally {
+      if (button.isConnected) { button.disabled = false; button.textContent = "Salvar dados"; }
+    }
+  });
 }
 
 function renderTaskMatrix(tasks) {
@@ -4053,6 +4096,7 @@ function renderTaskTable(tasks) {
       <td>${esc(task.channel || "—")}</td>
       <td>${esc(task.type || "—")}</td>
       <td>${esc(RECURRENCE_LABEL[task.recurrence] || "Única")}</td>
+      <td>${task.consider_business_days ? "Sim" : "Não"}</td>
       <td>${terminal ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}">${checklist.done}/${checklist.total}</button>` : '<span class="muted">Nas subtarefas</span>'}</td>
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
@@ -4073,8 +4117,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="22" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="23" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -4273,7 +4317,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Recorrência", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
   objectives: ["Objetivo", "Critério de conclusão", "Comentários", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
@@ -4287,7 +4331,7 @@ function projectSectionValues(item, tasks = []) {
       item.source_template_id ? "Produto" : "Dia a dia",
       PRIORITY_LABEL[item.priority || "normal"] || "Normal",
       dependencyNames(item.dependency_ids, item.depends_on_activity_id, tasks),
-      item.information || "—", item.group || "—", item.sector || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única",
+      item.information || "—", item.group || "—", item.sector || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
       subtasks.total ? "Nas subtarefas" : `${checklist.done}/${checklist.total}`,
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
@@ -4372,6 +4416,11 @@ function renderProjectBoard(projectId) {
   const root = document.getElementById("project-board-root");
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!root || !project) return;
+  if (projectBoardState.section === "data") {
+    root.innerHTML = `<div class="project-board">${renderProjectDataModule(project)}</div>`;
+    wireProjectDataModule(project);
+    return;
+  }
   const allTasks = projectTasks(projectId);
   const allRows = projectSectionRows(projectId);
   const rows = filterProjectSectionRows(allRows, allTasks);
@@ -4708,6 +4757,7 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
+      <div class="field check"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><label for="project-task-business-days">Considerar somente dias úteis</label></div>
       <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
@@ -4763,6 +4813,7 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       channel: document.getElementById("project-task-channel").value.trim(),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
+      consider_business_days: document.getElementById("project-task-business-days").checked,
       priority: document.getElementById("project-task-priority").value || "normal",
       objective_id: document.getElementById("project-task-objective").value || null,
       depends_on_activity_id: dependencyIds[0] || null,
@@ -5902,13 +5953,12 @@ function openForm(tab, id, opts = {}) {
     if (stageField) stageField.options = pipelineStageOptions(c, record?.pipeline_id);
   }
   const inputs = fs.map((f) => {
+    if (f.embedded) return "";
     let val = record ? record[f.k] : f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
     let ctrl;
-    if (f.type === "business_metrics") {
-      ctrl = `<div id="project-business-metrics">${projectBusinessMetricsHtml(val, record?.start_date, record?.end_date, c)}</div>`;
-    } else if (f.type === "multi") {
+    if (f.type === "multi") {
       const selected = new Set(f.textValues ? normalizeTextList(val) : normalizeIdList(val));
       ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(), Boolean(f.allowCreate));
     } else if (f.type === "search") {
@@ -5934,6 +5984,9 @@ function openForm(tab, id, opts = {}) {
       ctrl = f.lookup === "cnpj" && !lockPk
         ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">Buscar dados</button></div>`
         : input;
+    }
+    if (tab === "deals" && f.k === "company_id") {
+      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${record?.no_company ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
@@ -6006,7 +6059,7 @@ function openForm(tab, id, opts = {}) {
     };
     const syncNoCompany = () => {
       const disabled = Boolean(noCompanyEl?.checked);
-      companyPicker?.closest(".field")?.classList.toggle("field-disabled", disabled);
+      companyPicker?.classList.toggle("field-disabled", disabled);
       contactEl?.closest(".field")?.classList.toggle("field-disabled", disabled);
       companyPicker?.querySelector(".single-search-input")?.toggleAttribute("disabled", disabled);
       if (contactEl) contactEl.disabled = disabled;
@@ -6036,7 +6089,6 @@ function openForm(tab, id, opts = {}) {
     const productEl = form?.querySelector('[data-k="product_id"]');
     const statusEl = form?.querySelector('[data-k="status"]');
     const substatusEl = form?.querySelector('[data-k="substatus"]');
-    const businessMetrics = normalizeProjectBusinessMetrics(record?.business_metrics);
     const syncSubstatus = () => {
       const enabled = statusEl?.value === "inactive";
       if (substatusEl) {
@@ -6049,14 +6101,12 @@ function openForm(tab, id, opts = {}) {
       const prod = c.productById[productEl?.value];
       if (startEl?.value && prod?.duration_days) endEl.value = addDays(startEl.value, prod.duration_days);
     };
-    startEl?.addEventListener("change", () => { recalcEnd(); renderProjectBusinessMetricsEditor(form, businessMetrics); });
-    endEl?.addEventListener("change", () => renderProjectBusinessMetricsEditor(form, businessMetrics));
+    startEl?.addEventListener("change", recalcEnd);
     clientEl?.addEventListener("input", recalcName);
-    productEl?.addEventListener("change", () => { recalcEnd(); recalcName(); renderProjectBusinessMetricsEditor(form, businessMetrics); });
+    productEl?.addEventListener("change", () => { recalcEnd(); recalcName(); });
     statusEl?.addEventListener("change", syncSubstatus);
     recalcName();
     syncSubstatus();
-    renderProjectBusinessMetricsEditor(form, businessMetrics);
   }
 }
 
@@ -6368,7 +6418,6 @@ async function saveForm(tab, id, fs, opts = {}) {
   }
   if (tab === "companies") delete body.contact_ids;
   if (tab === "projects") {
-    body.business_metrics = readProjectBusinessMetrics(form);
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
     if (body.status === "active") body.substatus = null;
     if (body.status === "closed") body.substatus = "closed";
@@ -7191,33 +7240,38 @@ function renderRegistrationsSection() {
         const childDetails = summary(child);
         const checklist = normalizeChecklist(child.item.checklist);
         return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
-          <td><span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong></span></td>
+          <td>—</td>
           <td>${esc(childDetails.products)}</td>
+          <td>Cadastro</td>
+          <td><span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong></span></td>
+          <td>${priorityBadge(child.item.priority)}</td>
+          <td class="compact-multi-cell">${stackedCell(childDetails.dependencies)}</td>
+          <td>${esc(child.item.information || "—")}</td>
           <td>${esc(child.item.group || "—")}</td>
           <td>${esc(child.item.sector || "—")}</td>
           <td>${esc(child.item.channel || "—")}</td>
           <td>${esc(child.item.type || "—")}</td>
-          <td>${priorityBadge(child.item.priority)}</td>
           <td>${esc(RECURRENCE_LABEL[child.item.recurrence] || "Única")}</td>
+          <td>${child.item.consider_business_days ? "Sim" : "Não"}</td>
           <td>${child.item.target_days == null ? "—" : `${esc(child.item.target_days)} dia(s)`}</td>
-          <td>${esc(child.item.information || "—")}</td>
           <td>${checklist.length} item(ns)</td>
           <td>${esc(childDetails.objectives)}</td>
           <td class="compact-multi-cell">${stackedCell(childDetails.owners)}</td>
-          <td class="compact-multi-cell">${stackedCell(childDetails.dependencies)}</td>
+          <td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td>
+          <td>${child.item.target_days == null ? "—" : `${esc(child.item.target_days)} dia(s)`}</td><td>—</td>
           <td class="act table-actions-cell">${tableActionButtons({
             edit: { className: "edit reg-template-edit", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Editar subtarefa" },
             clone: { className: "reg-template-clone", attrs: { "data-id": child.item.id, "data-product": child.item.product_id }, title: "Clonar subtarefa" }
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${esc(details.products)}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${priorityBadge(item.priority)}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${esc(item.information || "—")}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
       })}</td></tr>${childRows}`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Tarefa", "<th>Produtos</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Prioridade</th><th>Recorrência</th><th>Prazo sugerido</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th class=\"compact-multi-cell\">Depende de</th>", rows, 15);
+    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 25, "Tarefa");
   } else if (section === "goals") {
     const items = loadProductGoals();
     const activities = loadProductActivities();
@@ -7584,8 +7638,8 @@ function openRegistrationColumnFilter(header, table, key) {
   }, 50);
 }
 
-function registrationTemplateTable(singular, count, firstColumn, extraHeaders, rows, colspan) {
-  return `<div class="modal-toolbar"><span class="muted">${count} ${singular}(s) cadastrada(s) nos produtos</span><button class="btn primary" id="registration-add">+ ${firstColumn}</button></div>
+function registrationTemplateTable(singular, count, firstColumn, extraHeaders, rows, colspan, addLabel = firstColumn) {
+  return `<div class="modal-toolbar"><span class="muted">${count} ${singular}(s) cadastrada(s) nos produtos</span><button class="btn primary" id="registration-add">+ ${addLabel}</button></div>
     <div class="product-activity-list"><table><thead><tr><th>${firstColumn}</th>${extraHeaders}${tableActionsHead()}</tr></thead><tbody>${rows || `<tr><td colspan="${colspan}" class="empty">Nenhum registro cadastrado.</td></tr>`}</tbody></table></div>`;
 }
 
