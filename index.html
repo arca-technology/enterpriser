@@ -255,11 +255,18 @@
   .data-table[data-tab="companies"] .company-sticky-col-2{left:192px;width:300px;min-width:300px;max-width:300px;box-shadow:8px 0 14px rgba(0,0,0,.16)}
   .data-table[data-tab="companies"] tbody tr:nth-child(even) .company-sticky-col{background:var(--row-alt)}
   .data-table[data-tab="companies"] tbody tr:hover .company-sticky-col{background:var(--row-hover)}
+  .data-table[data-tab="contacts"] .person-sticky-col{position:sticky;z-index:3;background:var(--panel);overflow:hidden;text-overflow:ellipsis}
+  .data-table[data-tab="contacts"] thead .person-sticky-col{z-index:7;background:var(--panel2)}
+  .data-table[data-tab="contacts"] .person-sticky-col-1{left:42px;width:240px;min-width:240px;max-width:240px}
+  .data-table[data-tab="contacts"] .person-sticky-col-2{left:282px;width:165px;min-width:165px;max-width:165px;box-shadow:8px 0 14px rgba(0,0,0,.16)}
+  .data-table[data-tab="contacts"] tbody tr:nth-child(even) .person-sticky-col{background:var(--row-alt)}
+  .data-table[data-tab="contacts"] tbody tr:hover .person-sticky-col{background:var(--row-hover)}
   .data-table tbody tr:nth-child(even) .select-cell{background:var(--row-alt)}
   .data-table tbody tr:hover .select-cell{background:var(--row-hover)}
   .inline-due-date{min-width:132px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:5px 7px;font:inherit}
   .multi-value{display:flex;flex-direction:column;gap:4px;white-space:nowrap}
   .multi-value span{display:block;padding:1px 0}
+  .field-help,.multi-picker-create-hint{display:block;margin-top:5px;color:var(--muted);font-size:10px;line-height:1.35}
   .compact-multi-cell{white-space:normal!important}
   .stacked-cell{display:grid;gap:3px;white-space:normal}
   .stacked-cell span{display:block;white-space:nowrap;line-height:1.25}
@@ -1012,6 +1019,7 @@
     .data-table th[data-k]:first-of-type,.data-table td[data-k]:first-of-type{width:46%}
     .data-table .sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
     .data-table[data-tab="companies"] .company-sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
+    .data-table[data-tab="contacts"] .person-sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
     .company-detail-grid{grid-template-columns:1fr}
     .company-detail-item:nth-child(2n){border-left:0}
     .inline-due-date{min-width:0;width:100%;padding:0;border:0;background:transparent;pointer-events:none}

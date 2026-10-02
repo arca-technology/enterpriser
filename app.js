@@ -197,7 +197,7 @@ function normalizeIdList(value, fallback = null) {
 function normalizeTextList(value) {
   let values = value;
   if (typeof values === "string") {
-    try { values = JSON.parse(values); } catch (e) { values = values.replace(/^\{|\}$/g, "").split(","); }
+    try { values = JSON.parse(values); } catch (e) { values = values.replace(/^\{|\}$/g, "").split(/[;,]/); }
   }
   return Array.isArray(values)
     ? [...new Map(values.map((item) => String(item || "").trim()).filter(Boolean).map((item) => [item.toLocaleLowerCase("pt-BR"), item])).values()]
@@ -1628,8 +1628,8 @@ function columns(tab, c) {
       { k: "contact_ids", h: "PESSOAS", fmt: (v) => contactNames(v, c) },
       { k: "notes", h: "OBSERVAÇÕES", cls: "muted" }];
     case "contacts": return [
-      { k: "name", h: "NOME COMPLETO" },
-      { k: "phone", h: "TELEFONE/CELULAR", cls: "muted", fmt: (v) => multiLineCell(v, normalizePhoneNumber) },
+      { k: "name", h: "NOME COMPLETO", cls: "person-sticky-col person-sticky-col-1", thCls: "person-sticky-col person-sticky-col-1" },
+      { k: "phone", h: "TELEFONE/CELULAR", cls: "muted person-sticky-col person-sticky-col-2", thCls: "person-sticky-col person-sticky-col-2", fmt: (v) => multiLineCell(v, normalizePhoneNumber) },
       { k: "email", h: "EMAIL(S)", cls: "muted", fmt: (v) => multiLineCell(v) },
       { k: "contact_type", h: "TIPO DE CONTATO" },
       { k: "channel", h: "CANAL" },
@@ -1641,7 +1641,7 @@ function columns(tab, c) {
       { k: "reddit", h: "REDDIT", cls: "muted" },
       { k: "whatsapp", h: "WHATSAPP", cls: "muted" },
       { k: "youtube", h: "YOUTUBE", cls: "muted" },
-      { k: "groups", h: "GRUPOS/COMUNIDADES" },
+      { k: "groups", h: "GRUPOS/COMUNIDADES", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((group) => `<span class="tool-tag">${esc(group)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "birth_date", h: "DATA DE NASCIMENTO", fmt: dt },
       { k: "cpf", h: "CPF", cls: "muted" }];
     case "products": return [
@@ -1730,6 +1730,12 @@ function companyRefOptions(c) {
   }));
 }
 
+function contactGroupOptions(c) {
+  return normalizeTextList((c.contacts || []).flatMap((contact) => normalizeTextList(contact.groups)))
+    .sort((a, b) => a.localeCompare(b, "pt-BR"))
+    .map((group) => ({ value: group, label: group }));
+}
+
 function dealContactOptions(c, companyId) {
   if (!companyId) return [];
   const linkedIds = new Set((c.contactCompanies || [])
@@ -1788,8 +1794,8 @@ function fields(tab, c) {
       { k: "name", label: "Nome completo", req: true, full: true },
       { k: "phone", label: "Telefone/celular" },
       { k: "email", label: "Email(s)" },
-      { k: "contact_type", label: "Tipo de contato" },
-      { k: "channel", label: "Canal" },
+      { k: "contact_type", label: "Tipo de contato", placeholder: "Ex.: Cliente, Sócio, Fornecedor", help: "Relação da pessoa com a operação ou com a empresa." },
+      { k: "channel", label: "Canal", placeholder: "Ex.: WhatsApp, LinkedIn, Indicação", help: "Origem ou meio pelo qual esse contato chegou." },
       { k: "job_title", label: "Cargo" },
       { k: "company_ids", label: "Empresa(s)", type: "multi", options: companyRefOptions(c), full: true, placeholder: "Buscar por nome ou CNPJ", searchOnly: true },
       { k: "linkedin", label: "LinkedIn" },
@@ -1798,7 +1804,7 @@ function fields(tab, c) {
       { k: "reddit", label: "Reddit" },
       { k: "whatsapp", label: "WhatsApp" },
       { k: "youtube", label: "YouTube" },
-      { k: "groups", label: "Grupos/comunidades", full: true },
+      { k: "groups", label: "Grupos/comunidades", type: "multi", options: contactGroupOptions(c), textValues: true, allowCreate: true, full: true, placeholder: "Buscar ou adicionar grupos" },
       { k: "birth_date", label: "Data de nascimento", type: "date" },
       { k: "cpf", label: "CPF" }];
     case "products": return [
@@ -3643,16 +3649,16 @@ function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
   return dependencyNameList(ids, fallbackId, rows).join(", ") || "—";
 }
 
-function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false, lockedIds = new Set()) {
+function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false, lockedIds = new Set(), allowCreate = false) {
   const selected = new Set(selectedIds);
   const locked = new Set(lockedIds);
   const rows = options.map((option) => {
     const optionLocked = locked.has(option.value);
     return `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}${optionLocked ? " locked" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" data-locked="${optionLocked}"${disabled || optionLocked ? " disabled" : ""}><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`;
   }).join("");
-  return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}">
+  return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}" data-allow-create="${allowCreate}">
     <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
-    <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div><div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
+    <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : allowCreate ? "Buscar ou adicionar..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div>${allowCreate ? '<div class="multi-picker-create-hint">Pressione Enter para adicionar uma nova badge.</div>' : ""}<div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
   </div>`;
 }
 
@@ -3668,6 +3674,7 @@ function wireMultiPicker(id) {
   const search = root.querySelector(".multi-picker-search");
   const searchOnly = root.dataset.searchOnly === "true";
   const disabled = root.dataset.disabled === "true";
+  const allowCreate = root.dataset.allowCreate === "true";
   const filterOptions = () => {
     const query = search.value.trim().toLocaleLowerCase("pt-BR");
     const queryDigits = query.replace(/\D/g, "");
@@ -3702,17 +3709,48 @@ function wireMultiPicker(id) {
   };
   drawSelection();
   if (disabled) return;
-  control.addEventListener("click", () => toggleMenu());
-  control.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleMenu(); } });
-  root.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); toggleMenu(false); control.focus(); } });
-  root.querySelectorAll(".multi-picker-option").forEach((option) => option.addEventListener("click", () => {
+  const bindOption = (option) => option.addEventListener("click", () => {
     option.classList.toggle("active");
     drawSelection();
     root.dispatchEvent(new CustomEvent("multi-picker-change"));
-  }));
+  });
+  control.addEventListener("click", () => toggleMenu());
+  control.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggleMenu(); } });
+  root.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); toggleMenu(false); control.focus(); } });
+  root.querySelectorAll(".multi-picker-option").forEach(bindOption);
   search.addEventListener("input", filterOptions);
   search.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
+    const typed = search.value.trim();
+    if (allowCreate && typed) {
+      event.preventDefault();
+      const existing = [...root.querySelectorAll(".multi-picker-option")]
+        .find((option) => option.dataset.value.localeCompare(typed, "pt-BR", { sensitivity: "accent" }) === 0);
+      if (existing) {
+        existing.classList.add("active");
+      } else {
+        root.querySelector(".multi-picker-empty")?.remove();
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "multi-picker-option active";
+        option.dataset.value = typed;
+        option.dataset.label = typed;
+        option.dataset.search = typed;
+        const label = document.createElement("span");
+        label.textContent = typed;
+        const check = document.createElement("b");
+        check.textContent = "✓";
+        option.append(label, check);
+        root.querySelector(".multi-picker-options").appendChild(option);
+        bindOption(option);
+      }
+      drawSelection();
+      root.dispatchEvent(new CustomEvent("multi-picker-change"));
+      search.value = "";
+      filterOptions();
+      search.focus();
+      return;
+    }
     const first = [...root.querySelectorAll(".multi-picker-option:not([hidden])")][0];
     if (first) { event.preventDefault(); first.click(); search.value = ""; filterOptions(); search.focus(); }
   });
@@ -5776,8 +5814,8 @@ function openForm(tab, id, opts = {}) {
     const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
     let ctrl;
     if (f.type === "multi") {
-      const selected = new Set(normalizeIdList(val));
-      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set());
+      const selected = new Set(f.textValues ? normalizeTextList(val) : normalizeIdList(val));
+      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(), Boolean(f.allowCreate));
     } else if (f.type === "search") {
       ctrl = singleSearchPickerHtml(`form-${f.k}`, f.options || [], val, f.placeholder);
     } else if (f.searchableRef) {
@@ -5804,7 +5842,7 @@ function openForm(tab, id, opts = {}) {
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
-    return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}</div>`;
+    return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
   }).join("");
 
   const title = (id ? "Editar " : "Novo ") + SINGULAR[tab];
@@ -6017,8 +6055,8 @@ function openCompanyDetails(taxId) {
       const payload = Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== ""));
       const saved = await updateRow("companies", company.tax_id, payload);
       upsertCachedEntity("companies", saved);
-      render();
       toast("Dados da empresa atualizados.");
+      await init();
       openCompanyDetails(company.tax_id);
     } catch (err) {
       button.disabled = false;
@@ -6064,6 +6102,19 @@ async function replaceContactCompanyLinks({ contactId = null, companyId = null, 
     headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
     body: JSON.stringify(links)
   });
+}
+
+async function companyQsaContactIds(companyId) {
+  if (!companyId) return [];
+  if (!isLive()) {
+    const linkedIds = new Set((DEMO.contactCompanies || []).filter((link) => link.company_id === companyId).map((link) => link.contact_id));
+    return (DEMO.contacts || []).filter((contact) => linkedIds.has(contact.id) && contact.channel === "QSA").map((contact) => contact.id);
+  }
+  const links = await api(`${remoteTable("contactCompanies")}?select=contact_id&company_id=eq.${encodeURIComponent(companyId)}`);
+  const ids = normalizeIdList((links || []).map((link) => link.contact_id));
+  if (!ids.length) return [];
+  const people = await api(`${remoteTable("contacts")}?select=id,channel&id=in.(${ids.map(encodeURIComponent).join(",")})`);
+  return (people || []).filter((contact) => contact.channel === "QSA").map((contact) => contact.id);
 }
 
 function refreshEntityCacheIndexes() {
@@ -6133,6 +6184,7 @@ async function saveForm(tab, id, fs, opts = {}) {
   const linkedCompanyIds = tab === "contacts" ? normalizeIdList(body.company_ids) : null;
   const linkedContactIds = tab === "companies" ? normalizeIdList(body.contact_ids) : null;
   if (tab === "contacts") {
+    body.groups = normalizeTextList(body.groups).join("; ") || null;
     delete body.company_ids;
     body.company_id = linkedCompanyIds[0] || null;
   }
@@ -6181,7 +6233,11 @@ async function saveForm(tab, id, fs, opts = {}) {
       toast("Criado.");
     }
     if (tab === "contacts") await replaceContactCompanyLinks({ contactId: saved.id, relatedIds: linkedCompanyIds });
-    if (tab === "companies") await replaceContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
+    if (tab === "companies") {
+      const qsaContactIds = await companyQsaContactIds(saved.tax_id);
+      linkedContactIds.push(...qsaContactIds.filter((contactId) => !linkedContactIds.includes(contactId)));
+      await replaceContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
+    }
     if (tab === "deals" && body.status === "won") {
       const dealId = effectiveId || saved?.id;
       if (dealId) await createProjectFromDeal({ id: dealId, company_id: body.company_id, contact_id: body.contact_id, product_id: body.product_id, title: body.title });
