@@ -6108,13 +6108,13 @@ async function companyQsaContactIds(companyId) {
   if (!companyId) return [];
   if (!isLive()) {
     const linkedIds = new Set((DEMO.contactCompanies || []).filter((link) => link.company_id === companyId).map((link) => link.contact_id));
-    return (DEMO.contacts || []).filter((contact) => linkedIds.has(contact.id) && contact.channel === "QSA").map((contact) => contact.id);
+    return (DEMO.contacts || []).filter((contact) => linkedIds.has(contact.id) && (contact.channel === "QSA" || contact.contact_type === "Sócio")).map((contact) => contact.id);
   }
   const links = await api(`${remoteTable("contactCompanies")}?select=contact_id&company_id=eq.${encodeURIComponent(companyId)}`);
   const ids = normalizeIdList((links || []).map((link) => link.contact_id));
   if (!ids.length) return [];
-  const people = await api(`${remoteTable("contacts")}?select=id,channel&id=in.(${ids.map(encodeURIComponent).join(",")})`);
-  return (people || []).filter((contact) => contact.channel === "QSA").map((contact) => contact.id);
+  const people = await api(`${remoteTable("contacts")}?select=id,channel,contact_type&id=in.(${ids.map(encodeURIComponent).join(",")})`);
+  return (people || []).filter((contact) => contact.channel === "QSA" || contact.contact_type === "Sócio").map((contact) => contact.id);
 }
 
 function refreshEntityCacheIndexes() {
