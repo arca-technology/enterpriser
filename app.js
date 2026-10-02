@@ -1636,6 +1636,7 @@ function columns(tab, c) {
       { k: "contact_type", h: "TIPO DE CONTATO", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((type) => `<span class="tool-tag">${esc(type)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "channel", h: "CANAL" },
       { k: "job_title", h: "CARGO" },
+      { k: "department", h: "DEPARTAMENTO" },
       { k: "company_ids", h: "EMPRESA(S)", fmt: (v, row) => companyNames(v?.length ? v : [row.company_id], c) },
       { k: "linkedin", h: "LINKEDIN", cls: "muted" },
       { k: "facebook", h: "FACEBOOK", cls: "muted" },
@@ -1644,6 +1645,8 @@ function columns(tab, c) {
       { k: "whatsapp", h: "WHATSAPP", cls: "muted" },
       { k: "youtube", h: "YOUTUBE", cls: "muted" },
       { k: "groups", h: "GRUPOS/COMUNIDADES", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((group) => `<span class="tool-tag">${esc(group)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
+      { k: "tags", h: "TAGS", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
+      { k: "notes", h: "OBSERVAÇÕES", cls: "muted", fmt: (v) => multiLineCell(v) },
       { k: "birth_date", h: "DATA DE NASCIMENTO", fmt: dt },
       { k: "cpf", h: "CPF", cls: "muted" }];
     case "products": return [
@@ -1738,6 +1741,12 @@ function contactGroupOptions(c) {
     .map((group) => ({ value: group, label: group }));
 }
 
+function contactTagOptions(c) {
+  return normalizeTextList((c.contacts || []).flatMap((contact) => normalizeTextList(contact.tags)))
+    .sort((a, b) => a.localeCompare(b, "pt-BR"))
+    .map((tag) => ({ value: tag, label: tag }));
+}
+
 function dealContactOptions(c, companyId) {
   if (!companyId) return [];
   const linkedIds = new Set((c.contactCompanies || [])
@@ -1799,6 +1808,7 @@ function fields(tab, c) {
       { k: "contact_type", label: "Tipo de contato", type: "multi", options: CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, full: true, placeholder: "Selecionar tipos", help: "Relação da pessoa com a operação ou com a empresa; aceita mais de uma opção." },
       { k: "channel", label: "Canal", type: "select", options: CONTACT_CHANNEL_OPTIONS.map((value) => ({ value, label: value })), help: "Origem do primeiro contato com a empresa." },
       { k: "job_title", label: "Cargo" },
+      { k: "department", label: "Departamento" },
       { k: "company_ids", label: "Empresa(s)", type: "multi", options: companyRefOptions(c), full: true, placeholder: "Buscar por nome ou CNPJ", searchOnly: true },
       { k: "linkedin", label: "LinkedIn" },
       { k: "facebook", label: "Facebook" },
@@ -1807,6 +1817,8 @@ function fields(tab, c) {
       { k: "whatsapp", label: "WhatsApp" },
       { k: "youtube", label: "YouTube" },
       { k: "groups", label: "Grupos/comunidades", type: "multi", options: contactGroupOptions(c), textValues: true, allowCreate: true, full: true, placeholder: "Buscar ou adicionar grupos" },
+      { k: "tags", label: "Tags", type: "multi", options: contactTagOptions(c), textValues: true, allowCreate: true, full: true, placeholder: "Buscar ou adicionar tags" },
+      { k: "notes", label: "Observações", type: "textarea", full: true },
       { k: "birth_date", label: "Data de nascimento", type: "date" },
       { k: "cpf", label: "CPF" }];
     case "products": return [
@@ -6240,6 +6252,7 @@ async function saveForm(tab, id, fs, opts = {}) {
   if (tab === "contacts") {
     body.contact_type = normalizeTextList(body.contact_type).join("; ") || null;
     body.groups = normalizeTextList(body.groups).join("; ") || null;
+    body.tags = normalizeTextList(body.tags);
     delete body.company_ids;
     body.company_id = linkedCompanyIds[0] || null;
   }
@@ -7592,6 +7605,90 @@ const INTEGRATION_GROUPS = [
 ];
 
 let googleContactsState = { people: [], account: null };
+const GOOGLE_CONTACT_MAPPING_STORAGE = "crm_google_contact_field_map_v1";
+const GOOGLE_CONTACT_SOURCE_FIELDS = [
+  { key: "name", label: "Nome" },
+  { key: "phones", label: "Telefones" },
+  { key: "emails", label: "E-mails" },
+  { key: "job_title", label: "Cargo" },
+  { key: "department", label: "Departamento" },
+  { key: "notes", label: "Observações / biografia" },
+  { key: "birth_date", label: "Data de nascimento" },
+  { key: "linkedin", label: "LinkedIn" },
+  { key: "facebook", label: "Facebook" },
+  { key: "instagram", label: "Instagram" },
+  { key: "reddit", label: "Reddit" },
+  { key: "youtube", label: "YouTube" },
+  { key: "user_defined", label: "Campos personalizados" }
+];
+const GOOGLE_CONTACT_TARGET_FIELDS = [
+  { value: "", label: "Não importar" },
+  { value: "name", label: "Nome completo" },
+  { value: "phone", label: "Telefone/celular" },
+  { value: "email", label: "E-mail(s)" },
+  { value: "contact_type", label: "Tipo de contato" },
+  { value: "channel", label: "Canal" },
+  { value: "job_title", label: "Cargo" },
+  { value: "department", label: "Departamento" },
+  { value: "notes", label: "Observações" },
+  { value: "tags", label: "Tags" },
+  { value: "birth_date", label: "Data de nascimento" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "facebook", label: "Facebook" },
+  { value: "instagram", label: "Instagram" },
+  { value: "reddit", label: "Reddit" },
+  { value: "whatsapp", label: "WhatsApp" },
+  { value: "youtube", label: "YouTube" }
+];
+const DEFAULT_GOOGLE_CONTACT_FIELD_MAP = {
+  name: "name", phones: "phone", emails: "email", job_title: "job_title",
+  department: "department", notes: "notes", birth_date: "birth_date",
+  linkedin: "linkedin", facebook: "facebook", instagram: "instagram",
+  reddit: "reddit", youtube: "youtube", user_defined: ""
+};
+
+function googleContactFieldMap() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(GOOGLE_CONTACT_MAPPING_STORAGE) || "{}");
+    return { ...DEFAULT_GOOGLE_CONTACT_FIELD_MAP, ...(saved && typeof saved === "object" ? saved : {}) };
+  } catch (error) {
+    return { ...DEFAULT_GOOGLE_CONTACT_FIELD_MAP };
+  }
+}
+
+function googleFieldMappingHtml() {
+  const mapping = googleContactFieldMap();
+  const options = (selected) => GOOGLE_CONTACT_TARGET_FIELDS.map((target) => `<option value="${esc(target.value)}"${target.value === selected ? " selected" : ""}>${esc(target.label)}</option>`).join("");
+  return `<div class="panel-list">Escolha o destino de cada dado do Google. Empresa e CNPJ continuam reservados para localizar ou criar a empresa vinculada.</div>
+    <div class="table-wrap"><table><thead><tr><th>COLUNA DO GOOGLE</th><th>CAMPO NO CRM</th></tr></thead><tbody>
+      ${GOOGLE_CONTACT_SOURCE_FIELDS.map((source) => `<tr><td>${esc(source.label)}</td><td><select class="google-map-target" data-source="${esc(source.key)}">${options(mapping[source.key] || "")}</select></td></tr>`).join("")}
+      <tr><td>Empresa / CNPJ</td><td><strong>Empresa vinculada</strong> <span class="muted">(fixo)</span></td></tr>
+    </tbody></table></div>
+    <div class="modal-foot"><button class="btn" id="google-map-defaults" type="button">Restaurar padrão</button><button class="btn primary" id="google-map-save" type="button">Salvar</button></div>`;
+}
+
+function openGoogleFieldMapping() {
+  const close = nestedSidePanel("De/para Google Contatos", googleFieldMappingHtml(), { closeOnOverlay: true });
+  document.getElementById("google-map-defaults")?.addEventListener("click", () => {
+    document.querySelectorAll(".google-map-target").forEach((select) => { select.value = DEFAULT_GOOGLE_CONTACT_FIELD_MAP[select.dataset.source] || ""; });
+  });
+  document.getElementById("google-map-save")?.addEventListener("click", () => {
+    const mapping = {};
+    const usedTargets = new Set();
+    for (const select of document.querySelectorAll(".google-map-target")) {
+      const target = select.value;
+      if (target && usedTargets.has(target)) {
+        toast(`O campo ${GOOGLE_CONTACT_TARGET_FIELDS.find((item) => item.value === target)?.label || target} foi escolhido mais de uma vez.`, true);
+        return;
+      }
+      if (target) usedTargets.add(target);
+      mapping[select.dataset.source] = target;
+    }
+    localStorage.setItem(GOOGLE_CONTACT_MAPPING_STORAGE, JSON.stringify(mapping));
+    close();
+    toast("De/para do Google salvo.");
+  });
+}
 
 function googleOAuthClientId() {
   return globalThis.chrome?.runtime?.getManifest?.().oauth2?.client_id || "";
@@ -7635,7 +7732,7 @@ async function fetchGooglePeople(token) {
   let pageToken = "";
   do {
     const params = new URLSearchParams({
-      personFields: "names,emailAddresses,phoneNumbers,organizations,birthdays,urls,userDefined,metadata",
+      personFields: "names,emailAddresses,phoneNumbers,organizations,birthdays,urls,userDefined,biographies,metadata",
       pageSize: "1000",
       sortOrder: "FIRST_NAME_ASCENDING"
     });
@@ -7643,7 +7740,7 @@ async function fetchGooglePeople(token) {
     const data = await googleApiJson(`https://people.googleapis.com/v1/people/me/connections?${params}`, token);
     people.push(...(data.connections || []).filter((person) => {
       if (person.metadata?.deleted) return false;
-      return ["names", "emailAddresses", "phoneNumbers", "organizations", "urls", "userDefined"]
+      return ["names", "emailAddresses", "phoneNumbers", "organizations", "urls", "userDefined", "biographies"]
         .some((field) => Array.isArray(person[field]) && person[field].length);
     }));
     pageToken = data.nextPageToken || "";
@@ -7719,7 +7816,7 @@ function findImportedCompany(companyData) {
     }) || null;
 }
 
-function googlePersonToContact(person) {
+function googlePersonSourceData(person) {
   const emails = (person.emailAddresses || []).map((item) => item.value).filter(Boolean);
   const phones = (person.phoneNumbers || []).map((item) => item.value).filter(Boolean);
   const organization = googlePersonPrimary(person, "organizations") || {};
@@ -7731,26 +7828,44 @@ function googlePersonToContact(person) {
     ? `${birthday.year}-${String(birthday.month).padStart(2, "0")}-${String(birthday.day).padStart(2, "0")}` : "";
   const urls = person.urls || [];
   const social = (domain) => urls.find((item) => String(item.value || "").toLowerCase().includes(domain))?.value || "";
-  const company = findImportedCompany(googleCompany);
   return {
     name,
-    phone: normalizePhoneList(phones.join("; ")),
-    email: normalizeEmailList(emails.join("; ")),
-    contact_type: null,
-    channel: null,
+    phones: normalizePhoneList(phones.join("; ")),
+    emails: normalizeEmailList(emails.join("; ")),
     job_title: organization.title || "",
-    company_id: company?.tax_id || null,
+    department: organization.department || "",
+    notes: (person.biographies || []).map((item) => item.value).filter(Boolean).join("\n"),
+    birth_date: birthDate,
     linkedin: social("linkedin.com"),
     facebook: social("facebook.com"),
     instagram: social("instagram.com"),
     reddit: social("reddit.com"),
     youtube: social("youtube.com"),
-    birth_date: birthDate || null,
+    user_defined: (person.userDefined || []).map((item) => [item.key, item.value].filter(Boolean).join(": ")).filter(Boolean).join("; "),
+    google_company: googleCompany
+  };
+}
+
+function googlePersonToContact(person) {
+  const source = googlePersonSourceData(person);
+  const mapping = googleContactFieldMap();
+  const company = findImportedCompany(source.google_company);
+  const mapped = {
+    company_id: company?.tax_id || null,
     google_resource_name: person.resourceName,
     google_etag: person.etag || null,
     google_synced_at: new Date().toISOString(),
-    google_company: googleCompany
+    google_company: source.google_company
   };
+  GOOGLE_CONTACT_SOURCE_FIELDS.forEach(({ key }) => {
+    const target = mapping[key];
+    const value = source[key];
+    if (!target || value == null || value === "") return;
+    mapped[target] = target === "tags" ? normalizeTextList(value) : value;
+  });
+  mapped.name = mapped.name || "Contato Google";
+  if (mapped.birth_date === "") mapped.birth_date = null;
+  return mapped;
 }
 
 function googleContactDatabaseBody(mapped) {
@@ -7802,6 +7917,7 @@ function integrationsHtml() {
     <div class="integration-row google-integration-row">
       <div><strong>Google Contatos</strong><div class="muted">${esc(googleStatus)}</div></div>
       <div class="integration-actions">
+        <button class="btn" id="google-field-map" type="button">De/para</button>
         ${googleAccount ? '<button class="btn" id="google-disconnect">Desconectar</button>' : ""}
         <button class="btn primary" id="google-connect"${IS_EXTENSION_CONTEXT ? "" : " disabled"}>${IS_EXTENSION_CONTEXT ? (googleAccount ? "Importar contatos" : googleOAuthConfigured() ? "Conectar" : "Configurar") : "Usar extensão"}</button>
       </div>
@@ -7812,6 +7928,7 @@ function integrationsHtml() {
 }
 
 function wireIntegrations() {
+  document.getElementById("google-field-map")?.addEventListener("click", openGoogleFieldMapping);
   document.getElementById("google-connect")?.addEventListener("click", openGoogleContactsImport);
   document.getElementById("google-disconnect")?.addEventListener("click", disconnectGoogleAccount);
   document.getElementById("social-integrations-save")?.addEventListener("click", async (event) => {
@@ -7879,7 +7996,7 @@ function renderGoogleContactsPreview() {
       <div><strong>${esc(googleContactsState.account?.email || "Conta Google")}</strong><div class="muted">${people.length} contato(s) encontrado(s)</div></div>
       <label class="google-select-all"><input type="checkbox" id="google-select-all" checked> Selecionar todos</label>
     </div>
-    <div class="google-import-fields"><strong>Dados importados</strong><span>Nome, e-mails, telefones, cargo, empresa, razão social, CNPJ, nascimento e redes sociais disponíveis no contato Google.</span></div>
+    <div class="google-import-fields"><strong>Dados importados</strong><span>As colunas seguem o De/Para salvo nas Integrações. Empresa, razão social e CNPJ são usados no vínculo com a empresa.</span></div>
     <div class="google-contact-list"><table><thead><tr><th></th><th>Nome</th><th>E-mail(s)</th><th>Telefone(s)</th><th>Cargo</th><th>Nome fantasia</th><th>Razão social</th><th>CNPJ</th><th>Situação</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum contato encontrado.</td></tr>'}</tbody></table></div>
     <div class="modal-foot"><button class="btn" id="google-import-cancel">Cancelar</button><button class="btn primary" id="google-import-confirm"${people.length ? "" : " disabled"}>Importar selecionados</button></div>`, { cls: "full" });
   document.getElementById("google-select-all")?.addEventListener("change", (event) => {
@@ -7913,8 +8030,8 @@ async function importSelectedGoogleContacts() {
           google_etag: contactBody.google_etag,
           google_synced_at: contactBody.google_synced_at
         };
-        ["name", "phone", "email", "job_title", "company_id", "linkedin", "facebook", "instagram", "reddit", "youtube", "birth_date"].forEach((key) => {
-          if (contactBody[key]) patch[key] = contactBody[key];
+        ["name", "phone", "email", "contact_type", "channel", "job_title", "department", "notes", "tags", "company_id", "linkedin", "facebook", "instagram", "reddit", "whatsapp", "youtube", "birth_date"].forEach((key) => {
+          if (Array.isArray(contactBody[key]) ? contactBody[key].length : contactBody[key]) patch[key] = contactBody[key];
         });
         const saved = await updateRow("contacts", existing.id, patch);
         Object.assign(existing, saved || patch);
