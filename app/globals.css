@@ -917,6 +917,7 @@
   .modal.side-panel .chat-log{flex:1 1 auto;max-height:none}
   .modal.side-panel #um-body{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
   .modal.side-panel .form{grid-template-columns:1fr}
+  .modal.side-panel .form.project-form{grid-template-columns:repeat(2,minmax(0,1fr))}
   .modal.side-panel .modal-foot{position:sticky;bottom:0;background:var(--panel)}
   .company-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:8px 18px 18px}
   .company-detail-item{display:flex;min-width:0;flex-direction:column;gap:5px;padding:12px 10px;border-bottom:1px solid var(--border2)}
@@ -1041,7 +1042,7 @@
     .modal,.modal.wide,.modal.side-panel{width:100vw;max-width:none;height:100dvh;max-height:none;border:0;border-radius:0}
     .modal.side-panel{overflow-y:auto}
     .modal h3{height:48px;min-height:48px}
-    .form,.modal.side-panel .form{grid-template-columns:1fr;padding:14px 12px;gap:11px}
+    .form,.modal.side-panel .form,.modal.side-panel .form.project-form{grid-template-columns:1fr;padding:14px 12px;gap:11px}
     .form .field{grid-column:1}
     .modal-foot{padding:10px 12px}
     .modal-foot .btn{min-height:40px}
@@ -1148,7 +1149,7 @@
     padding:10px 16px;border-radius:8px;font-size:12.5px;box-shadow:0 6px 20px rgba(0,0,0,.3)}
   .toast.err{border-color:var(--red)}
   @media(max-width:767px){
-    .form,.modal.side-panel .form{grid-template-columns:1fr;padding:14px 12px;gap:11px}
+    .form,.modal.side-panel .form,.modal.side-panel .form.project-form{grid-template-columns:1fr;padding:14px 12px;gap:11px}
     .optional-company-row{grid-template-columns:1fr}
     .form .field{grid-column:1}
     .activity-form-drawer.task-form-drawer{width:100vw;min-width:0;max-width:none}

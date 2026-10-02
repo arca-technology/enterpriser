@@ -1541,6 +1541,11 @@ const addDays = (isoDate, days) => {
   d.setDate(d.getDate() + Number(days || 0));
   return d.toISOString().slice(0, 10);
 };
+const addDaysRoundedToMonthEnd = (isoDate, days) => {
+  const calculated = new Date(`${addDays(isoDate, days)}T12:00:00`);
+  const monthEnd = new Date(calculated.getFullYear(), calculated.getMonth() + 1, 0, 12);
+  return `${monthEnd.getFullYear()}-${String(monthEnd.getMonth() + 1).padStart(2, "0")}-${String(monthEnd.getDate()).padStart(2, "0")}`;
+};
 const addBusinessDays = (isoDate, days) => {
   const date = new Date(`${isoDate}T12:00:00`);
   let remaining = Math.max(0, Number(days || 0));
@@ -1634,7 +1639,7 @@ async function createProjectFromDeal(deal) {
   const company = deal.company_id ? cache.companyById[deal.company_id] : null;
   const contact = deal.contact_id ? cache.contactById?.[deal.contact_id] : null;
   const start = new Date().toISOString().slice(0, 10);
-  const end = product?.duration_days ? addDays(start, product.duration_days) : null;
+  const end = product?.duration_days ? addDaysRoundedToMonthEnd(start, product.duration_days) : null;
   const clientName = contact?.name || company?.trade_name || company?.legal_name || "Sem cliente";
   const name = deliveryGeneratedName(clientName, deal.product_id);
   try {
@@ -1994,12 +1999,12 @@ function fields(tab, c) {
       { k: "expected_close_date", label: "Previsão", type: "date" }];
     case "projects": return [
       { k: "name", label: "Entrega", full: true, generated: true },
-      { k: "group_name", label: "Grupo" },
-      { k: "delivery_type", label: "Tipo", type: "select", options: ["Projeto", "Imersão", "Treinamento", "Consultoria", "Evento", "Serviço recorrente", "Outro"].map((value) => ({ value, label: value })), def: "Projeto" },
+      { k: "delivery_type", label: "Tipo", type: "select", options: ["Projeto", "Imersão", "Treinamento", "Consultoria", "Evento", "Serviço recorrente", "Outro"].map((value) => ({ value, label: value })), def: "Projeto", full: true },
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), req: true, full: true, placeholder: "Buscar por nome ou CNPJ" },
       { k: "client_name", label: "Cliente", req: true },
+      { k: "group_name", label: "Grupo" },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c), req: true },
-      { k: "continuation_of_id", label: "Continuidade de", type: "select", options: (c.projects || []).map((project) => ({ value: project.id, label: `${project.name || project.client_name || "Entrega"} · ${c.companyById?.[project.company_id]?.trade_name || c.companyById?.[project.company_id]?.legal_name || "Sem empresa"}` })), full: true },
+      { k: "continuation_of_id", label: "Continuidade de", type: "select", options: [] },
       { k: "status", label: "Status", type: "select", options: PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })), def: "active" },
       { k: "substatus", label: "Substatus", type: "select", options: PROJECT_SUBSTATUS.map((s) => ({ value: s, label: PROJECT_SUBSTATUS_LABEL[s] })) },
       { k: "start_date", label: "Início", type: "date" },
@@ -6154,7 +6159,7 @@ function openForm(tab, id, opts = {}) {
   const generatedNotice = tab === "projects"
     ? `<div class="panel-list" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.<br><span class="muted">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</span></div>`
     : "";
-  const body = `${generatedNotice}<div class="form">${inputs}</div>
+  const body = `${generatedNotice}<div class="form${tab === "projects" ? " project-form" : ""}">${inputs}</div>
     <div class="modal-foot">
       <button class="btn" id="cancel">Cancelar</button>
       <button class="btn primary" id="save">${id ? "Salvar" : "Criar"}</button>
@@ -6240,12 +6245,28 @@ function openForm(tab, id, opts = {}) {
   if (tab === "projects") {
     const form = document.querySelector("#modal-root .form");
     const nameEl = form?.querySelector('[data-k="name"]');
+    const companyEl = form?.querySelector('[data-k="company_id"]');
     const clientEl = form?.querySelector('[data-k="client_name"]');
     const startEl = form?.querySelector('[data-k="start_date"]');
     const endEl = form?.querySelector('[data-k="end_date"]');
     const productEl = form?.querySelector('[data-k="product_id"]');
     const statusEl = form?.querySelector('[data-k="status"]');
     const substatusEl = form?.querySelector('[data-k="substatus"]');
+    const continuationEl = form?.querySelector('[data-k="continuation_of_id"]');
+    const normalizeCnpj = (value) => String(value || "").replace(/\D/g, "");
+    const syncContinuityOptions = () => {
+      if (!continuationEl) return;
+      const companyCnpj = normalizeCnpj(companyEl?.value);
+      const selected = String(continuationEl.value || record?.continuation_of_id || "");
+      const options = companyCnpj ? (c.projects || []).filter((project) =>
+        project.id !== id && normalizeCnpj(project.company_id) === companyCnpj
+      ) : [];
+      continuationEl.innerHTML = ['<option value="">—</option>']
+        .concat(options.map((project) => `<option value="${esc(project.id)}"${project.id === selected ? " selected" : ""}>${esc(project.name || project.client_name || "Entrega")}</option>`)).join("");
+      if (!options.some((project) => project.id === selected)) continuationEl.value = "";
+      continuationEl.closest(".field")?.classList.toggle("field-disabled", !companyCnpj || !options.length);
+      continuationEl.disabled = !companyCnpj || !options.length;
+    };
     const syncSubstatus = () => {
       const enabled = statusEl?.value === "inactive";
       if (substatusEl) {
@@ -6256,13 +6277,16 @@ function openForm(tab, id, opts = {}) {
     const recalcName = () => { if (nameEl) nameEl.value = deliveryGeneratedName(clientEl?.value, productEl?.value); };
     const recalcEnd = () => {
       const prod = c.productById[productEl?.value];
-      if (startEl?.value && prod?.duration_days) endEl.value = addDays(startEl.value, prod.duration_days);
+      if (startEl?.value && prod?.duration_days) endEl.value = addDaysRoundedToMonthEnd(startEl.value, prod.duration_days);
     };
     startEl?.addEventListener("change", recalcEnd);
+    companyEl?.addEventListener("change", syncContinuityOptions);
     clientEl?.addEventListener("input", recalcName);
     productEl?.addEventListener("change", () => { recalcEnd(); recalcName(); });
     statusEl?.addEventListener("change", syncSubstatus);
     recalcName();
+    recalcEnd();
+    syncContinuityOptions();
     syncSubstatus();
   }
 }
@@ -6589,8 +6613,9 @@ async function saveForm(tab, id, fs, opts = {}) {
     const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
     const previousDelivery = body.continuation_of_id ? cache.projects.find((project) => project.id === body.continuation_of_id) : null;
-    if (body.continuation_of_id === id) { toast("Uma entrega não pode ser continuidade dela mesma.", true); return; }
-    if (previousDelivery && body.company_id && previousDelivery.company_id !== body.company_id) { toast("A continuidade deve pertencer à mesma empresa.", true); return; }
+    if (body.continuation_of_id && body.continuation_of_id === id) { toast("Uma entrega não pode ser continuidade dela mesma.", true); return; }
+    const sameCompanyCnpj = previousDelivery && String(previousDelivery.company_id || "").replace(/\D/g, "") === String(body.company_id || "").replace(/\D/g, "");
+    if (previousDelivery && !sameCompanyCnpj) { toast("A continuidade deve pertencer ao mesmo CNPJ.", true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { toast(`Preencha: ${req.label}`, true); return; }
