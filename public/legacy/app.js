@@ -156,7 +156,7 @@ const PROJECT_SUBSTATUS_LABEL = { support: "Suporte", closed: "Encerrado" };
 const DELIVERY_CHANNEL_OPTIONS = {
   erp: ["BLING", "OLIST"],
   marketplaces: ["AMAZON", "MAGAZINE LUIZA", "MERCADO LIVRE", "SHEIN", "SHOPEE", "TIKTOKSHOP"],
-  stores: ["BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
+  stores: ["LOJA FÍSICA", "BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
   freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "TOTAL EXPRESS"]
 };
 const MANAGED_DELIVERY_CHANNELS = new Set(Object.values(DELIVERY_CHANNEL_OPTIONS).flat().map(normalizeDeliveryChannel));
@@ -168,6 +168,7 @@ function activatedDeliveryChannels(project) {
   return new Set([
     project?.erp_platform,
     ...normalizeTextList(project?.marketplace_channels),
+    ...normalizeTextList(project?.store_platforms),
     project?.store_platform,
     ...normalizeTextList(project?.freight_channels)
   ].filter(Boolean).map(normalizeDeliveryChannel));
@@ -727,6 +728,8 @@ function activityRemoteBody(task) {
     actual_start_date: task.actual_start_date || null,
     actual_end_date: task.actual_end_date || null,
     notes: task.notes || null,
+    document_ids: normalizeIdList(task.document_ids),
+    custom_table_ids: normalizeIdList(task.custom_table_ids),
     status: task.status || "todo",
     created_at: task.created_at || new Date().toISOString(),
     updated_at: task.updated_at || new Date().toISOString()
@@ -756,6 +759,8 @@ function productActivityRemoteBody(template) {
     target_days: template.target_days == null ? null : Number(template.target_days),
     consider_business_days: Boolean(template.consider_business_days),
     checklist: normalizeChecklist(template.checklist).map((item) => ({ ...item, checked: false })),
+    document_ids: normalizeIdList(template.document_ids),
+    custom_table_ids: normalizeIdList(template.custom_table_ids),
     sort_order: Number(template.sort_order || 0),
     created_at: template.created_at || new Date().toISOString(),
     updated_at: template.updated_at || new Date().toISOString()
@@ -997,7 +1002,9 @@ async function syncProductActivities() {
           consider_business_days: Boolean(template.consider_business_days),
           target_days: template.target_days == null ? null : Number(template.target_days),
           occurrence_index: occurrenceIndex,
-          objective_id: objective?.id || null
+          objective_id: objective?.id || null,
+          document_ids: normalizeIdList(template.document_ids),
+          custom_table_ids: normalizeIdList(template.custom_table_ids)
         };
         if (current) {
           const recurrenceChanged = (current.recurrence || "once") !== structural.recurrence;
@@ -1022,6 +1029,8 @@ async function syncProductActivities() {
           }
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
+            : ["document_ids", "custom_table_ids"].includes(key)
+              ? JSON.stringify(normalizeIdList(current[key])) !== JSON.stringify(normalizeIdList(value))
             : current[key] !== value)) {
             Object.assign(current, updates, { updated_at: new Date().toISOString() });
             if (isLive()) await updateRow("activities", current.id, updates);
@@ -1588,6 +1597,32 @@ function taskCommentsButton(task) {
   return `<button class="task-comments-open" type="button" data-id="${esc(task.id)}" title="Abrir comentários">${count ? `${count} comentário${count === 1 ? "" : "s"}` : "+ Comentar"}</button>`;
 }
 
+async function ensureTaskReferenceSources() {
+  if (!isLive()) return;
+  await Promise.all([loadRemoteToolDocuments(), loadRemoteToolTables()]);
+}
+
+function taskDocumentOptions() {
+  return toolDocumentRows().map((item) => ({ value: item.id, label: toolDocumentValue(item, "title") || item.title || "Documento sem nome" }));
+}
+
+function taskTableOptions() {
+  return toolCustomTableRows().map((item) => ({ value: item.id, label: item.name || "Tabela sem nome" }));
+}
+
+function taskReferencesHtml(task) {
+  const documents = normalizeIdList(task?.document_ids).map((id) => ({ id, name: taskDocumentOptions().find((item) => item.value === id)?.label || "Documento", kind: "document" }));
+  const tables = normalizeIdList(task?.custom_table_ids).map((id) => ({ id, name: taskTableOptions().find((item) => item.value === id)?.label || "Tabela", kind: "table" }));
+  const references = [...documents, ...tables];
+  return references.length ? `<span class="task-references">${references.map((item) => `<button class="task-reference-open" type="button" data-reference-kind="${item.kind}" data-reference-id="${esc(item.id)}" title="Abrir ${esc(item.name)}">${esc(item.name)}</button>`).join("")}</span>` : "—";
+}
+
+async function openTaskReference(kind, id) {
+  await ensureTaskReferenceSources();
+  if (kind === "document") openToolDocument(id);
+  else openToolCustomTableEditor(id, true);
+}
+
 // Quando um negócio entra em "Ganho", um projeto nasce sozinho — carrega
 // cliente/produto do negócio e calcula o fim pela duração cadastrada no
 // produto. Idempotente: se já existe projeto pra esse negócio, não duplica.
@@ -1698,6 +1733,7 @@ function columns(tab, c) {
       { k: "company_id", h: "EMPRESA", fmt: (v) => c.companyById[v]?.legal_name || "—" },
       { k: "client_name", h: "CLIENTE" },
       { k: "product_id", h: "PRODUTO", fmt: (v) => c.productById[v]?.name || "—" },
+      { k: "continuation_of_id", h: "CONTINUIDADE", fmt: (v) => v ? (c.projects.find((project) => project.id === v)?.name || "Entrega anterior") : "Nova entrega" },
       { k: "start_date", h: "INÍCIO", fmt: dt },
       { k: "end_date", h: "FIM", fmt: dt },
       { k: "status", h: "STATUS", fmt: (v) => badge(v === "active" ? "won" : v === "closed" ? "lost" : "lead", PROJECT_STATUS_LABEL[v] || v) },
@@ -1726,6 +1762,7 @@ function columns(tab, c) {
       } },
       { k: "objective_name", h: "OBJETIVO" },
       { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => stackedCell(responsibilityNameList(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
+      { k: "references", h: "REFERÊNCIAS", fmt: (_v, row) => taskReferencesHtml(row) },
       { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
       { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => dt(v || row.due_date) || "—" },
       { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
@@ -1781,9 +1818,27 @@ function normalizeProjectBusinessMetrics(value) {
   return Array.isArray(rows) ? rows.map((row) => ({
     month: String(row?.month || "").slice(0, 7),
     revenue: row?.revenue === "" || row?.revenue == null ? null : Number(row.revenue),
+    channel_revenue: Object.fromEntries(Object.entries(row?.channel_revenue && typeof row.channel_revenue === "object" ? row.channel_revenue : {})
+      .map(([channel, amount]) => [channel, amount === "" || amount == null ? null : Number(amount)])
+      .filter(([, amount]) => Number.isFinite(amount))),
     skus: row?.skus === "" || row?.skus == null ? null : Number(row.skus),
-    supplier_company_ids: normalizeIdList(row?.supplier_company_ids)
+    supplier_company_ids: normalizeIdList(row?.supplier_company_ids),
+    observations: String(row?.observations || row?.notes || "")
   })).filter((row) => /^\d{4}-\d{2}$/.test(row.month)) : [];
+}
+
+function projectRevenueChannels(project) {
+  const channels = normalizeTextList([
+    ...normalizeTextList(project?.marketplace_channels),
+    ...normalizeTextList(project?.store_platforms),
+    ...(project?.store_platform ? [project.store_platform] : [])
+  ]);
+  return channels.length ? channels : ["NÃO INFORMADO"];
+}
+
+function projectMetricRevenue(row) {
+  const channelTotal = Object.values(row?.channel_revenue || {}).reduce((total, value) => total + (Number(value) || 0), 0);
+  return channelTotal || Number(row?.revenue || 0);
 }
 
 function projectMonthKeys(startDate, endDate, existing = []) {
@@ -1800,26 +1855,46 @@ function projectMonthKeys(startDate, endDate, existing = []) {
   return [...keys].sort();
 }
 
-function projectBusinessMetricsHtml(value, startDate, endDate, c = cache) {
+function projectBusinessMetricsHtml(value, startDate, endDate, c = cache, channels = []) {
   const rows = normalizeProjectBusinessMetrics(value);
   const byMonth = Object.fromEntries(rows.map((row) => [row.month, row]));
   const months = projectMonthKeys(startDate, endDate, rows);
   if (!months.length) return '<div class="panel-list">Informe início e fim para gerar os meses do projeto.</div>';
   const companyOptions = companyRefOptions(c);
-  return `<div class="business-metrics-table"><table><thead><tr><th>MÊS</th><th>FATURAMENTO</th><th>SKUs</th><th>FORNECEDORES</th></tr></thead><tbody>${months.map((month) => {
+  const revenueChannels = channels.length ? channels : ["NÃO INFORMADO"];
+  const channelTotals = Object.fromEntries(revenueChannels.map((channel) => [channel, 0]));
+  let grandTotal = 0;
+  const body = months.map((month) => {
     const row = byMonth[month] || {};
     const label = new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
-    return `<tr data-business-month="${esc(month)}"><td><strong>${esc(label)}</strong></td><td><input class="business-revenue" type="number" min="0" step="0.01" value="${esc(row.revenue ?? "")}" placeholder="R$ 0,00"></td><td><input class="business-skus" type="number" min="0" step="1" value="${esc(row.skus ?? "")}" placeholder="0"></td><td>${multiPickerHtml(`business-suppliers-${month}`, companyOptions, new Set(normalizeIdList(row.supplier_company_ids)), "Buscar fornecedores", true)}</td></tr>`;
-  }).join("")}</tbody></table></div>`;
+    const legacyRevenue = !Object.keys(row.channel_revenue || {}).length ? row.revenue : null;
+    const channelCells = revenueChannels.map((channel, index) => {
+      const amount = row.channel_revenue?.[channel] ?? (index === 0 ? legacyRevenue : null);
+      channelTotals[channel] += Number(amount || 0);
+      return `<td><input class="business-channel-revenue" data-business-channel="${esc(channel)}" type="number" min="0" step="0.01" value="${esc(amount ?? "")}" placeholder="R$ 0,00"></td>`;
+    }).join("");
+    const monthTotal = revenueChannels.reduce((total, channel, index) => total + Number(row.channel_revenue?.[channel] ?? (index === 0 ? legacyRevenue : 0) ?? 0), 0);
+    grandTotal += monthTotal;
+    return `<tr data-business-month="${esc(month)}"><td><strong>${esc(label)}</strong></td>${channelCells}<td class="business-month-total" data-business-month-total>${brl(monthTotal)}</td><td><input class="business-skus" type="number" min="0" step="1" value="${esc(row.skus ?? "")}" placeholder="0"></td><td>${multiPickerHtml(`business-suppliers-${month}`, companyOptions, new Set(normalizeIdList(row.supplier_company_ids)), "Buscar fornecedores", true)}</td><td><textarea class="business-observations" rows="2" placeholder="Observações do mês">${esc(row.observations || "")}</textarea></td></tr>`;
+  }).join("");
+  return `<div class="business-metrics-table"><table><thead><tr><th>MÊS</th>${revenueChannels.map((channel) => `<th>${esc(channel)}</th>`).join("")}<th>TOTAL MENSAL</th><th>SKUs</th><th>FORNECEDORES</th><th>OBSERVAÇÕES</th></tr></thead><tbody>${body}</tbody><tfoot><tr><th>TOTAL</th>${revenueChannels.map((channel) => `<th data-business-channel-total="${esc(channel)}">${brl(channelTotals[channel])}</th>`).join("")}<th data-business-grand-total>${brl(grandTotal)}</th><th colspan="3"></th></tr></tfoot></table></div>`;
 }
 
 function readProjectBusinessMetrics(form = document.querySelector("#modal-root .form")) {
-  return [...(form?.querySelectorAll("[data-business-month]") || [])].map((row) => ({
-    month: row.dataset.businessMonth,
-    revenue: row.querySelector(".business-revenue")?.value === "" ? null : Number(row.querySelector(".business-revenue")?.value),
-    skus: row.querySelector(".business-skus")?.value === "" ? null : Number(row.querySelector(".business-skus")?.value),
-    supplier_company_ids: multiPickerValues(`business-suppliers-${row.dataset.businessMonth}`)
-  })).filter((row) => row.revenue != null || row.skus != null || row.supplier_company_ids.length);
+  return [...(form?.querySelectorAll("[data-business-month]") || [])].map((row) => {
+    const channelRevenue = Object.fromEntries([...row.querySelectorAll(".business-channel-revenue")]
+      .filter((input) => input.value !== "")
+      .map((input) => [input.dataset.businessChannel, Number(input.value)]));
+    const revenue = Object.values(channelRevenue).reduce((total, amount) => total + Number(amount || 0), 0);
+    return {
+      month: row.dataset.businessMonth,
+      revenue: Object.keys(channelRevenue).length ? revenue : null,
+      channel_revenue: channelRevenue,
+      skus: row.querySelector(".business-skus")?.value === "" ? null : Number(row.querySelector(".business-skus")?.value),
+      supplier_company_ids: multiPickerValues(`business-suppliers-${row.dataset.businessMonth}`),
+      observations: row.querySelector(".business-observations")?.value.trim() || ""
+    };
+  }).filter((row) => row.revenue != null || row.skus != null || row.supplier_company_ids.length || row.observations);
 }
 
 function dealContactOptions(c, companyId) {
@@ -1924,13 +1999,14 @@ function fields(tab, c) {
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), req: true, full: true, placeholder: "Buscar por nome ou CNPJ" },
       { k: "client_name", label: "Cliente", req: true },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c), req: true },
+      { k: "continuation_of_id", label: "Continuidade de", type: "select", options: (c.projects || []).map((project) => ({ value: project.id, label: `${project.name || project.client_name || "Entrega"} · ${c.companyById?.[project.company_id]?.trade_name || c.companyById?.[project.company_id]?.legal_name || "Sem empresa"}` })), full: true },
       { k: "status", label: "Status", type: "select", options: PROJECT_STATUSES.map((s) => ({ value: s, label: PROJECT_STATUS_LABEL[s] })), def: "active" },
       { k: "substatus", label: "Substatus", type: "select", options: PROJECT_SUBSTATUS.map((s) => ({ value: s, label: PROJECT_SUBSTATUS_LABEL[s] })) },
       { k: "start_date", label: "Início", type: "date" },
       { k: "end_date", label: "Fim", type: "date" },
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
-      { k: "store_platform", label: "Loja", type: "select", options: deliveryChannelOptions("stores"), lockWhenSet: true, full: true },
+      { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
       { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" }];
   }
 }
@@ -2822,6 +2898,7 @@ function renderProductActivities() {
     <td>${priorityBadge(item.priority)}</td>
     <td>${esc(responsibilityNames(item.default_assignee_ids, item.default_owner_id, item.default_assignee_job_titles, item.assign_to_client))}</td>
     <td>${esc(dependencyNames(item.dependency_template_ids, item.depends_on_template_id, templates))}</td>
+    <td>${taskReferencesHtml(item)}</td>
     <td class="act table-actions-cell">${tableActionButtons({
       edit: { className: "pa-edit", attrs: { "data-id": item.id }, title: item.parent_template_id ? "Editar subtarefa" : "Editar tarefa" },
       clone: { className: "pa-clone", attrs: { "data-id": item.id }, title: item.parent_template_id ? "Clonar subtarefa" : "Clonar tarefa" },
@@ -2829,9 +2906,13 @@ function renderProductActivities() {
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th class="noclick"></th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th>${tableActionsHead()}
-    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="16" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
-  document.getElementById("pa-ready").addEventListener("click", openReadyActivityPicker);
+      <th class="noclick"></th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
+    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="17" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+  document.getElementById("pa-ready").addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openReadyActivityPicker();
+  });
   document.querySelectorAll(".pa-edit").forEach((button) => button.addEventListener("click", () => openProductActivityDrawer(button.dataset.id)));
   document.querySelectorAll(".pa-clone").forEach((button) => button.addEventListener("click", () => cloneProductActivity(button.dataset.id)));
   document.querySelectorAll(".pa-delete").forEach((button) => button.addEventListener("click", async () => {
@@ -2949,7 +3030,6 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     <div class="modal-foot"><button class="btn" id="po-cancel">Cancelar</button><button class="btn primary" id="po-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProductActivityDrawer(); });
   document.getElementById("po-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-save").addEventListener("click", saveProductObjective);
@@ -3136,7 +3216,6 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     <div class="modal-foot"><button class="btn" id="pg-cancel">Cancelar</button><button class="btn primary" id="pg-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProductActivityDrawer(); });
   document.getElementById("pg-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-save").addEventListener("click", saveProductGoal);
@@ -3246,7 +3325,7 @@ function cloneProductActivity(templateId) {
 }
 
 function openReadyActivityPicker() {
-  closeProductActivityDrawer();
+  document.getElementById("product-activity-drawer-overlay")?.remove();
   const current = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const currentSignatures = new Set(current.map((item) => [item.group, item.sector, item.channel, item.type, item.activity, item.recurrence || "once"].join("|")));
   const seen = new Set();
@@ -3432,8 +3511,9 @@ function closeProductActivityDrawer() {
   productActivityParentGroupId = null;
 }
 
-function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTemplateId = null) {
+async function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTemplateId = null) {
   if (!requireCurrentUserPermission("activityTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Tarefas")) return;
+  await ensureTaskReferenceSources();
   closeProductActivityDrawer();
   productActivityState.editId = editId;
   const allTemplates = loadProductActivities();
@@ -3482,6 +3562,8 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
+  const selectedDocuments = new Set(normalizeIdList(current.document_ids));
+  const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(
     loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).map((item) =>
       `<option value="${esc(item.id)}"${item.id === current.objective_template_id ? " selected" : ""}>${esc(item.name)}</option>`)
@@ -3514,11 +3596,12 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
       <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("pa-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
+      <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
+      <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
     </div>
     <div class="modal-foot">${editing && !productActivityParentGroupId ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeProductActivityDrawer(); });
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-save").addEventListener("click", saveProductActivity);
@@ -3532,6 +3615,8 @@ function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTe
   wireMultiPicker("pa-assignees");
   wireMultiPicker("pa-assignee-job-titles");
   wireMultiPicker("pa-dependencies");
+  wireMultiPicker("pa-documents");
+  wireMultiPicker("pa-tables");
   renderProductActivityChecklistEditor();
   document.getElementById("pa-activity")?.focus({ preventScroll: true });
 }
@@ -3585,6 +3670,8 @@ async function saveProductActivity() {
     consider_business_days: document.getElementById("pa-business-days").checked,
     activity,
     information: document.getElementById("pa-information").value.trim(),
+    document_ids: multiPickerValues("pa-documents"),
+    custom_table_ids: multiPickerValues("pa-tables"),
     checklist: productActivityChecklistDraft
       .map((item) => ({ id: item.id || crypto.randomUUID(), text: item.text.trim(), checked: false }))
       .filter((item) => item.text),
@@ -3916,6 +4003,13 @@ function wireSingleSearchPicker(id) {
 }
 
 document.addEventListener("click", (event) => {
+  const referenceButton = event.target.closest(".task-reference-open");
+  if (referenceButton) {
+    event.preventDefault();
+    event.stopPropagation();
+    openTaskReference(referenceButton.dataset.referenceKind, referenceButton.dataset.referenceId);
+    return;
+  }
   if (event.target.closest(".multi-picker")) return;
   document.querySelectorAll(".multi-picker-menu:not([hidden])").forEach((menu) => {
     menu.hidden = true;
@@ -4033,19 +4127,64 @@ function openProjectBoard(projectId) {
   renderProjectBoard(projectId);
 }
 
+function deliveryContinuityChain(project) {
+  const chain = [];
+  const visited = new Set();
+  let current = project;
+  while (current && !visited.has(current.id)) {
+    chain.unshift(current);
+    visited.add(current.id);
+    current = current.continuation_of_id ? cache.projects.find((item) => item.id === current.continuation_of_id) : null;
+  }
+  return chain;
+}
+
+function deliveryMetricsTotal(project) {
+  return normalizeProjectBusinessMetrics(project?.business_metrics).reduce((total, row) => total + projectMetricRevenue(row), 0);
+}
+
 function renderProjectDataModule(project) {
   const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
   const product = cache.productById[project.product_id]?.name || "Sem produto";
+  const chain = deliveryContinuityChain(project);
+  const channels = projectRevenueChannels(project);
+  const currentTotal = deliveryMetricsTotal(project);
+  const historyTotal = chain.reduce((total, item) => total + deliveryMetricsTotal(item), 0);
   return `<div class="project-data-module">
     <div class="project-data-header"><div><strong>Dados mensais do negócio</strong><span>${esc(client)} · ${esc(product)}</span></div><button class="btn primary" id="project-data-save">Salvar dados</button></div>
     <div class="project-data-period"><span>Período da entrega</span><strong>${project.start_date ? dt(project.start_date) : "—"} a ${project.end_date ? dt(project.end_date) : "—"}</strong></div>
-    <div id="project-business-metrics">${projectBusinessMetricsHtml(project.business_metrics, project.start_date, project.end_date)}</div>
+    <div class="project-data-summary"><div><span>Faturamento desta entrega</span><strong id="project-current-revenue">${brl(currentTotal)}</strong></div><div><span>Faturamento da continuidade</span><strong id="project-chain-revenue">${brl(historyTotal)}</strong></div><div><span>Entregas acompanhadas</span><strong>${chain.length}</strong></div></div>
+    ${chain.length > 1 ? `<div class="project-continuity-history"><strong>Histórico da continuidade</strong>${chain.map((item) => `<span>${esc(item.name || item.client_name || "Entrega")} <b>${brl(deliveryMetricsTotal(item))}</b></span>`).join("")}</div>` : ""}
+    <div id="project-business-metrics">${projectBusinessMetricsHtml(project.business_metrics, project.start_date, project.end_date, cache, channels)}</div>
   </div>`;
 }
 
 function wireProjectDataModule(project) {
   projectMonthKeys(project.start_date, project.end_date, project.business_metrics)
     .forEach((month) => wireMultiPicker(`business-suppliers-${month}`));
+  const refreshTotals = () => {
+    let grandTotal = 0;
+    const channelTotals = new Map();
+    document.querySelectorAll("[data-business-month]").forEach((row) => {
+      let monthTotal = 0;
+      row.querySelectorAll(".business-channel-revenue").forEach((input) => {
+        const value = Number(input.value || 0);
+        monthTotal += value;
+        channelTotals.set(input.dataset.businessChannel, (channelTotals.get(input.dataset.businessChannel) || 0) + value);
+      });
+      grandTotal += monthTotal;
+      const totalCell = row.querySelector("[data-business-month-total]");
+      if (totalCell) totalCell.textContent = brl(monthTotal);
+    });
+    document.querySelectorAll("[data-business-channel-total]").forEach((cell) => { cell.textContent = brl(channelTotals.get(cell.dataset.businessChannelTotal) || 0); });
+    const grandCell = document.querySelector("[data-business-grand-total]");
+    if (grandCell) grandCell.textContent = brl(grandTotal);
+    const currentCell = document.getElementById("project-current-revenue");
+    if (currentCell) currentCell.textContent = brl(grandTotal);
+    const chainCell = document.getElementById("project-chain-revenue");
+    if (chainCell) chainCell.textContent = brl(deliveryContinuityChain(project).filter((item) => item.id !== project.id).reduce((total, item) => total + deliveryMetricsTotal(item), 0) + grandTotal);
+  };
+  document.querySelectorAll(".business-channel-revenue").forEach((input) => input.addEventListener("input", refreshTotals));
   document.getElementById("project-data-save")?.addEventListener("click", async (event) => {
     if (!requireCurrentUserPermission("projects", "edit", "Entregas")) return;
     const button = event.currentTarget;
@@ -4101,6 +4240,7 @@ function renderTaskTable(tasks) {
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
       <td class="compact-multi-cell">${stackedCell(responsibilityNameList(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
+      <td>${taskReferencesHtml(task)}</td>
       <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
       <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
       <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
@@ -4117,8 +4257,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="23" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="24" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -4317,7 +4457,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
   objectives: ["Objetivo", "Critério de conclusão", "Comentários", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
@@ -4336,6 +4476,7 @@ function projectSectionValues(item, tasks = []) {
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
       responsibilityNames(item.assignee_ids, item.owner_id, item.assignee_job_titles, item.assign_to_client),
+      [...normalizeIdList(item.document_ids).map((id) => taskDocumentOptions().find((option) => option.value === id)?.label || "Documento"), ...normalizeIdList(item.custom_table_ids).map((id) => taskTableOptions().find((option) => option.value === id)?.label || "Tabela")].join(", ") || "—",
       taskPlannedStart(item) ? dt(taskPlannedStart(item)) : "—",
       taskPlannedEnd(item) ? dt(taskPlannedEnd(item)) : "—",
       item.actual_start_date ? dt(item.actual_start_date) : "—",
@@ -4665,7 +4806,6 @@ function openActivityChecklist(taskId) {
     overlay.innerHTML = `<aside class="activity-form-drawer"><h3>Checklist<button class="modal-close-x" id="activity-checklist-close" title="Fechar">✕</button></h3><div class="checklist-panel-body" id="activity-checklist-body"></div></aside>`;
     fullModal.appendChild(overlay);
     const close = () => { overlay.remove(); renderProjectBoard(projectBoardState.projectId); };
-    overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
     document.getElementById("activity-checklist-close").addEventListener("click", close);
   } else {
     sidePanel(`Checklist · ${activityDisplayName(task)}`, '<div class="checklist-panel-body" id="activity-checklist-body"></div>', { closeOnOverlay: true });
@@ -4722,8 +4862,9 @@ function openTaskDeliveryPicker() {
   });
 }
 
-function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
+async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   if (!requireCurrentUserPermission("activities", editId ? "edit" : "create", "Tarefas")) return;
+  await ensureTaskReferenceSources();
   document.getElementById("project-task-drawer-overlay")?.remove();
   const tasks = projectTasks(projectId);
   const current = tasks.find((task) => task.id === editId) || {};
@@ -4740,6 +4881,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
   const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
+  const selectedDocuments = new Set(normalizeIdList(current.document_ids));
+  const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(objectives.map((item) =>
     `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.recurrence || "once") ? " selected" : ""}>${label}</option>`).join("");
@@ -4763,6 +4906,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
+      <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("project-task-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
+      <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("project-task-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
       <div class="field"><label>Início previsto</label><input id="project-task-planned-start" type="date" value="${esc(current.planned_start_date || "")}"></div>
       <div class="field"><label>Término previsto</label><input id="project-task-planned-end" type="date" value="${esc(taskPlannedEnd(current) || "")}"></div>
       <div class="field"><label>Início real</label><input id="project-task-actual-start" type="date" value="${esc(current.actual_start_date || "")}"></div>
@@ -4775,12 +4920,13 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
   const close = () => overlay.remove();
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
   document.getElementById("project-task-close").addEventListener("click", close);
   document.getElementById("project-task-cancel").addEventListener("click", close);
   wireMultiPicker("project-task-dependencies");
   wireMultiPicker("project-task-assignees");
   wireMultiPicker("project-task-assignee-job-titles");
+  wireMultiPicker("project-task-documents");
+  wireMultiPicker("project-task-tables");
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
@@ -4822,6 +4968,8 @@ function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = null) {
       assignee_ids: assignees.ids,
       assignee_job_titles: assigneeJobTitles,
       assign_to_client: assignees.assignToClient,
+      document_ids: multiPickerValues("project-task-documents"),
+      custom_table_ids: multiPickerValues("project-task-tables"),
       planned_start_date: plannedStart,
       planned_end_date: plannedEnd,
       actual_start_date: actualStart,
@@ -5876,12 +6024,10 @@ function shell(title, inner, opts = {}) {
   modalCloseOverride = typeof opts.onClose === "function" ? opts.onClose : null;
   const closeAction = () => modalCloseOverride ? modalCloseOverride() : closeModal();
   document.getElementById("shell-close").addEventListener("click", closeAction);
-  document.getElementById("ov").addEventListener("click", (e) => { if (e.target.id === "ov") closeAction(); });
   document.addEventListener("keydown", escCloseHandler);
 }
-// Painel lateral (desliza da direita, altura cheia). Fecha pelo X no topo
-// ou por ESC sempre; o clique fora só fecha quando opts.closeOnOverlay é
-// true (a conversa não usa isso — só X/ESC — mas o form de negócio usa).
+// Painel lateral (desliza da direita, altura cheia). Modais fecham apenas
+// pelo X, por ações explícitas ou por ESC; cliques no fundo são ignorados.
 function sidePanel(title, inner, opts = {}) {
   modalCloseOverride = typeof opts.onClose === "function" ? opts.onClose : null;
   document.getElementById("modal-root").innerHTML =
@@ -5892,9 +6038,6 @@ function sidePanel(title, inner, opts = {}) {
   const closeAction = () => modalCloseOverride ? modalCloseOverride() : closeModal();
   document.getElementById("side-close").addEventListener("click", closeAction);
   document.addEventListener("keydown", escCloseHandler);
-  if (opts.closeOnOverlay) {
-    document.getElementById("ov").addEventListener("click", (e) => { if (e.target.id === "ov") closeAction(); });
-  }
   return closeAction;
 }
 
@@ -5916,7 +6059,6 @@ function nestedSidePanel(title, inner, opts = {}) {
   document.getElementById("modal-root").appendChild(overlay);
   modalLayerStack.push(closeAction);
   overlay.querySelector(".nested-side-close").addEventListener("click", closeAction);
-  if (opts.closeOnOverlay) overlay.addEventListener("click", (event) => { if (event.target === overlay) closeAction(); });
   return closeAction;
 }
 
@@ -5938,7 +6080,6 @@ function nestedCenterModal(title, inner, opts = {}) {
   document.getElementById("modal-root").appendChild(overlay);
   modalLayerStack.push(closeAction);
   overlay.querySelector(".nested-modal-close").addEventListener("click", closeAction);
-  if (opts.closeOnOverlay) overlay.addEventListener("click", (event) => { if (event.target === overlay) closeAction(); });
   return closeAction;
 }
 
@@ -5956,6 +6097,7 @@ function openForm(tab, id, opts = {}) {
     if (f.embedded) return "";
     let val = record ? record[f.k] : f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
+    if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
     const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
     let ctrl;
     if (f.type === "multi") {
@@ -6424,11 +6566,16 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (body.status === "inactive" && !body.substatus) { toast("Selecione o substatus da entrega inativa: Suporte ou Encerrado.", true); return; }
     const current = id ? cache.projects.find((project) => project.id === id) : null;
     if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
-    if (current?.store_platform && body.store_platform !== current.store_platform) { toast("A loja ativada não pode ser alterada ou removida.", true); return; }
+    const currentStores = normalizeTextList(current?.store_platforms).length ? normalizeTextList(current.store_platforms) : normalizeTextList(current?.store_platform ? [current.store_platform] : []);
+    const removedStore = currentStores.find((channel) => !normalizeTextList(body.store_platforms).includes(channel));
+    if (removedStore) { toast(`A loja ${removedStore} já está ativada e não pode ser removida.`, true); return; }
     const removedMarketplace = normalizeTextList(current?.marketplace_channels).find((channel) => !normalizeTextList(body.marketplace_channels).includes(channel));
     if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
     const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
+    const previousDelivery = body.continuation_of_id ? cache.projects.find((project) => project.id === body.continuation_of_id) : null;
+    if (body.continuation_of_id === id) { toast("Uma entrega não pode ser continuidade dela mesma.", true); return; }
+    if (previousDelivery && body.company_id && previousDelivery.company_id !== body.company_id) { toast("A continuidade deve pertencer à mesma empresa.", true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { toast(`Preencha: ${req.label}`, true); return; }
@@ -6694,7 +6841,6 @@ function openPipelineDrawer(editId = "new") {
     <div id="pipeline-drawer-body"></div>
   </aside>`;
   document.querySelector("#ov .modal.full")?.appendChild(overlay);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) closePipelineDrawer(); });
   document.getElementById("pipeline-drawer-close")?.addEventListener("click", closePipelineDrawer);
   renderPipelineDrawer();
 }
@@ -7679,7 +7825,6 @@ function openRegistrationProductPicker(section) {
   const close = () => overlay.remove();
   document.getElementById("registration-picker-close").addEventListener("click", close);
   document.getElementById("registration-picker-cancel").addEventListener("click", close);
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
   document.getElementById("registration-picker-next").addEventListener("click", () => {
     const productId = document.getElementById("registration-product").value;
     if (!productId) { toast("Cadastre um produto primeiro.", true); return; }
