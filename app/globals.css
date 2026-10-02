@@ -1069,6 +1069,14 @@
   .input-action-row input{flex:1 1 auto;min-width:0}
   .input-action-row .btn{flex:0 0 auto;white-space:nowrap}
   .field.check{flex-direction:row;align-items:center;gap:8px}
+  .field-disabled{opacity:.55}
+  .business-metrics-table{width:100%;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--panel)}
+  .business-metrics-table table{width:100%;min-width:760px;border-collapse:collapse}
+  .business-metrics-table th,.business-metrics-table td{position:static;padding:8px 10px;border-right:1px solid var(--border2);border-bottom:1px solid var(--border2);background:var(--panel);white-space:normal}
+  .business-metrics-table th{background:var(--panel2);font-size:10px;color:var(--muted);text-align:left}
+  .business-metrics-table th:nth-child(1){width:150px}.business-metrics-table th:nth-child(2){width:150px}.business-metrics-table th:nth-child(3){width:100px}
+  .business-metrics-table tr:last-child td{border-bottom:0}.business-metrics-table th:last-child,.business-metrics-table td:last-child{border-right:0}
+  .business-metrics-table input{min-width:0;width:100%}
   .modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border2)}
   .panel-list{padding:16px 18px;color:var(--muted);line-height:1.6}
   .task-comments-open{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:4px;padding:4px 8px;font:inherit;font-weight:700;white-space:nowrap;cursor:pointer}
