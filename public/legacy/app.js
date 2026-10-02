@@ -4143,6 +4143,21 @@ function deliveryMetricsTotal(project) {
   return normalizeProjectBusinessMetrics(project?.business_metrics).reduce((total, row) => total + projectMetricRevenue(row), 0);
 }
 
+function deliveryContinuityHistoryHtml(chain, currentId) {
+  const previous = chain.filter((item) => item.id !== currentId);
+  if (!previous.length) return "";
+  const rows = previous.flatMap((delivery) => {
+    const metrics = normalizeProjectBusinessMetrics(delivery.business_metrics);
+    if (!metrics.length) return [`<tr><td>${esc(delivery.name || delivery.client_name || "Entrega")}</td><td>—</td><td>${brl(0)}</td><td>—</td><td>—</td><td>Sem dados mensais.</td></tr>`];
+    return metrics.map((metric) => {
+      const month = new Date(`${metric.month}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+      const suppliers = companyNames(metric.supplier_company_ids, cache);
+      return `<tr><td>${esc(delivery.name || delivery.client_name || "Entrega")}</td><td>${esc(month)}</td><td>${brl(projectMetricRevenue(metric))}</td><td>${metric.skus == null ? "—" : esc(metric.skus)}</td><td>${esc(suppliers)}</td><td>${esc(metric.observations || "—")}</td></tr>`;
+    });
+  }).join("");
+  return `<section class="project-continuity-history"><strong>Histórico da continuidade</strong><div class="business-metrics-table"><table><thead><tr><th>ENTREGA</th><th>MÊS</th><th>FATURAMENTO</th><th>SKUs</th><th>FORNECEDORES</th><th>OBSERVAÇÕES</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
 function renderProjectDataModule(project) {
   const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
   const product = cache.productById[project.product_id]?.name || "Sem produto";
@@ -4154,7 +4169,7 @@ function renderProjectDataModule(project) {
     <div class="project-data-header"><div><strong>Dados mensais do negócio</strong><span>${esc(client)} · ${esc(product)}</span></div><button class="btn primary" id="project-data-save">Salvar dados</button></div>
     <div class="project-data-period"><span>Período da entrega</span><strong>${project.start_date ? dt(project.start_date) : "—"} a ${project.end_date ? dt(project.end_date) : "—"}</strong></div>
     <div class="project-data-summary"><div><span>Faturamento desta entrega</span><strong id="project-current-revenue">${brl(currentTotal)}</strong></div><div><span>Faturamento da continuidade</span><strong id="project-chain-revenue">${brl(historyTotal)}</strong></div><div><span>Entregas acompanhadas</span><strong>${chain.length}</strong></div></div>
-    ${chain.length > 1 ? `<div class="project-continuity-history"><strong>Histórico da continuidade</strong>${chain.map((item) => `<span>${esc(item.name || item.client_name || "Entrega")} <b>${brl(deliveryMetricsTotal(item))}</b></span>`).join("")}</div>` : ""}
+    ${deliveryContinuityHistoryHtml(chain, project.id)}
     <div id="project-business-metrics">${projectBusinessMetricsHtml(project.business_metrics, project.start_date, project.end_date, cache, channels)}</div>
   </div>`;
 }
