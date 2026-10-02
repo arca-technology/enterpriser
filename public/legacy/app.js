@@ -7399,6 +7399,14 @@ function wireRegistrationTable() {
       applyRegistrationTableState(table);
     });
   });
+  if (registrationsState.section === "activities") {
+    const prefs = secondaryColumnPrefs("registrations:activities");
+    let changed = false;
+    ["c0", "c1"].forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(prefs, key)) { prefs[key] = false; changed = true; }
+    });
+    if (changed) saveSecondaryColumnPrefs();
+  }
   applyRegistrationColumnPreferences(table);
   applyRegistrationTableState(table);
   wireSecondaryTableSelection(table, `registrations:${registrationsState.section}`);
