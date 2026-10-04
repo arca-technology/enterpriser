@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ENTERPRISER • CRM</title>
+<title>ENTERPRISER • CMS</title>
 <style>
   :root{
     --bg:#0a0e17; --panel:#0d1424; --panel2:#0f1830; --row:#111a2c; --row-alt:#0b1220; --row-hover:#142039;
@@ -20,7 +20,7 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg); color:var(--text);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-family:var(--font-urbanist),Urbanist,sans-serif;
     font-size:13px; display:flex; flex-direction:column; min-height:100vh}
 
   header{position:relative;display:flex;align-items:center;gap:20px;background:var(--panel);
@@ -600,7 +600,7 @@
   .document-slideshow .document-slide.portrait{height:min(82vh,980px)}
   .document-slideshow-controls{position:absolute;right:0;bottom:10px;left:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#fff}
   .document-slideshow-controls span{min-width:64px;text-align:center;font-size:11px;font-weight:700}
-  .documentation-page{padding:0;background:#fff;color:#182033;font-family:Inter,Arial,sans-serif;overflow:auto}
+  .documentation-page{padding:0;background:#fff;color:#182033;font-family:inherit;overflow:auto}
   .documentation-page-header{display:flex;min-height:46px;flex:0 0 46px;align-items:center;justify-content:space-between;gap:18px;padding:0 28px;border-bottom:1px solid #dbe2ec}
   .documentation-system{color:#1f5fbf;font-size:12px;font-weight:800}
   .documentation-module{color:#44516a;font-size:10px;font-weight:700;text-transform:uppercase}
@@ -862,7 +862,7 @@
   .help-content ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;line-height:1.7}
   .help-content b{color:var(--text)}
   .help-intro{display:flex;align-items:baseline;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--border2)}
-  .help-intro strong{font-size:15px}.help-intro span{color:var(--muted);font-size:12px}
+  .help-intro strong{font-size:15px;font-weight:800}.help-intro span{color:var(--muted);font-size:12px}
   .help-index{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:12px 0 8px;border-bottom:1px solid var(--border2)}
   .help-index a{color:var(--muted);border:1px solid var(--border);background:var(--panel2);border-radius:5px;padding:6px 9px;font-size:10.5px;font-weight:700;text-decoration:none;white-space:nowrap;text-transform:uppercase}
   .help-index a:hover{color:var(--text);border-color:var(--blue)}
@@ -1208,16 +1208,16 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
 </head>
 <body>
   <div class="boot-gate" id="boot-gate" role="status" aria-live="polite">
-    <div class="boot-panel"><div class="auth-brand">ENTERPRISER <span>• CRM</span></div><div class="boot-progress" aria-hidden="true"></div><span>Carregando</span></div>
+    <div class="boot-panel"><div class="auth-brand">ENTERPRISER <span>• CMS</span></div><div class="boot-progress" aria-hidden="true"></div><span>Carregando</span></div>
   </div>
   <div class="privacy-gate" id="privacy-gate" hidden>
     <section class="privacy-panel" aria-labelledby="privacy-title">
-      <div class="auth-brand">ENTERPRISER <span>• CRM</span></div>
+      <div class="auth-brand">ENTERPRISER <span>• CMS</span></div>
       <h1 id="privacy-title">Privacidade e uso de dados</h1>
-      <p>Antes de usar o CRM, confirme que você compreende como os dados são tratados:</p>
+      <p>Antes de usar o CMS, confirme que você compreende como os dados são tratados:</p>
       <ul>
-        <li>Dados cadastrados ou importados, como nomes, e-mails, telefones, empresas, negociações e tarefas, são armazenados no banco Supabase do CRM.</li>
-        <li>Na versão web, o CRM roda no navegador e conversa diretamente com o Supabase para autenticação, cadastros, negócios, entregas e tarefas.</li>
+        <li>Dados cadastrados ou importados, como nomes, e-mails, telefones, empresas, negociações e tarefas, são armazenados no banco Supabase do CMS.</li>
+        <li>Na versão web, o CMS roda no navegador e conversa diretamente com o Supabase para autenticação, cadastros, negócios, entregas e tarefas.</li>
         <li>Conversas podem ser importadas manualmente por arquivos exportados. A captura automática de WhatsApp Web, Reddit Chat e Google Contatos fica reservada à extensão Chrome.</li>
         <li>Os dados são usados exclusivamente para organizar o relacionamento comercial e as entregas. Não vendemos dados e não os usamos para publicidade.</li>
       </ul>
@@ -1228,7 +1228,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   </div>
   <div class="auth-gate" id="auth-gate" hidden>
     <form class="auth-panel" id="login-form">
-      <div class="auth-brand">ENTERPRISER <span>• CRM</span></div>
+      <div class="auth-brand">ENTERPRISER <span>• CMS</span></div>
       <h1>Entrar</h1>
       <p class="auth-copy">Use o acesso fornecido pelo administrador.</p>
       <div class="field"><label for="login-email">E-mail</label><input id="login-email" type="email" autocomplete="username" required></div>
@@ -1238,7 +1238,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </form>
   </div>
   <header>
-    <button class="brand-home active" id="brand-home" title="Ir para Home">ENTERPRISER <span>• CRM</span></button>
+    <button class="brand-home active" id="brand-home" title="Ir para Home">ENTERPRISER <span>• CMS</span></button>
     <nav id="tabs">
       <button class="tab" data-tab="contacts">Pessoas</button>
       <button class="tab" data-tab="companies">Empresas</button>

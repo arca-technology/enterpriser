@@ -14,7 +14,7 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg); color:var(--text);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-family:var(--font-urbanist),Urbanist,sans-serif;
     font-size:13px; display:flex; flex-direction:column; min-height:100vh}
 
   header{position:relative;display:flex;align-items:center;gap:20px;background:var(--panel);
@@ -594,7 +594,7 @@
   .document-slideshow .document-slide.portrait{height:min(82vh,980px)}
   .document-slideshow-controls{position:absolute;right:0;bottom:10px;left:0;display:flex;align-items:center;justify-content:center;gap:12px;color:#fff}
   .document-slideshow-controls span{min-width:64px;text-align:center;font-size:11px;font-weight:700}
-  .documentation-page{padding:0;background:#fff;color:#182033;font-family:Inter,Arial,sans-serif;overflow:auto}
+  .documentation-page{padding:0;background:#fff;color:#182033;font-family:inherit;overflow:auto}
   .documentation-page-header{display:flex;min-height:46px;flex:0 0 46px;align-items:center;justify-content:space-between;gap:18px;padding:0 28px;border-bottom:1px solid #dbe2ec}
   .documentation-system{color:#1f5fbf;font-size:12px;font-weight:800}
   .documentation-module{color:#44516a;font-size:10px;font-weight:700;text-transform:uppercase}
@@ -856,7 +856,7 @@
   .help-content ul{margin:6px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;line-height:1.7}
   .help-content b{color:var(--text)}
   .help-intro{display:flex;align-items:baseline;gap:12px;padding-bottom:8px;border-bottom:1px solid var(--border2)}
-  .help-intro strong{font-size:15px}.help-intro span{color:var(--muted);font-size:12px}
+  .help-intro strong{font-size:15px;font-weight:800}.help-intro span{color:var(--muted);font-size:12px}
   .help-index{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:12px 0 8px;border-bottom:1px solid var(--border2)}
   .help-index a{color:var(--muted);border:1px solid var(--border);background:var(--panel2);border-radius:5px;padding:6px 9px;font-size:10.5px;font-weight:700;text-decoration:none;white-space:nowrap;text-transform:uppercase}
   .help-index a:hover{color:var(--text);border-color:var(--blue)}

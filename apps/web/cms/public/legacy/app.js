@@ -241,7 +241,7 @@ const PERMISSION_ACTIONS = [
   { id: "delete", label: "Excluir" }, { id: "operate", label: "Operar" }
 ];
 const PERMISSION_GROUPS = [
-  { label: "CRM", modules: [
+  { label: "CMS", modules: [
     ["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"],
     ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]
   ] },
@@ -570,7 +570,7 @@ async function provisionDeliveryEmail(project, { notify = true } = {}) {
 
 function showDeliveryClientCredentials(credential) {
   if (!credential?.email || !credential?.password) return;
-  const access = `ENTERPRISER • CRM\nEmpresa: ${credential.company || "Cliente"}\nE-mail: ${credential.email}\nSenha: ${credential.password}`;
+  const access = `ENTERPRISER • CMS\nEmpresa: ${credential.company || "Cliente"}\nE-mail: ${credential.email}\nSenha: ${credential.password}`;
   sidePanel("Acesso do cliente", `<div class="panel-list"><b>Acesso criado automaticamente</b><p>Copie estes dados agora. Por segurança, a senha não poderá ser consultada depois.</p></div>
     <div class="form">
       <div class="field full"><label>Empresa</label><input value="${esc(credential.company || "Cliente")}" readonly></div>
@@ -1786,7 +1786,7 @@ function columns(tab, c) {
       { k: "imported_at", h: "DATA REGISTRO" },
       { k: "chat_url", h: "URL CHAT", fmt: (v) => safeHttpUrl(v) ? `<a href="${esc(safeHttpUrl(v))}" target="_blank" rel="noopener">Abrir</a>` : "—", csv: (v) => v || "" },
       { k: "origin", h: "DADO" },
-      { k: "conversation", h: "", fmt: (_v, row) => `<button class="rowbtn open-chat" data-id="${esc(row.id)}" title="Ver mensagens no CRM">Ver</button>` }];
+      { k: "conversation", h: "", fmt: (_v, row) => `<button class="rowbtn open-chat" data-id="${esc(row.id)}" title="Ver mensagens no CMS">Ver</button>` }];
   }
 }
 
@@ -4116,7 +4116,7 @@ function openProjectBoard(projectId) {
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Entrega · ${esc(project.name || "Sem nome")}</em></span>`
+    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Entrega · ${esc(project.name || "Sem nome")}</em></span>`
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
     projectBoardState.section = button.dataset.projectSection;
@@ -6808,8 +6808,8 @@ function helpContentHtml() {
     ? "Você está usando a extensão Chrome, que acrescenta captura de WhatsApp Web e Reddit Chat e importação do Google Contatos."
     : "Você está usando a versão web. Captura automática de WhatsApp Web e Reddit Chat e importação do Google Contatos permanecem exclusivas da extensão Chrome.";
   return `<div class="help-content">
-    <div class="help-intro"><strong>ENTERPRISER • CRM</strong><span>Manual das funções disponíveis</span></div>
-    <p>O CRM reúne relacionamento comercial, vendas e execução das entregas. ${platformText}</p>
+    <div class="help-intro"><strong>ENTERPRISER • CMS</strong><span>Manual das funções disponíveis</span></div>
+    <p>O CMS reúne relacionamento comercial, vendas e execução das entregas. ${platformText}</p>
     <nav class="help-index" aria-label="Índice da ajuda">
       <a href="#help-start">Acesso e navegação</a><a href="#help-modules">Módulos</a><a href="#help-tables">Tabelas e filtros</a>
       <a href="#help-sales">Vendas</a><a href="#help-catalog">Cadastros</a><a href="#help-deliveries">Entregas</a>
@@ -6817,7 +6817,7 @@ function helpContentHtml() {
     </nav>
 
     <section class="help-section" id="help-start"><h4>Acesso e navegação</h4>
-      <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CRM. O tema claro ou escuro fica salvo neste navegador.</p></div>
+      <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CMS. O tema claro ou escuro fica salvo neste navegador.</p></div>
       <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, chat interno, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
       <p class="help-note">Notificações ainda não possuem automação ativa. O LOG aparece apenas para administradores.</p>
     </section>
@@ -6843,7 +6843,7 @@ function helpContentHtml() {
 
     <section class="help-section" id="help-sales"><h4>Negócios e pipelines</h4>
       <p>Cadastre até cinco pipelines, cada um com nome e etapas próprias, em <b>Cadastros → Pipeline</b>. No Quadro de Negócios, arraste cartões entre etapas, Ganho e Perdido.</p>
-      <p><b>Negócio ganho:</b> ao marcar um negócio como ganho, o CRM cria a Entrega vinculada ao cliente e ao produto. O nome, período e tipo são formados a partir dos dados comerciais e do produto.</p>
+      <p><b>Negócio ganho:</b> ao marcar um negócio como ganho, o CMS cria a Entrega vinculada ao cliente e ao produto. O nome, período e tipo são formados a partir dos dados comerciais e do produto.</p>
       <p><b>Automação do produto:</b> tarefas, objetivos e metas configurados no produto são copiados para a nova entrega, preservando responsáveis, recorrências, checklists e dependências.</p>
     </section>
 
@@ -6865,18 +6865,18 @@ function helpContentHtml() {
     </ul></section>
 
     <section class="help-section" id="help-conversations"><h4>Conversas e integrações</h4>
-      <p>Na web, importe arquivos <b>.txt</b> ou <b>.zip</b> exportados do WhatsApp. Abra o histórico dentro do CRM, associe a uma pessoa ou selecione várias conversas para criar uma negociação em lote.</p>
+      <p>Na web, importe arquivos <b>.txt</b> ou <b>.zip</b> exportados do WhatsApp. Abra o histórico dentro do CMS, associe a uma pessoa ou selecione várias conversas para criar uma negociação em lote.</p>
       <p>Na extensão Chrome, WhatsApp Web e Reddit Chat podem alimentar a fila automaticamente. Google Contatos permite selecionar pessoas, criar ou atualizar contatos e criar empresas identificadas pelos dados do Google.</p>
-      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento. O Chat do cabeçalho permite conversas internas entre usuários ativos do CRM.</p>
+      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento. O Chat do cabeçalho permite conversas internas entre usuários ativos do CMS.</p>
     </section>
 
     <section class="help-section" id="help-tools"><h4>Ferramentas</h4><ul>
       <li><b>Arquivos:</b> catálogo por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data. A busca principal localiza empresas por nome ou CNPJ.</li>
-      <li><b>E-mails:</b> ao criar uma entrega, o CRM cria automaticamente na HostGator uma conta formada pela raiz do CNPJ em <b>@ecommerce365.com.br</b>. A senha pode ser revelada ou copiada nesta tela.</li>
+      <li><b>E-mails:</b> ao criar uma entrega, o CMS cria automaticamente na HostGator uma conta formada pela raiz do CNPJ em <b>@ecommerce365.com.br</b>. A senha pode ser revelada ou copiada nesta tela.</li>
       <li><b>Processos:</b> biblioteca de treinamento organizada por nome, categoria e tags. Cada etapa registra sistema, módulo, submódulo, grupo, tipo, URL e detalhes. O botão de fluxo agrupa as etapas visualmente por módulo, submódulo e grupo.</li>
       <li><b>Documentação:</b> apresentações textuais em slides, com título, páginas, negrito, itálico, cores e alinhamento. Os slides podem ser separados em grupos recolhíveis e os grupos podem ser reordenados por arraste ou pelas setas.</li>
       <li>Busca, classificação, filtros e seleção de colunas funcionam nas tabelas de Arquivos, E-mails, Processos e Documentação.</li>
-    </ul><p class="help-note"><b>Segurança:</b> as credenciais de e-mail são compartilhadas entre os usuários ativos do CRM e a senha permanece criptografada no Supabase. Arquivos, processos e documentos podem ser consultados por usuários ativos e alterados apenas por administradores.</p></section>
+    </ul><p class="help-note"><b>Segurança:</b> as credenciais de e-mail são compartilhadas entre os usuários ativos do CMS e a senha permanece criptografada no Supabase. Arquivos, processos e documentos podem ser consultados por usuários ativos e alterados apenas por administradores.</p></section>
 
     <section class="help-section" id="help-admin"><h4>Administração e suporte</h4><ul>
       <li><b>LOG:</b> administradores consultam as alterações recentes registradas nas principais entidades.</li>
@@ -6888,7 +6888,7 @@ function helpContentHtml() {
   </div>`;
 }
 function openHelpModal() {
-  shell("Ajuda · Como usar o ENTERPRISER • CRM", `${helpContentHtml()}
+  shell("Ajuda · Como usar o ENTERPRISER • CMS", `${helpContentHtml()}
     <div class="modal-foot"><button class="btn" id="cancel">Fechar</button></div>`, { cls: "full" });
   document.getElementById("cancel").addEventListener("click", closeModal);
 }
@@ -7203,7 +7203,7 @@ function userFormHtml() {
     </div>`;
 }
 function userCredentialsHtml() {
-  const access = `ENTERPRISER • CRM\nE-mail: ${umState.email}\nSenha: ${umState.password}`;
+  const access = `ENTERPRISER • CMS\nE-mail: ${umState.email}\nSenha: ${umState.password}`;
   return `<div class="panel-list"><b>Acesso salvo</b><p>Copie os dados agora. Por segurança, a senha não poderá ser consultada depois.</p></div>
     <div class="form">
       <div class="field full"><label>E-mail</label><input value="${esc(umState.email)}" readonly></div>
@@ -7352,7 +7352,7 @@ function openRegistrationsModal(section = "products") {
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Cadastros</em></span>'
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Cadastros</em></span>'
   });
   document.querySelectorAll("[data-registration-tab]").forEach((button) => button.addEventListener("click", () => {
     document.getElementById("registration-filter-dd")?.remove();
@@ -8068,7 +8068,7 @@ function googleFieldMappingHtml() {
   const mapping = googleContactFieldMap();
   const options = (selected) => GOOGLE_CONTACT_TARGET_FIELDS.map((target) => `<option value="${esc(target.value)}"${target.value === selected ? " selected" : ""}>${esc(target.label)}</option>`).join("");
   return `<div class="panel-list">Escolha o destino de cada dado do Google. Empresa e CNPJ continuam reservados para localizar ou criar a empresa vinculada.</div>
-    <div class="table-wrap"><table><thead><tr><th>COLUNA DO GOOGLE</th><th>CAMPO NO CRM</th></tr></thead><tbody>
+    <div class="table-wrap"><table><thead><tr><th>COLUNA DO GOOGLE</th><th>CAMPO NO CMS</th></tr></thead><tbody>
       ${GOOGLE_CONTACT_SOURCE_FIELDS.map((source) => `<tr><td>${esc(source.label)}</td><td><select class="google-map-target" data-source="${esc(source.key)}">${options(mapping[source.key] || "")}</select></td></tr>`).join("")}
       <tr><td>Empresa / CNPJ</td><td><strong>Empresa vinculada</strong> <span class="muted">(fixo)</span></td></tr>
     </tbody></table></div>
@@ -8332,7 +8332,7 @@ function integrationsHtml() {
     </div>
   </div><div class="panel-list">${IS_EXTENSION_CONTEXT
     ? "WhatsApp e Reddit capturam conversas. O Google Contatos importa somente os contatos selecionados para Pessoas."
-    : "A versão web mantém o CRM, login, cadastros, negócios, entregas, tarefas e importação manual de conversas. Captura automática e Google Contatos ficam na extensão Chrome."}</div>`;
+    : "A versão web mantém o CMS, login, cadastros, negócios, entregas, tarefas e importação manual de conversas. Captura automática e Google Contatos ficam na extensão Chrome."}</div>`;
 }
 
 function wireIntegrations() {
@@ -8656,7 +8656,7 @@ function openToolsModal(section = "files") {
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CRM</b><em>Ferramentas</em></span>'
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Ferramentas</em></span>'
   });
   document.querySelectorAll("[data-tools-tab]").forEach((button) => button.addEventListener("click", () => {
     toolsState.section = button.dataset.toolsTab;
@@ -8911,7 +8911,7 @@ function openSocialModal(section = "home") {
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<button class="registration-brand social-home-button" id="social-home-button" type="button" title="Ir para a Home Social">ENTERPRISER <b>• CRM</b><em>Social</em></button>'
+    titleHtml: '<button class="registration-brand social-home-button" id="social-home-button" type="button" title="Ir para a Home Social">ENTERPRISER <b>• CMS</b><em>Social</em></button>'
   });
   document.getElementById("social-home-button").addEventListener("click", () => {
     socialState.section = "home";
@@ -9372,7 +9372,7 @@ function documentGeneratedTitle(documentItem) {
   return [
     type,
     documentItem.category || "Sem categoria",
-    documentItem.system_name || "ENTERPRISER CRM",
+    documentItem.system_name || "ENTERPRISER CMS",
     documentItem.module_name || "Geral"
   ].map((value) => String(value).trim().toLocaleUpperCase("pt-BR")).join("_");
 }
@@ -9453,7 +9453,7 @@ function toolDocumentValue(documentItem, key) {
   if (key === "tags") return normalizeTextList(documentItem.tags).join(", ");
   if (key === "orientation") return documentOrientation(documentItem) === "portrait" ? "Retrato" : "Paisagem";
   if (key === "document_type") return DOCUMENT_TYPE_LABELS[documentItem.document_type] || DOCUMENT_TYPE_LABELS.documentation;
-  if (key === "system_name") return String(documentItem.system_name || "ENTERPRISER CRM");
+  if (key === "system_name") return String(documentItem.system_name || "ENTERPRISER CMS");
   if (key === "updated_at") return documentItem.updated_at
     ? new Date(documentItem.updated_at).toLocaleString("pt-BR")
     : "—";
@@ -10042,7 +10042,7 @@ function applyDocumentReadingDimensions(stage, orientation, slideFormat) {
 function documentPageBreadcrumbParts(documentItem, page) {
   if (Array.isArray(page.breadcrumb_parts)) return page.breadcrumb_parts;
   if (page.breadcrumb) return String(page.breadcrumb).split(">").map((item) => item.trim()).filter(Boolean);
-  return [documentItem.system_name || "ENTERPRISER CRM", documentItem.module_name, page.subject].filter(Boolean);
+  return [documentItem.system_name || "ENTERPRISER CMS", documentItem.module_name, page.subject].filter(Boolean);
 }
 
 function documentPageBreadcrumb(documentItem, page) {
@@ -10074,7 +10074,7 @@ function documentBlockMarkup(block, { editable = false, selectedBlockId = null }
 }
 
 function documentPageMarkup(documentItem, page, index, total, { editable = false, selectedBlockId = null } = {}) {
-  const systemName = documentItem.system_name || "ENTERPRISER CRM";
+  const systemName = documentItem.system_name || "ENTERPRISER CMS";
   const moduleName = documentItem.module_name || documentItem.category || "GERAL";
   const subject = page.subject || page.title || `Página ${index + 1}`;
   return `<header class="documentation-page-header"><strong class="documentation-system">${esc(systemName)}</strong><span class="documentation-module">${esc(moduleName)}</span></header>
@@ -10391,7 +10391,7 @@ function openToolDocumentForm(id = null) {
     <div class="document-editor-info">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
-      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CRM")}" placeholder="Sistema">
+      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CMS")}" placeholder="Sistema">
       <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
     </div>
@@ -10639,7 +10639,7 @@ function documentationEditorDocument() {
   const state = documentationEditorState;
   return {
     ...state.current,
-    system_name: document.getElementById("tool-document-system")?.value.trim() || "ENTERPRISER CRM",
+    system_name: document.getElementById("tool-document-system")?.value.trim() || "ENTERPRISER CMS",
     module_name: document.getElementById("tool-document-module")?.value.trim() || "GERAL",
     category: document.getElementById("tool-document-category")?.value.trim() || ""
   };
@@ -10836,7 +10836,7 @@ async function cloneToolDocument(id) {
   }));
   const body = {
     title: documentGeneratedTitle(source),
-    system_name: source.system_name || "ENTERPRISER CRM",
+    system_name: source.system_name || "ENTERPRISER CMS",
     module_name: source.module_name || null,
     document_type: source.document_type || "documentation",
     category: source.category || null,
@@ -11267,10 +11267,10 @@ function openToolEmailForm(id = null) {
   const editingServer = usesServer && Boolean(id);
   const editorHtml = editingServer ? `<div class="form">
     <div class="field full"><label>E-mail</label><input value="${esc(current.email || "")}" disabled></div>
-    <div class="field full"><label>Senha registrada no CRM</label><input id="tool-email-password" type="password" value="" autocomplete="new-password" placeholder="Deixe em branco para manter a atual"></div>
+    <div class="field full"><label>Senha registrada no CMS</label><input id="tool-email-password" type="password" value="" autocomplete="new-password" placeholder="Deixe em branco para manter a atual"></div>
     <div class="field full"><label>Tags</label><input id="tool-email-tags" value="${esc((current.tags || []).join(", "))}" placeholder="Excluir, Alterar senha"></div>
-    <div class="field full"><div class="panel-list"><strong>Atenção</strong><span>Alterar a senha aqui atualiza apenas o registro do CRM. A senha da conta no painel da HostGator não será modificada.</span></div></div>
-  </div><div class="modal-foot"><button class="btn" id="tool-email-cancel">Cancelar</button><button class="btn primary" id="tool-email-save">Salvar no CRM</button></div>` : `<div class="form">
+    <div class="field full"><div class="panel-list"><strong>Atenção</strong><span>Alterar a senha aqui atualiza apenas o registro do CMS. A senha da conta no painel da HostGator não será modificada.</span></div></div>
+  </div><div class="modal-foot"><button class="btn" id="tool-email-cancel">Cancelar</button><button class="btn primary" id="tool-email-save">Salvar no CMS</button></div>` : `<div class="form">
     <div class="field full"><label>CNPJ</label><input id="tool-email-cnpj" value="${esc(current.cnpj || "")}"></div>
     <div class="field full"><label>Cliente</label><input id="tool-email-client" value="${esc(current.client || "")}"></div>
     ${usesServer ? '<div class="field full"><span class="muted">O endereço usará a raiz do CNPJ e a senha será gerada automaticamente.</span></div>' : `<div class="field full"><label>Email</label><input id="tool-email-address" type="email" value="${esc(current.email || "")}"></div><div class="field full"><label>Senha</label><input id="tool-email-password" type="password" value="${esc(current.password || "")}" autocomplete="new-password"></div>`}
@@ -11299,11 +11299,11 @@ function openToolEmailForm(id = null) {
         else remoteToolEmails.unshift(result.account);
         remoteToolEmailsLoaded = true;
         remoteToolEmailsLoadedAt = Date.now();
-        toast("Dados salvos no CRM. A senha da HostGator não foi alterada.");
+        toast("Dados salvos no CMS. A senha da HostGator não foi alterada.");
         returnToEmails();
       } catch (err) {
         button.disabled = false;
-        button.textContent = "Salvar no CRM";
+        button.textContent = "Salvar no CMS";
         toast("Erro ao atualizar e-mail · " + err.message, true);
       }
     });
@@ -11379,7 +11379,7 @@ function toggleToolEmailSecret(id) {
 
 async function copyToolEmailSecret(id) {
   const account = toolEmailRows().find((item) => item.id === id);
-  if (!account?.password) { toast("A senha dessa conta não está registrada no CRM.", true); return; }
+  if (!account?.password) { toast("A senha dessa conta não está registrada no CMS.", true); return; }
   try {
     await navigator.clipboard.writeText(account.password);
     toast("Senha copiada.");
@@ -11825,7 +11825,7 @@ function handleAction(action) {
     return;
   }
   if (action === "logout") {
-    if (window.confirm("Deseja sair do ENTERPRISER CRM?")) signOut();
+    if (window.confirm("Deseja sair do ENTERPRISER CMS?")) signOut();
     return;
   }
 }
@@ -11947,7 +11947,7 @@ async function init() {
         || cache.users.find((user) => String(user.email || "").toLowerCase() === String(session?.user?.email || "").toLowerCase());
       if (!currentProfile || currentProfile.status !== "active") {
         storeAuthSession(null);
-        showLogin("Este usuário não possui um perfil ativo no CRM.");
+        showLogin("Este usuário não possui um perfil ativo no CMS.");
         return;
       }
       if (currentUserIsAdmin()) {
