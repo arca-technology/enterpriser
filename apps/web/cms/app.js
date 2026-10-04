@@ -4562,13 +4562,17 @@ function projectFilterStripHtml() {
 
 function projectToolbarHtml(client, product, total) {
   const sectionLabel = projectBoardState.section === "activities" ? "tarefa(s)" : projectBoardState.section === "objectives" ? "objetivo(s)" : "meta(s)";
+  const primaryModes = new Set(["table", "kanban", "calendar", "gantt"]);
+  const activePrimaryMode = primaryModes.has(projectBoardState.view) ? projectBoardState.view : "table";
+  const activePrimaryLabel = VIEW_MODES.find((mode) => mode.id === activePrimaryMode)?.label || "Tabela";
   return `<div class="project-head project-data-toolbar">
     <div class="registration-toolbar-left"><div class="project-meta"><span>${esc(client)}</span><span>·</span><span>${esc(product)}</span><span>·</span><span>${total} ${sectionLabel}</span></div></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
     <div class="registration-toolbar-right"><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
-      <button class="view project-mode${projectBoardState.view === "table" ? " active" : ""}" data-project-mode="table">Tabela</button>
+      <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização"><span>${esc(activePrimaryLabel.toUpperCase())}</span><span class="chevron">▾</span></button>
       <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix">Matriz</button>
       <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard">Dashboard</button>
+      <button class="btn project-data-btn" type="button" title="Dados">⬆⬇</button>
     </div>
   </div>`;
 }
@@ -4590,7 +4594,11 @@ function renderProjectBoard(projectId) {
   const view = projectBoardState.view || "table";
   let body = "";
   if (projectBoardState.section === "activities") {
-    body = view === "table" ? renderTaskTable(rows) : view === "matrix" ? renderTaskMatrix(rows) : renderTaskDashboard(rows);
+    body = view === "table" ? renderTaskTable(rows)
+      : ["matrix", "kanban"].includes(view) ? renderTaskMatrix(rows)
+      : view === "calendar" ? renderProjectTaskCalendar(rows)
+      : view === "gantt" ? renderProjectTaskGantt(rows)
+      : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
     body = view === "table" ? renderDeliveryObjectives(projectId, allTasks, rows)
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "objectives", allTasks)
@@ -4835,6 +4843,7 @@ function openActivityChecklist(taskId) {
 }
 
 function openProjectViewMenu() {
+  document.getElementById("project-data-dd")?.remove();
   document.getElementById("project-view-dd")?.remove();
   const button = document.getElementById("project-view-menu-btn");
   if (!button) return;
@@ -4844,11 +4853,14 @@ function openProjectViewMenu() {
   panel.className = "view-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 198))}px`;
   panel.style.top = `${rect.bottom + 5}px`;
-  panel.innerHTML = VIEW_MODES.map((mode) => `<button class="view-option${projectBoardState.view === mode.id ? " active" : ""}" data-view="${mode.id}">
+  panel.innerHTML = VIEW_MODES.map((mode) => {
+    const available = mode.id === "table" || projectBoardState.section === "activities";
+    return `<button class="view-option${projectBoardState.view === mode.id ? " active" : ""}" data-view="${mode.id}"${available ? "" : " disabled"}>
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${projectBoardState.view === mode.id ? "✓" : ""}</span>
-  </button>`).join("");
+  </button>`;
+  }).join("");
   document.body.appendChild(panel);
-  panel.querySelectorAll(".view-option").forEach((option) => option.addEventListener("click", () => {
+  panel.querySelectorAll(".view-option:not(:disabled)").forEach((option) => option.addEventListener("click", () => {
     projectBoardState.view = option.dataset.view;
     projectBoardState.page = 1;
     panel.remove();
@@ -4857,6 +4869,50 @@ function openProjectViewMenu() {
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !button.contains(event.target)) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
+}
+
+function exportProjectSectionCSV() {
+  const section = projectBoardState.section;
+  const labels = PROJECT_TABLE_LABELS[section] || [];
+  const tasks = projectTasks(projectBoardState.projectId);
+  const rows = projectSectionRows(projectBoardState.projectId, section);
+  const columns = labels.map((label, index) => ({
+    k: `c${index}`,
+    h: label,
+    csv: (_value, row) => projectSectionValues(row, tasks)[index] ?? ""
+  }));
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  downloadCSV(columns, rows, `enterpriser_entrega_${section}_${stamp}.csv`);
+  toast(`CSV exportado: ${rows.length} linha(s).`);
+}
+
+function openProjectDataMenu(anchor) {
+  document.getElementById("project-view-dd")?.remove();
+  document.getElementById("project-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "project-data-dd";
+  panel.className = "data-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Entrega</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn project-export-all" type="button">Exportar todas as colunas</button>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.querySelector(".project-export-all").addEventListener("click", () => {
+    panel.remove();
+    exportProjectSectionCSV();
+  });
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
         panel.remove();
         document.removeEventListener("mousedown", outside);
       }
@@ -5188,6 +5244,14 @@ function wireProjectBoard(projectId) {
     projectBoardState.page = 1;
     renderProjectBoard(projectId);
   }));
+  document.getElementById("project-view-menu-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openProjectViewMenu();
+  });
+  document.querySelector(".project-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openProjectDataMenu(event.currentTarget);
+  });
   document.querySelector(".project-cols-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
     const table = document.querySelector("#project-board-root table");
@@ -5253,6 +5317,8 @@ function closeFloaters() {
   document.getElementById("data-dd")?.remove();
   document.getElementById("view-dd")?.remove();
   document.getElementById("registration-filter-dd")?.remove();
+  document.getElementById("project-view-dd")?.remove();
+  document.getElementById("project-data-dd")?.remove();
 }
 
 const VIEW_MODES = [
