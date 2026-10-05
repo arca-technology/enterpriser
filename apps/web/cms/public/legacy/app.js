@@ -5319,6 +5319,7 @@ function closeFloaters() {
   document.getElementById("data-dd")?.remove();
   document.getElementById("view-dd")?.remove();
   document.getElementById("registration-filter-dd")?.remove();
+  document.getElementById("registration-view-dd")?.remove();
   document.getElementById("project-view-dd")?.remove();
   document.getElementById("project-data-dd")?.remove();
 }
@@ -7546,7 +7547,7 @@ function registrationTaskMindMapHtml(items) {
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="muted">${nodes.length} tarefa(s) no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="Adicionar tarefa">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="view registration-view-table" type="button">Tabela</button><button class="view active" type="button">Mapa mental</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
   </div><div class="registration-mindmap-shell"><div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas">
     <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>`;
@@ -7561,19 +7562,63 @@ function wireRegistrationMindMap(root) {
     input?.focus();
     input?.setSelectionRange(input.value.length, input.value.length);
   });
-  root.querySelector(".registration-view-table")?.addEventListener("click", () => { state.view = "table"; renderRegistrationsSection(); });
+  root.querySelector("#registration-view-menu-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegistrationViewMenu();
+  });
   root.querySelectorAll(".registration-mind-group-toggle").forEach((button) => button.addEventListener("click", () => {
     const key = button.dataset.groupKey;
-    if (registrationMindMapCollapsedGroups.has(key)) registrationMindMapCollapsedGroups.delete(key);
-    else registrationMindMapCollapsedGroups.add(key);
-    renderRegistrationsSection();
+    const branch = button.closest(".registration-mind-group")?.querySelector(":scope > .registration-mind-categories");
+    if (!branch) return;
+    branch.hidden = !branch.hidden;
+    button.querySelector("span").textContent = branch.hidden ? "▸" : "▾";
+    if (branch.hidden) registrationMindMapCollapsedGroups.add(key);
+    else registrationMindMapCollapsedGroups.delete(key);
   }));
   root.querySelectorAll(".registration-mind-category-toggle").forEach((button) => button.addEventListener("click", () => {
     const key = button.dataset.categoryKey;
-    if (registrationMindMapCollapsedCategories.has(key)) registrationMindMapCollapsedCategories.delete(key);
-    else registrationMindMapCollapsedCategories.add(key);
+    const tasks = button.closest(".registration-mind-category")?.querySelector(":scope > .registration-mind-tasks");
+    if (!tasks) return;
+    tasks.hidden = !tasks.hidden;
+    button.querySelector("span").textContent = tasks.hidden ? "▸" : "▾";
+    if (tasks.hidden) registrationMindMapCollapsedCategories.add(key);
+    else registrationMindMapCollapsedCategories.delete(key);
+  }));
+}
+
+function openRegistrationViewMenu() {
+  closeFloaters();
+  const button = document.getElementById("registration-view-menu-btn");
+  if (!button) return;
+  const state = registrationTableState();
+  const rect = button.getBoundingClientRect();
+  const panel = document.createElement("div");
+  panel.id = "registration-view-dd";
+  panel.className = "view-dd";
+  panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 198))}px`;
+  panel.style.top = `${rect.bottom + 5}px`;
+  const modes = [
+    { id: "table", label: "Tabela", icon: "▦" },
+    { id: "mindmap", label: "Mapa mental", icon: "⌘" }
+  ];
+  panel.innerHTML = modes.map((mode) => `<button class="view-option${state.view === mode.id ? " active" : ""}" data-view="${mode.id}">
+    <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${state.view === mode.id ? "✓" : ""}</span>
+  </button>`).join("");
+  document.body.appendChild(panel);
+  panel.querySelectorAll(".view-option").forEach((option) => option.addEventListener("click", () => {
+    state.view = option.dataset.view;
+    panel.remove();
     renderRegistrationsSection();
   }));
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && !button.contains(event.target)) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
 }
 
 function renderRegistrationsSection() {
@@ -7886,8 +7931,10 @@ function setupRegistrationToolbar(root, table) {
     addButton.title = originalLabel ? `Adicionar ${originalLabel.toLocaleLowerCase("pt-BR")}` : "Adicionar";
     center.appendChild(addButton);
   }
-  const mindMapButton = registrationsState.section === "activities" ? '<button class="view registration-view-mindmap" type="button">Mapa mental</button>' : "";
-  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button>${mindMapButton}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button>`;
+  const viewControl = registrationsState.section === "activities"
+    ? '<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button>'
+    : '<button class="view active" type="button">Tabela</button>';
+  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button>`;
   toolbar.replaceChildren(left, center, right);
   const filterStrip = document.createElement("div");
   filterStrip.className = "registration-filter-strip";
@@ -7902,9 +7949,9 @@ function setupRegistrationToolbar(root, table) {
     event.stopPropagation();
     openRegistrationColumnManager(table);
   });
-  right.querySelector(".registration-view-mindmap")?.addEventListener("click", () => {
-    tableState.view = "mindmap";
-    renderRegistrationsSection();
+  right.querySelector("#registration-view-menu-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegistrationViewMenu();
   });
 }
 

@@ -673,7 +673,6 @@
   .registration-subtask-row .table-actions-cell{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
   .product-activity-list .pa-subtask-row td:first-child{border-left:3px solid var(--cyan)}
   .product-activity-list .pa-subtask-row td:nth-child(7){padding-left:22px}
-  .registration-view-mindmap{width:110px}
   .registration-mindmap-shell{display:flex;min-height:0;flex:1 1 auto;overflow:hidden;background:var(--bg)}
   .registration-mindmap-scroll{width:100%;height:100%;box-sizing:border-box;overflow:auto;padding:18px}
   .registration-mindmap-canvas{display:grid;min-width:980px;grid-template-columns:150px minmax(760px,1fr);gap:38px;align-items:center}
@@ -688,6 +687,7 @@
   .registration-mind-group-toggle strong,.registration-mind-category-toggle strong{overflow:hidden;font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
   .registration-mind-group-toggle small,.registration-mind-category-toggle small{display:grid;min-width:22px;height:20px;place-items:center;border-radius:4px;background:var(--blue);color:#fff;font-size:9px;font-weight:800}
   .registration-mind-categories{position:relative;display:grid;gap:12px;padding-left:26px;border-left:1px solid var(--border)}
+  .registration-mind-categories[hidden],.registration-mind-tasks[hidden]{display:none!important}
   .registration-mind-category{position:relative;display:grid;grid-template-columns:180px minmax(0,1fr);gap:26px;align-items:start}
   .registration-mind-category::before{position:absolute;top:18px;left:-26px;width:26px;border-top:1px solid var(--border);content:""}
   .registration-mind-category-toggle{border-left-color:var(--blue)}
