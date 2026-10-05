@@ -1827,6 +1827,7 @@ function columns(tab, c) {
       { k: "subsector", h: "SUBSETOR" },
       { k: "module", h: "MÓDULO" },
       { k: "submodule", h: "SUBMÓDULO" },
+      { k: "category", h: "CATEGORIA" },
       { k: "channel", h: "CANAL" },
       { k: "type", h: "TIPO" },
       { k: "recurrence", h: "RECORRÊNCIA", fmt: (v) => RECURRENCE_LABEL[v] || "Única" },
@@ -2889,6 +2890,10 @@ const REGISTRATION_MIND_MAP_LEVELS = [
 ];
 let registrationMindMapFullscreen = false;
 let registrationMindMapHandMode = false;
+let registrationMindMapZoom = 1;
+let registrationMindMapPointerPressed = false;
+let registrationMindMapPointerWired = false;
+const REGISTRATION_MIND_MAP_ZOOM_LIMITS = [0.3, 2];
 let registrationMindMapOrientation = (() => {
   try { return localStorage.getItem("registrationMindMapOrientation") === "vertical" ? "vertical" : "horizontal"; } catch { return "horizontal"; }
 })();
@@ -2982,7 +2987,7 @@ function renderProductActivities() {
   const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" draggable="true">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
     <td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td>
-    <td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
+    <td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
     <td>${item.parent_template_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}</td><td>${esc(item.information || "—")}</td>
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
@@ -2997,8 +3002,8 @@ function renderProductActivities() {
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th class="noclick"></th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
-    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="21" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+      <th class="noclick"></th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
+    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="22" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pa-ready").addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -4388,6 +4393,7 @@ function renderTaskTable(tasks) {
       <td>${esc(task.subsector || "—")}</td>
       <td>${esc(task.module || "—")}</td>
       <td>${esc(task.submodule || "—")}</td>
+      <td>${esc(task.category || "—")}</td>
       <td>${esc(task.channel || "—")}</td>
       <td>${esc(task.type || "—")}</td>
       <td>${esc(RECURRENCE_LABEL[task.recurrence] || "Única")}</td>
@@ -4413,8 +4419,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="28" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="29" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -7726,8 +7732,8 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   const fullscreen = registrationMindMapFullscreen;
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
   return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}">
-    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
-    <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas"><svg class="registration-mind-links" aria-hidden="true"></svg>
+    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
+    <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
     <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>` };
 }
@@ -7748,13 +7754,14 @@ function drawRegistrationMindMapLinks(root) {
   const svg = canvas?.querySelector(":scope > .registration-mind-links");
   if (!canvas || !svg) return;
   const base = canvas.getBoundingClientRect();
+  const scale = Number(canvas.style.zoom) || 1;
   const visible = new Map();
   canvas.querySelectorAll("[data-node-id]").forEach((element) => {
     if (element.offsetParent !== null) visible.set(element.dataset.nodeId, element);
   });
   const box = (element) => {
     const rect = element.getBoundingClientRect();
-    return { left: rect.left - base.left, right: rect.right - base.left, y: rect.top - base.top + rect.height / 2 };
+    return { left: (rect.left - base.left) / scale, right: (rect.right - base.left) / scale, y: (rect.top - base.top + rect.height / 2) / scale };
   };
   const paths = [];
   visible.forEach((target, targetId) => {
@@ -7811,7 +7818,47 @@ function wireMindMapPan(scroller) {
   if (!scroller) return;
   let drag = null;
   let suppressClick = false;
+  const setZoom = (next, clientX, clientY) => {
+    const canvas = scroller.querySelector(".registration-mindmap-canvas");
+    if (!canvas) return;
+    const [min, max] = REGISTRATION_MIND_MAP_ZOOM_LIMITS;
+    const zoom = Math.min(max, Math.max(min, Math.round(next * 100) / 100));
+    const previous = Number(canvas.style.zoom) || 1;
+    if (zoom === previous) return;
+    const rect = scroller.getBoundingClientRect();
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    const contentX = (scroller.scrollLeft + x) / previous;
+    const contentY = (scroller.scrollTop + y) / previous;
+    registrationMindMapZoom = zoom;
+    canvas.style.zoom = zoom;
+    scroller.scrollLeft = contentX * zoom - x;
+    scroller.scrollTop = contentY * zoom - y;
+    const label = scroller.closest(".registration-mindmap-shell")?.querySelector(".registration-mind-zoom");
+    if (label) {
+      label.textContent = `${Math.round(zoom * 100)}%`;
+      label.setAttribute("aria-label", `Zoom ${Math.round(zoom * 100)}%, clique para voltar a 100%`);
+    }
+    if (drag) Object.assign(drag, { x: drag.lastX ?? drag.x, y: drag.lastY ?? drag.y, left: scroller.scrollLeft, top: scroller.scrollTop });
+    drawRegistrationMindMapLinks(scroller.closest(".registration-mindmap-shell"));
+  };
+  scroller.addEventListener("pointerdown", (event) => { if (event.button === 0 && event.pointerType !== "touch") registrationMindMapPointerPressed = true; }, true);
+  if (!registrationMindMapPointerWired) {
+    registrationMindMapPointerWired = true;
+    const release = () => { registrationMindMapPointerPressed = false; };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+  }
+  scroller.addEventListener("wheel", (event) => {
+    const holding = registrationMindMapPointerPressed || Boolean(event.buttons & 1);
+    if (!(event.ctrlKey || event.metaKey || holding)) return;
+    event.preventDefault();
+    if (holding) suppressClick = true;
+    setZoom(registrationMindMapZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX, event.clientY);
+  }, { passive: false });
+  scroller.closest(".registration-mindmap-shell")?.querySelector(".registration-mind-zoom")?.addEventListener("click", () => setZoom(1));
   scroller.addEventListener("pointerdown", (event) => {
+    suppressClick = false;
     if (event.button !== 0 || event.pointerType === "touch") return;
     if (event.target.closest(".registration-mind-controls")) return;
     if (!registrationMindMapHandMode && event.target.closest("button, a, input, select, textarea, .registration-mind-task")) return;
@@ -7819,6 +7866,8 @@ function wireMindMapPan(scroller) {
   });
   scroller.addEventListener("pointermove", (event) => {
     if (!drag || event.pointerId !== drag.id) return;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
     const dx = event.clientX - drag.x;
     const dy = event.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 4) return;
@@ -7833,7 +7882,7 @@ function wireMindMapPan(scroller) {
   });
   const end = (event) => {
     if (!drag || event.pointerId !== drag.id) return;
-    suppressClick = drag.moved;
+    suppressClick = suppressClick || drag.moved;
     if (drag.moved) scroller.releasePointerCapture?.(drag.id);
     scroller.classList.remove("is-panning");
     drag = null;
@@ -8075,6 +8124,7 @@ function renderRegistrationsSection() {
           <td>${esc(child.item.subsector || "—")}</td>
           <td>${esc(child.item.module || "—")}</td>
           <td>${esc(child.item.submodule || "—")}</td>
+          <td>${esc(child.item.category || "—")}</td>
           <td>${esc(child.item.channel || "—")}</td>
           <td>${esc(child.item.type || "—")}</td>
           <td>${esc(RECURRENCE_LABEL[child.item.recurrence] || "Única")}</td>
@@ -8091,13 +8141,13 @@ function renderRegistrationsSection() {
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
       })}</td></tr>${childRows}`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 29, "Tarefa");
+    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 30, "Tarefa");
     }
   } else if (section === "goals") {
     const items = loadProductGoals();
