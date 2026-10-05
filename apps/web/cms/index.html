@@ -697,7 +697,12 @@
   .registration-mind-branch.level-1>.registration-mind-toggle{border-left-color:var(--blue)}
   .registration-mind-branch.level-2>.registration-mind-toggle{border-left-color:color-mix(in srgb,var(--blue) 55%,var(--muted))}
   .registration-mind-branch.level-3>.registration-mind-toggle{border-left-color:var(--muted)}
-  .registration-mind-branch.is-empty>.registration-mind-toggle{border-style:dashed;border-left-style:solid;color:var(--muted)}
+  .registration-mind-pass{position:relative;display:block;height:36px}
+  .registration-mind-pass::before{position:absolute;top:18px;left:0;right:-26px;border-top:1px solid var(--border);content:""}
+  .registration-mindmap-scroll{cursor:grab}
+  .registration-mindmap-scroll.is-panning,.registration-mindmap-shell.is-hand .registration-mindmap-scroll.is-panning *{cursor:grabbing!important;user-select:none}
+  .registration-mindmap-shell.is-hand .registration-mindmap-scroll,.registration-mindmap-shell.is-hand .registration-mindmap-scroll *{cursor:grab}
+  .registration-mindmap-shell.is-hand .registration-mind-controls *{cursor:pointer}
   .registration-mind-children{position:relative;display:grid;gap:12px;padding-left:26px;border-left:1px solid var(--border)}
   .registration-mind-children.is-leaf{padding-left:0;border-left:0}
   .registration-mind-children[hidden],.registration-mind-tasks[hidden]{display:none!important}
@@ -717,7 +722,8 @@
   .registration-mindmap-shell.is-vertical .registration-mindmap-branches{display:flex;align-items:flex-start;justify-content:center;gap:16px}
   .registration-mindmap-shell.is-vertical .registration-mindmap-branches::before{position:absolute;top:-22px;left:50%;height:22px;border-left:1px solid var(--cyan);content:""}
   .registration-mindmap-shell.is-vertical .registration-mind-branch{display:flex;flex-direction:column;align-items:center;gap:22px;padding-top:22px}
-  .registration-mindmap-shell.is-vertical .registration-mind-branch>.registration-mind-toggle{width:170px}
+  .registration-mindmap-shell.is-vertical .registration-mind-branch>.registration-mind-toggle,.registration-mindmap-shell.is-vertical .registration-mind-pass{width:170px}
+  .registration-mindmap-shell.is-vertical .registration-mind-pass::before{top:0;bottom:-22px;left:50%;right:auto;border-top:0;border-left:1px solid var(--border)}
   .registration-mindmap-shell.is-vertical .registration-mind-branch::before{top:0;left:50%;width:0;height:22px;border-top:0;border-left:1px solid var(--border)}
   .registration-mindmap-shell.is-vertical .registration-mindmap-branches>.registration-mind-branch::before{left:50%;width:0;border-left-color:var(--cyan)}
   .registration-mindmap-shell.is-vertical .registration-mind-branch::after{position:absolute;top:0;left:-8px;right:-8px;border-top:1px solid var(--border);content:""}

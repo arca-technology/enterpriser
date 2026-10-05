@@ -2888,6 +2888,7 @@ const REGISTRATION_MIND_MAP_LEVELS = [
   { key: "submodule", empty: "Sem submódulo" }
 ];
 let registrationMindMapFullscreen = false;
+let registrationMindMapHandMode = false;
 let registrationMindMapOrientation = (() => {
   try { return localStorage.getItem("registrationMindMapOrientation") === "vertical" ? "vertical" : "horizontal"; } catch { return "horizontal"; }
 })();
@@ -7693,13 +7694,16 @@ function registrationMindMapBuckets(nodes, orderById, level) {
 
 function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orderById, adapter) {
   const branchKey = `${parentKey}::${bucket.key}`;
-  const collapsed = registrationMindMapCollapsedBranches.has(branchKey);
+  const collapsed = !bucket.empty && registrationMindMapCollapsedBranches.has(branchKey);
   const leaf = level === REGISTRATION_MIND_MAP_LEVELS.length - 1;
   const content = leaf
     ? `<div class="registration-mind-tasks">${bucket.nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById, adapter)).join("")}</div>`
     : registrationMindMapBuckets(bucket.nodes, orderById, level + 1).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById, adapter)).join("");
-  return `<section class="registration-mind-branch level-${level}${bucket.empty ? " is-empty" : ""}${collapsed ? " is-collapsed" : ""}">
-    <button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(bucket.label)}</strong><small>${bucket.nodes.length}</small></button>
+  const head = bucket.empty
+    ? '<span class="registration-mind-pass" aria-hidden="true"></span>'
+    : `<button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(bucket.label)}</strong><small>${bucket.nodes.length}</small></button>`;
+  return `<section class="registration-mind-branch level-${level}${bucket.empty ? " is-pass" : ""}${collapsed ? " is-collapsed" : ""}">
+    ${head}
     <div class="registration-mind-children${leaf ? " is-leaf" : ""}"${collapsed ? " hidden" : ""}>${content}</div>
   </section>`;
 }
@@ -7721,8 +7725,8 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   const vertical = registrationMindMapOrientation === "vertical";
   const fullscreen = registrationMindMapFullscreen;
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
-  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}">
-    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
+  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}">
+    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
     <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas"><svg class="registration-mind-links" aria-hidden="true"></svg>
     <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>` };
@@ -7803,6 +7807,47 @@ function setMindMapFullscreen(on, touchBrowser = true) {
   requestAnimationFrame(redrawAllMindMapLinks);
 }
 
+function wireMindMapPan(scroller) {
+  if (!scroller) return;
+  let drag = null;
+  let suppressClick = false;
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (event.target.closest(".registration-mind-controls")) return;
+    if (!registrationMindMapHandMode && event.target.closest("button, a, input, select, textarea, .registration-mind-task")) return;
+    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId, moved: false };
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      scroller.setPointerCapture?.(drag.id);
+      scroller.classList.add("is-panning");
+    }
+    scroller.scrollLeft = drag.left - dx;
+    scroller.scrollTop = drag.top - dy;
+    event.preventDefault();
+  });
+  const end = (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    suppressClick = drag.moved;
+    if (drag.moved) scroller.releasePointerCapture?.(drag.id);
+    scroller.classList.remove("is-panning");
+    drag = null;
+  };
+  scroller.addEventListener("pointerup", end);
+  scroller.addEventListener("pointercancel", end);
+  scroller.addEventListener("click", (event) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
+
 function wireMindMap(root, rerender) {
   root.querySelectorAll(".registration-mind-controls [data-orientation]").forEach((button) => button.addEventListener("click", () => {
     if (registrationMindMapOrientation === button.dataset.orientation) return;
@@ -7811,6 +7856,14 @@ function wireMindMap(root, rerender) {
     rerender();
   }));
   root.querySelector(".registration-mind-fullscreen")?.addEventListener("click", () => setMindMapFullscreen(!registrationMindMapFullscreen));
+  root.querySelector(".registration-mind-hand")?.addEventListener("click", (event) => {
+    registrationMindMapHandMode = !registrationMindMapHandMode;
+    const button = event.currentTarget;
+    button.classList.toggle("active", registrationMindMapHandMode);
+    button.setAttribute("aria-pressed", String(registrationMindMapHandMode));
+    root.querySelector(".registration-mindmap-shell")?.classList.toggle("is-hand", registrationMindMapHandMode);
+  });
+  wireMindMapPan(root.querySelector(".registration-mindmap-scroll"));
   root.querySelectorAll(".registration-mind-toggle").forEach((button) => button.addEventListener("click", () => {
     const key = button.dataset.branchKey;
     const branch = button.closest(".registration-mind-branch");
