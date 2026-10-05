@@ -186,6 +186,35 @@ const RECURRENCE_OPTIONS = [
 const RECURRENCE_LABEL = Object.fromEntries(RECURRENCE_OPTIONS);
 const PRIORITY_OPTIONS = [["low", "Baixa"], ["normal", "Normal"], ["high", "Alta"], ["urgent", "Urgente"]];
 const PRIORITY_LABEL = Object.fromEntries(PRIORITY_OPTIONS);
+const TASK_GROUP_SUBGROUP_OPTIONS = {
+  "Negócios": ["Comércio", "Contabilidade"],
+  "Vendas": ["Canais", "Logística"],
+  "Compras": ["Mercado", "Fornecedores"],
+  "Gestão": ["Operação", "Dados"]
+};
+const TASK_GROUP_OPTIONS = Object.keys(TASK_GROUP_SUBGROUP_OPTIONS);
+const TASK_SECTOR_OPTIONS = ["Administração", "Marketing", "Logística", "Produção", "Serviços", "Recursos Humanos", "Financeiro", "Contabilidade", "Jurídico"];
+function canonicalTaskChoice(value, choices) {
+  const normalized = String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLocaleLowerCase("pt-BR");
+  return choices.find((choice) => choice.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR") === normalized) || "";
+}
+function taskSelectOptions(choices, value, emptyLabel) {
+  const selected = canonicalTaskChoice(value, choices);
+  return `<option value="">${esc(emptyLabel)}</option>${choices.map((choice) => `<option value="${esc(choice)}"${choice === selected ? " selected" : ""}>${esc(choice)}</option>`).join("")}`;
+}
+function wireTaskGroupSelect(groupId, subgroupId) {
+  const group = document.getElementById(groupId);
+  const subgroup = document.getElementById(subgroupId);
+  if (!group || !subgroup) return;
+  const update = (preserve = true) => {
+    const previous = preserve ? subgroup.value : "";
+    const choices = TASK_GROUP_SUBGROUP_OPTIONS[group.value] || [];
+    subgroup.innerHTML = taskSelectOptions(choices, previous, choices.length ? "Sem subgrupo" : "Selecione o grupo primeiro");
+    subgroup.disabled = !choices.length;
+  };
+  group.addEventListener("change", () => update(false));
+  update(true);
+}
 const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
 const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
@@ -367,10 +396,10 @@ function requireDataPermission(table, action) {
 }
 const FIELD_REMAP = {
   deals: { amount: "value" },
-  activities: { project_id: "delivery_id", group: "group_name", type: "activity_type" },
+  activities: { project_id: "delivery_id", group: "group_name", subgroup: "subgroup_name", module: "module_name", submodule: "submodule_name", type: "activity_type" },
   deliveryObjectives: { project_id: "delivery_id" },
   deliveryGoals: { project_id: "delivery_id" },
-  productActivities: { group: "group_name", type: "activity_type" },
+  productActivities: { group: "group_name", subgroup: "subgroup_name", module: "module_name", submodule: "submodule_name", type: "activity_type" },
   customTables: { columns: "column_definitions", rows: "row_data" }
 }; // chave local -> chave remota
 function toRemoteBody(tab, body) {
@@ -712,7 +741,11 @@ function activityRemoteBody(task) {
     information: task.information || null,
     sort_order: Number(task.sort_order || 0),
     group: task.group || null,
+    subgroup: task.subgroup || null,
     sector: task.sector || null,
+    subsector: task.subsector || null,
+    module: task.module || null,
+    submodule: task.submodule || null,
     channel: task.channel || null,
     type: task.type || null,
     recurrence: task.recurrence || "once",
@@ -743,7 +776,11 @@ function productActivityRemoteBody(template) {
     depends_on_template_id: template.depends_on_template_id || null,
     dependency_template_ids: normalizeIdList(template.dependency_template_ids, template.depends_on_template_id),
     group: template.group || null,
+    subgroup: template.subgroup || null,
     sector: template.sector || null,
+    subsector: template.subsector || null,
+    module: template.module || null,
+    submodule: template.submodule || null,
     channel: template.channel || null,
     type: template.type || null,
     activity: template.activity,
@@ -995,7 +1032,11 @@ async function syncProductActivities() {
           priority: template.priority || "normal",
           sort_order: Number(template.sort_order || 0) * 1000 + occurrenceIndex,
           group: template.group || "",
+          subgroup: template.subgroup || "",
           sector: template.sector || "",
+          subsector: template.subsector || "",
+          module: template.module || "",
+          submodule: template.submodule || "",
           channel: template.channel || "",
           type: template.type || "",
           recurrence: template.recurrence || "once",
@@ -1531,7 +1572,7 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.group, item.sector, item.channel, item.type, item.activity || item.title]
+  const parts = [item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.activity || item.title]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -1752,7 +1793,11 @@ function columns(tab, c) {
       { k: "dependency_ids", h: "DEPENDE DE", fmt: (v, row) => stackedCell(dependencyNameList(v, row.depends_on_activity_id, c.activityRecords)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "information", h: "INFORMAÇÃO", cls: "muted" },
       { k: "group", h: "GRUPO" },
+      { k: "subgroup", h: "SUBGRUPO" },
       { k: "sector", h: "SETOR" },
+      { k: "subsector", h: "SUBSETOR" },
+      { k: "module", h: "MÓDULO" },
+      { k: "submodule", h: "SUBMÓDULO" },
       { k: "channel", h: "CANAL" },
       { k: "type", h: "TIPO" },
       { k: "recurrence", h: "RECORRÊNCIA", fmt: (v) => RECURRENCE_LABEL[v] || "Única" },
@@ -2827,7 +2872,7 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  return [item?.group, item?.sector, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
+  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR"))
     .join("|");
 }
@@ -2897,7 +2942,7 @@ function renderProductActivities() {
     .flatMap((item) => [item, ...productTemplateSubtasks(item.id, productTemplates).sort(compareTemplates)]);
   const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" draggable="true">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
-    <td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td>
+    <td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td>
     <td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
     <td>${item.parent_template_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}</td><td>${esc(item.information || "—")}</td>
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
@@ -2913,8 +2958,8 @@ function renderProductActivities() {
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th class="noclick"></th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
-    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="17" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+      <th class="noclick"></th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
+    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="21" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pa-ready").addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3557,7 +3602,11 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   if (!editing && !cloneSource && requestedParent) {
     Object.assign(current, {
       group: requestedParent.group || "",
+      subgroup: requestedParent.subgroup || "",
       sector: requestedParent.sector || "",
+      subsector: requestedParent.subsector || "",
+      module: requestedParent.module || "",
+      submodule: requestedParent.submodule || "",
       channel: requestedParent.channel || "",
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
@@ -3609,8 +3658,12 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
     <div class="form product-activity-form task-form-grid">
       ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
       <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent))}</div>
-      <div class="field"><label>Grupo</label><input id="pa-group" value="${esc(current.group || "")}"></div>
-      <div class="field"><label>Setor</label><input id="pa-sector" value="${esc(current.sector || "")}"></div>
+      <div class="field"><label>Grupo</label><select id="pa-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group, "Sem grupo")}</select></div>
+      <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
+      <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
+      <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
+      <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
@@ -3640,6 +3693,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
     document.querySelector("#pa-checklist .checklist-edit-row:last-child input")?.focus();
   });
   wireMultiPicker("pa-products");
+  wireTaskGroupSelect("pa-group", "pa-subgroup");
   wireMultiPicker("pa-assignees");
   wireMultiPicker("pa-assignee-job-titles");
   wireMultiPicker("pa-dependencies");
@@ -3688,8 +3742,12 @@ async function saveProductActivity() {
     return;
   }
   const baseBody = {
-    group: document.getElementById("pa-group").value.trim(),
-    sector: document.getElementById("pa-sector").value.trim(),
+    group: document.getElementById("pa-group").value,
+    subgroup: document.getElementById("pa-subgroup").value,
+    sector: document.getElementById("pa-sector").value,
+    subsector: document.getElementById("pa-subsector").value.trim(),
+    module: document.getElementById("pa-module").value.trim(),
+    submodule: document.getElementById("pa-submodule").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
@@ -4079,9 +4137,9 @@ function taskCardHtml(task) {
     ${dependencies.length ? `<div class="task-dependency${blocked ? " blocked" : ""}">${blocked ? "Bloqueada por" : "Liberada após"}: ${esc(dependencyNames(task.dependency_ids, task.depends_on_activity_id))}</div>` : ""}
     ${task.information ? `<div class="task-information"><strong>Informação</strong><span>${esc(task.information)}</span></div>` : ""}
     ${objective ? `<div class="task-dependency">Objetivo: ${esc(objective.name)}</div>` : ""}
-    ${(task.group || task.sector || task.channel || task.type) ? `<div class="task-taxonomy">
-      ${task.group ? `<span>${esc(task.group)}</span>` : ""}${task.sector ? `<span>${esc(task.sector)}</span>` : ""}
-      ${task.channel ? `<span>${esc(task.channel)}</span>` : ""}${task.type ? `<span>${esc(task.type)}</span>` : ""}
+    ${(task.group || task.subgroup || task.sector || task.subsector || task.module || task.submodule || task.channel || task.type) ? `<div class="task-taxonomy">
+      ${task.group ? `<span>${esc(task.group)}</span>` : ""}${task.subgroup ? `<span>${esc(task.subgroup)}</span>` : ""}${task.sector ? `<span>${esc(task.sector)}</span>` : ""}${task.subsector ? `<span>${esc(task.subsector)}</span>` : ""}
+      ${task.module ? `<span>${esc(task.module)}</span>` : ""}${task.submodule ? `<span>${esc(task.submodule)}</span>` : ""}${task.channel ? `<span>${esc(task.channel)}</span>` : ""}${task.type ? `<span>${esc(task.type)}</span>` : ""}
     </div>` : ""}
     <div class="task-row">
       <span class="muted">${esc(owners)}</span>
@@ -4274,7 +4332,11 @@ function renderTaskTable(tasks) {
       <td class="compact-multi-cell">${stackedCell(dependencyNameList(task.dependency_ids, task.depends_on_activity_id, tasks))}</td>
       <td>${esc(task.information || "—")}</td>
       <td>${esc(task.group || "—")}</td>
+      <td>${esc(task.subgroup || "—")}</td>
       <td>${esc(task.sector || "—")}</td>
+      <td>${esc(task.subsector || "—")}</td>
+      <td>${esc(task.module || "—")}</td>
+      <td>${esc(task.submodule || "—")}</td>
       <td>${esc(task.channel || "—")}</td>
       <td>${esc(task.type || "—")}</td>
       <td>${esc(RECURRENCE_LABEL[task.recurrence] || "Única")}</td>
@@ -4300,8 +4362,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="24" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="28" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -4500,7 +4562,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Setor", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
   objectives: ["Objetivo", "Critério de conclusão", "Comentários", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
@@ -4514,7 +4576,7 @@ function projectSectionValues(item, tasks = []) {
       item.source_template_id ? "Produto" : "Dia a dia",
       PRIORITY_LABEL[item.priority || "normal"] || "Normal",
       dependencyNames(item.dependency_ids, item.depends_on_activity_id, tasks),
-      item.information || "—", item.group || "—", item.sector || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
+      item.information || "—", item.group || "—", item.subgroup || "—", item.sector || "—", item.subsector || "—", item.module || "—", item.submodule || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
       subtasks.total ? "Nas subtarefas" : `${checklist.done}/${checklist.total}`,
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
@@ -4994,8 +5056,12 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Origem</label><input value="${esc(parentTask ? `Subtarefa de ${activityDisplayName(parentTask)}` : current.source_template_id ? "Produto" : "Dia a dia")}" disabled></div>
       <div class="field"><label>${parentId ? "Subtarefa" : "Tarefa"} *</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="project-task-information" rows="3" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
-      <div class="field"><label>Grupo</label><input id="project-task-group" value="${esc(current.group || "")}"></div>
-      <div class="field"><label>Setor</label><input id="project-task-sector" value="${esc(current.sector || "")}"></div>
+      <div class="field"><label>Grupo</label><select id="project-task-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group || parentTask?.group, "Sem grupo")}</select></div>
+      <div class="field"><label>Subgrupo</label><select id="project-task-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group || parentTask?.group, TASK_GROUP_OPTIONS)] || [], current.subgroup || parentTask?.subgroup, "Sem subgrupo")}</select></div>
+      <div class="field"><label>Setor</label><select id="project-task-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector || parentTask?.sector, "Sem setor")}</select></div>
+      <div class="field"><label>Subsetor</label><input id="project-task-subsector" value="${esc(current.subsector || parentTask?.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
+      <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
@@ -5021,6 +5087,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const close = () => overlay.remove();
   document.getElementById("project-task-close").addEventListener("click", close);
   document.getElementById("project-task-cancel").addEventListener("click", close);
+  wireTaskGroupSelect("project-task-group", "project-task-subgroup");
   wireMultiPicker("project-task-dependencies");
   wireMultiPicker("project-task-assignees");
   wireMultiPicker("project-task-assignee-job-titles");
@@ -5053,8 +5120,12 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       id: editId || crypto.randomUUID(), project_id: projectId, title,
       parent_activity_id: parentId,
       information: document.getElementById("project-task-information").value.trim(),
-      group: document.getElementById("project-task-group").value.trim(),
-      sector: document.getElementById("project-task-sector").value.trim(),
+      group: document.getElementById("project-task-group").value,
+      subgroup: document.getElementById("project-task-subgroup").value,
+      sector: document.getElementById("project-task-sector").value,
+      subsector: document.getElementById("project-task-subsector").value.trim(),
+      module: document.getElementById("project-task-module").value.trim(),
+      submodule: document.getElementById("project-task-submodule").value.trim(),
       channel: document.getElementById("project-task-channel").value.trim(),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
@@ -7531,7 +7602,7 @@ function registrationTaskMindMapHtml(items) {
     if (!query) return true;
     const children = hierarchy.children.get(node.id) || [];
     const text = [...node.linked, ...children.flatMap((child) => child.linked)].flatMap((item) => [
-      activityDisplayName(item), item.group, item.sector, item.channel, item.type, item.information, registrationProductName(item.product_id)
+      activityDisplayName(item), item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, registrationProductName(item.product_id)
     ]).join(" ").toLocaleLowerCase("pt-BR");
     return text.includes(query);
   });
@@ -7539,9 +7610,9 @@ function registrationTaskMindMapHtml(items) {
   const loose = [];
   nodes.forEach((node) => {
     const group = String(node.item.group || "").trim();
-    const category = String(node.item.sector || "").trim();
+    const category = String(node.item.subgroup || "").trim();
     if (!group || !category) {
-      loose.push({ node, reason: !group && !category ? "Sem grupo e categoria" : !group ? "Sem grupo" : "Sem categoria" });
+      loose.push({ node, reason: !group && !category ? "Sem grupo e subgrupo" : !group ? "Sem grupo" : "Sem subgrupo" });
       return;
     }
     const groupKey = group.toLocaleLowerCase("pt-BR");
@@ -7762,7 +7833,11 @@ function renderRegistrationsSection() {
           <td class="compact-multi-cell">${stackedCell(childDetails.dependencies)}</td>
           <td>${esc(child.item.information || "—")}</td>
           <td>${esc(child.item.group || "—")}</td>
+          <td>${esc(child.item.subgroup || "—")}</td>
           <td>${esc(child.item.sector || "—")}</td>
+          <td>${esc(child.item.subsector || "—")}</td>
+          <td>${esc(child.item.module || "—")}</td>
+          <td>${esc(child.item.submodule || "—")}</td>
           <td>${esc(child.item.channel || "—")}</td>
           <td>${esc(child.item.type || "—")}</td>
           <td>${esc(RECURRENCE_LABEL[child.item.recurrence] || "Única")}</td>
@@ -7779,13 +7854,13 @@ function renderRegistrationsSection() {
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
       })}</td></tr>${childRows}`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Setor</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 25, "Tarefa");
+    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 29, "Tarefa");
     }
   } else if (section === "goals") {
     const items = loadProductGoals();
