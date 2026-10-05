@@ -981,6 +981,7 @@ async function syncProductObjectives() {
         completion_criteria: template.completion_criteria || "",
         comments: template.comments || "",
         category: template.category || "",
+        channel: template.channel || "",
         notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
@@ -1068,6 +1069,7 @@ async function syncProductGoals() {
         unit: template.unit || "",
         comments: template.comments || "",
         category: template.category || "",
+        channel: template.channel || "",
         notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
@@ -3281,6 +3283,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     <div class="form product-activity-form">
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
       <div class="field"><label>Categoria</label><input id="po-category" value="${esc(current.category || "")}"></div>
+      <div class="field"><label>Canal</label><input id="po-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
       <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
       <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
@@ -3341,6 +3344,7 @@ async function saveProductObjective() {
     completion_criteria: document.getElementById("po-criteria").value.trim(),
     comments: document.getElementById("po-comments").value.trim(),
     category: document.getElementById("po-category").value.trim(),
+    channel: document.getElementById("po-channel").value.trim(),
     notes: document.getElementById("po-notes").value.trim(),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
@@ -3468,6 +3472,7 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     <div class="form product-activity-form">
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
       <div class="field"><label>Categoria</label><input id="pg-category" value="${esc(current.category || "")}"></div>
+      <div class="field"><label>Canal</label><input id="pg-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
@@ -3536,6 +3541,7 @@ async function saveProductGoal() {
     unit: document.getElementById("pg-unit").value.trim(),
     comments: document.getElementById("pg-comments").value.trim(),
     category: document.getElementById("pg-category").value.trim(),
+    channel: document.getElementById("pg-channel").value.trim(),
     notes: document.getElementById("pg-notes").value.trim(),
     target_days: targetDays === "" ? null : Number(targetDays),
     default_owner_id: assignees.ids[0] || null,
@@ -3674,7 +3680,7 @@ function openReadyActivityPicker() {
           const objectiveDraft = {
             id: crypto.randomUUID(), product_id: productActivityState.productId,
             name: sourceObjective.name, completion_criteria: sourceObjective.completion_criteria || "",
-            category: sourceObjective.category || "", notes: sourceObjective.notes || "", comments: sourceObjective.comments || "",
+            category: sourceObjective.category || "", channel: sourceObjective.channel || "", notes: sourceObjective.notes || "", comments: sourceObjective.comments || "",
             default_owner_id: sourceObjective.default_owner_id || null,
             target_days: sourceObjective.target_days ?? null,
             sort_order: Math.max(-1, ...targetObjectives.map((item) => Number(item.sort_order || 0))) + 1,
@@ -4658,6 +4664,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     return `<tr data-objective-id="${esc(objective.id)}">
       <td><strong>${esc(objective.name)}</strong></td>
       <td>${esc(objective.category || "—")}</td>
+      <td>${esc(objective.channel || "—")}</td>
       <td>${esc(objective.completion_criteria || "—")}</td>
       <td>${esc(objective.comments || "—")}</td>
       <td>${esc(objective.notes || "—")}</td>
@@ -4670,8 +4677,8 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     </tr>`;
   }).join("");
   return `<div class="task-table-wrap"><table><thead><tr>
-    <th>Objetivo</th><th>Categoria</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="11" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
+    <th>Objetivo</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="12" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
 }
 
 function deliveryObjectiveDependencyState(objective) {
@@ -4733,7 +4740,7 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
     return `<tr data-goal-id="${esc(goal.id)}">
-      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.metric)}</td>
+      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
       <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
       <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(goal.assignee_ids), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
@@ -4743,8 +4750,8 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     </tr>`;
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap"><table><thead><tr>
-    <th>Meta</th><th>Categoria</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="13" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
+    <th>Meta</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
   <div class="table-pagination"><span>${goals.length} meta(s)</span><div><span>Acompanhamento da entrega</span></div></div></div>`;
 }
 
@@ -4802,8 +4809,8 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 
 const PROJECT_TABLE_LABELS = {
   activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
-  objectives: ["Objetivo", "Categoria", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
-  goals: ["Meta", "Categoria", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
+  objectives: ["Objetivo", "Categoria", "Canal", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
+  goals: ["Meta", "Categoria", "Canal", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
 
 function projectSectionValues(item, tasks = []) {
@@ -4835,7 +4842,7 @@ function projectSectionValues(item, tasks = []) {
     const done = linked.filter((task) => task.status === "done").length;
     const progress = linked.length ? Math.round(done / linked.length * 100) : 0;
     return [
-      item.name || "—", item.category || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
+      item.name || "—", item.category || "—", item.channel || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
       deliveryObjectiveDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
@@ -4844,7 +4851,7 @@ function projectSectionValues(item, tasks = []) {
   const current = Number(item.current_value || 0);
   const target = Number(item.target_value || 0);
   return [
-    item.name || "—", item.category || "—", item.metric || "—", current.toLocaleString("pt-BR"),
+    item.name || "—", item.category || "—", item.channel || "—", item.metric || "—", current.toLocaleString("pt-BR"),
     `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—", item.notes || "—",
     `${target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0}%`,
     deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
@@ -7828,7 +7835,7 @@ const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
   extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
   subtitle: (node) => registrationProductName(node.item.product_id),
-  searchText: (item) => [registrationProductName(item.product_id), item.completion_criteria, item.comments, item.notes].join(" "),
+  searchText: (item) => [registrationProductName(item.product_id), item.channel, item.completion_criteria, item.comments, item.notes].join(" "),
   editClass: "reg-template-edit",
   editAttrs: (item) => `data-id="${esc(item.id)}" data-product="${esc(item.product_id)}"`
 };
@@ -8394,12 +8401,12 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
         clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
+    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_GOAL_ADAPTER);
   } else {
     const items = loadProductObjectives();
@@ -8409,12 +8416,12 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
         clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 10);
+    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER);
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
