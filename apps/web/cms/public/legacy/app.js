@@ -3334,11 +3334,11 @@ function cloneProductActivity(templateId) {
 function openReadyActivityPicker() {
   document.getElementById("product-activity-drawer-overlay")?.remove();
   const current = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
-  const currentSignatures = new Set(current.map((item) => [item.group, item.sector, item.channel, item.type, item.activity, item.recurrence || "once"].join("|")));
+  const currentSignatures = new Set(current.map(productActivityIdentity));
   const seen = new Set();
   const available = loadProductActivities().filter((item) => {
     if (item.product_id === productActivityState.productId) return false;
-    const signature = [item.group, item.sector, item.channel, item.type, item.activity, item.recurrence || "once"].join("|");
+    const signature = productActivityIdentity(item);
     if (seen.has(signature) || currentSignatures.has(signature)) return false;
     seen.add(signature);
     return true;
@@ -3369,9 +3369,23 @@ function openReadyActivityPicker() {
   document.getElementById("ready-add").addEventListener("click", async () => {
     const selectedIds = [...list.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value);
     if (!selectedIds.length) { toast("Selecione pelo menos uma tarefa.", true); return; }
+    if (isLive()) {
+      try {
+        const [latestActivities, latestObjectives] = await Promise.all([
+          fetchTable("productActivities"),
+          fetchTable("productObjectives")
+        ]);
+        cache.productActivities = latestActivities;
+        cache.productObjectives = latestObjectives;
+      } catch (err) {
+        toast("Erro ao atualizar os vínculos antes da inclusão · " + err.message, true);
+        return;
+      }
+    }
     const rows = loadProductActivities();
-    const signatureOf = (item) => [item.group, item.sector, item.channel, item.type, item.activity, item.recurrence || "once"].join("|");
-    const targetBySignature = new Map(current.map((item) => [signatureOf(item), item]));
+    const targetCurrent = rows.filter((item) => item.product_id === productActivityState.productId);
+    const signatureOf = productActivityIdentity;
+    const targetBySignature = new Map(targetCurrent.map((item) => [signatureOf(item), item]));
     const orderedSources = [];
     const visited = new Set();
     const visitSource = (sourceId) => {
@@ -3384,7 +3398,7 @@ function openReadyActivityPicker() {
       orderedSources.push(source);
     };
     selectedIds.forEach(visitSource);
-    let nextOrder = Math.max(-1, ...current.map((item) => Number(item.sort_order || 0))) + 1;
+    let nextOrder = Math.max(-1, ...targetCurrent.map((item) => Number(item.sort_order || 0))) + 1;
     try {
       const objectiveRows = loadProductObjectives();
       const targetObjectives = objectiveRows.filter((item) => item.product_id === productActivityState.productId);
@@ -3410,20 +3424,26 @@ function openReadyActivityPicker() {
         }
         objectiveMap.set(source.objective_template_id, targetObjective.id);
       }
+      const targetIdBySignature = new Map(targetCurrent.map((item) => [signatureOf(item), item.id]));
       const activityMap = new Map();
       for (const source of orderedSources) {
-        const existing = targetBySignature.get(signatureOf(source));
-        activityMap.set(source.id, existing?.id || crypto.randomUUID());
+        const signature = signatureOf(source);
+        if (!targetIdBySignature.has(signature)) targetIdBySignature.set(signature, crypto.randomUUID());
+        activityMap.set(source.id, targetIdBySignature.get(signature));
       }
       let createdCount = 0;
+      const createdSignatures = new Set(targetCurrent.map(signatureOf));
       for (const source of orderedSources) {
-        if (targetBySignature.has(signatureOf(source))) continue;
+        const signature = signatureOf(source);
+        if (createdSignatures.has(signature)) continue;
         const now = new Date().toISOString();
+        const dependencyIds = normalizeIdList(source.dependency_template_ids, source.depends_on_template_id)
+          .map((id) => activityMap.get(id)).filter(Boolean);
         const draft = {
           ...source, id: activityMap.get(source.id), product_id: productActivityState.productId,
           parent_template_id: activityMap.get(source.parent_template_id) || null,
-          dependency_template_ids: normalizeIdList(source.dependency_template_ids, source.depends_on_template_id).map((id) => activityMap.get(id)).filter(Boolean),
-          depends_on_template_id: normalizeIdList(source.dependency_template_ids, source.depends_on_template_id).map((id) => activityMap.get(id)).filter(Boolean)[0] || null,
+          dependency_template_ids: dependencyIds,
+          depends_on_template_id: dependencyIds[0] || null,
           objective_template_id: objectiveMap.get(source.objective_template_id) || null,
           checklist: normalizeChecklist(source.checklist).map((item) => ({ ...item, checked: false })),
           sort_order: nextOrder++,
@@ -3431,7 +3451,8 @@ function openReadyActivityPicker() {
         };
         const saved = isLive() ? await createRow("productActivities", draft) : draft;
         rows.push(saved);
-        targetBySignature.set(signatureOf(saved), saved);
+        targetBySignature.set(signature, saved);
+        createdSignatures.add(signature);
         createdCount += 1;
       }
       if (isLive()) {
