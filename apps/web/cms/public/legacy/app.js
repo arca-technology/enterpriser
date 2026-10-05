@@ -1572,7 +1572,7 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.activity || item.title]
+  const parts = [item.channel, item.module, item.submodule, item.type, item.activity || item.title]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -3662,14 +3662,16 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
-      <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
-      <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
-      <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
-      <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
-      <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
-      <div class="field check"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><label for="pa-business-days">Considerar somente dias úteis</label></div>
+      <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
+      <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
+      <div class="task-schedule-row">
+        <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
+        <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
+        <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
+        <label class="task-business-days" for="pa-business-days"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
+      </div>
       <div class="field task-form-wide"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
@@ -5060,13 +5062,15 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Subgrupo</label><select id="project-task-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group || parentTask?.group, TASK_GROUP_OPTIONS)] || [], current.subgroup || parentTask?.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="project-task-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector || parentTask?.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="project-task-subsector" value="${esc(current.subsector || parentTask?.subsector || "")}" placeholder="Subsetor opcional"></div>
-      <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
-      <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
-      <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
-      <div class="field check"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><label for="project-task-business-days">Considerar somente dias úteis</label></div>
-      <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
+      <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
+      <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
+      <div class="task-schedule-row task-schedule-row-compact">
+        <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
+        <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
+        <label class="task-business-days" for="project-task-business-days"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
+      </div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
