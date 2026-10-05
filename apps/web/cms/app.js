@@ -790,6 +790,8 @@ function activityRemoteBody(task) {
     notes: task.notes || null,
     document_ids: normalizeIdList(task.document_ids),
     custom_table_ids: normalizeIdList(task.custom_table_ids),
+    start_after_days: task.start_after_days == null || task.start_after_days === "" ? null : Number(task.start_after_days),
+    schedule_manual: Boolean(task.schedule_manual),
     status: task.status || "todo",
     created_at: task.created_at || new Date().toISOString(),
     updated_at: task.updated_at || new Date().toISOString()
@@ -822,6 +824,7 @@ function productActivityRemoteBody(template) {
     objective_template_id: template.objective_template_id || null,
     recurrence: template.recurrence || "once",
     target_days: template.target_days == null ? null : Number(template.target_days),
+    start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
     consider_business_days: Boolean(template.consider_business_days),
     checklist: normalizeChecklist(template.checklist).map((item) => ({ ...item, checked: false })),
     document_ids: normalizeIdList(template.document_ids),
@@ -877,6 +880,8 @@ async function syncProductObjectives() {
         name: template.name,
         completion_criteria: template.completion_criteria || "",
         comments: template.comments || "",
+        category: template.category || "",
+        notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
       const suggestedDue = project.start_date && template.target_days != null
@@ -962,6 +967,8 @@ async function syncProductGoals() {
         target_value: Number(template.target_value || 0),
         unit: template.unit || "",
         comments: template.comments || "",
+        category: template.category || "",
+        notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
       const suggestedDue = project.start_date && template.target_days != null
@@ -1071,6 +1078,7 @@ async function syncProductActivities() {
           recurrence: template.recurrence || "once",
           consider_business_days: Boolean(template.consider_business_days),
           target_days: template.target_days == null ? null : Number(template.target_days),
+          start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
           occurrence_index: occurrenceIndex,
           objective_id: objective?.id || null,
           document_ids: normalizeIdList(template.document_ids),
@@ -1165,8 +1173,57 @@ async function syncProductActivities() {
     if (isLive()) cache.activityRecords = tasks;
     else saveProjectTasks(tasks);
   }
+  await recalculateDependencySchedules();
   await syncDeliveryObjectiveDependencies();
   await syncDeliveryGoalDependencies();
+}
+// Reprograma o início previsto pelas dependências: término real (se concluída) ou previsto + "iniciar após".
+async function recalculateDependencySchedules(projectId = null) {
+  const tasks = loadProjectTasks();
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const shift = (date, days, business) => business ? addBusinessDays(date, days) : addDays(date, days);
+  const candidates = tasks.filter((task) => (!projectId || task.project_id === projectId)
+    && task.start_after_days != null && task.start_after_days !== ""
+    && !task.schedule_manual && !["done", "canceled"].includes(task.status)
+    && normalizeIdList(task.dependency_ids, task.depends_on_activity_id).length);
+  const changedIds = new Set();
+  for (let pass = 0; pass <= candidates.length; pass += 1) {
+    let changedThisPass = false;
+    for (const task of candidates) {
+      const dependencies = normalizeIdList(task.dependency_ids, task.depends_on_activity_id).map((id) => byId.get(id)).filter(Boolean);
+      if (!dependencies.length) continue;
+      const ends = dependencies.map((dependency) => dependency.status === "done" && dependency.actual_end_date ? dependency.actual_end_date : taskPlannedEnd(dependency));
+      if (ends.some((end) => !end)) continue;
+      const base = ends.map((end) => String(end).slice(0, 10)).sort().at(-1);
+      const business = Boolean(task.consider_business_days);
+      const start = shift(base, Number(task.start_after_days || 0), business);
+      let end;
+      if (task.target_days != null && task.target_days !== "") end = shift(start, Number(task.target_days), business);
+      else {
+        const previousStart = task.planned_start_date ? String(task.planned_start_date).slice(0, 10) : null;
+        const previousEnd = taskPlannedEnd(task) ? String(taskPlannedEnd(task)).slice(0, 10) : null;
+        const duration = previousStart && previousEnd && previousEnd >= previousStart
+          ? Math.round((new Date(`${previousEnd}T12:00:00`) - new Date(`${previousStart}T12:00:00`)) / 86400000) : 0;
+        end = addDays(start, duration);
+      }
+      if (task.planned_start_date === start && task.planned_end_date === end && task.due_date === end) continue;
+      Object.assign(task, { planned_start_date: start, planned_end_date: end, due_date: end });
+      changedIds.add(task.id);
+      changedThisPass = true;
+    }
+    if (!changedThisPass) break;
+  }
+  if (!changedIds.size) return false;
+  const now = new Date().toISOString();
+  for (const id of changedIds) {
+    const task = byId.get(id);
+    task.updated_at = now;
+    if (isLive()) await updateRow("activities", id, { planned_start_date: task.planned_start_date, planned_end_date: task.planned_end_date, due_date: task.due_date, updated_at: now });
+  }
+  if (isLive()) cache.activityRecords = tasks;
+  else saveProjectTasks(tasks);
+  refreshActivityCache();
+  return true;
 }
 function activityOccurrenceSort(a, b) {
   return String(a.due_date || "9999-12-31").localeCompare(String(b.due_date || "9999-12-31"))
@@ -3116,9 +3173,11 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     <h3>${editId ? "Editar objetivo" : cloneSource ? "Clonar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
+      <div class="field"><label>Categoria</label><input id="po-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
-      <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Observações e contexto do objetivo">${esc(current.comments || "")}</textarea></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="po-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 30"></div>
       <div class="field"><label>Depende de objetivos</label>${multiPickerHtml("po-objective-dependencies", objectiveDependencyOptions, new Set(normalizeIdList(current.dependency_objective_template_ids)), "Selecionar objetivos")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("po-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
@@ -3174,6 +3233,8 @@ async function saveProductObjective() {
     name,
     completion_criteria: document.getElementById("po-criteria").value.trim(),
     comments: document.getElementById("po-comments").value.trim(),
+    category: document.getElementById("po-category").value.trim(),
+    notes: document.getElementById("po-notes").value.trim(),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
     assign_to_client: assignees.assignToClient,
@@ -3299,13 +3360,15 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     <h3>${editId ? "Editar meta" : cloneSource ? "Clonar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
+      <div class="field"><label>Categoria</label><input id="pg-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
       <div class="field"><label>Unidade</label><input id="pg-unit" value="${esc(current.unit || "")}" placeholder="Ex.: pedidos/mês, %, R$"></div>
-      <div class="field"><label>Comentários</label><textarea id="pg-comments" rows="4" placeholder="Observações e contexto da meta">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Comentários</label><textarea id="pg-comments" rows="4" placeholder="Contexto da meta">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Observações</label><textarea id="pg-notes" rows="3" placeholder="Observações da meta">${esc(current.notes || "")}</textarea></div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="pg-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 90"></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pg-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pg-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Depende de metas</label>${multiPickerHtml("pg-goal-dependencies", goalDependencyOptions, new Set(normalizeIdList(current.dependency_goal_template_ids)), "Selecionar metas")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("pg-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
     </div>
@@ -3365,6 +3428,8 @@ async function saveProductGoal() {
     target_value: Number(targetValue),
     unit: document.getElementById("pg-unit").value.trim(),
     comments: document.getElementById("pg-comments").value.trim(),
+    category: document.getElementById("pg-category").value.trim(),
+    notes: document.getElementById("pg-notes").value.trim(),
     target_days: targetDays === "" ? null : Number(targetDays),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
@@ -3502,6 +3567,7 @@ function openReadyActivityPicker() {
           const objectiveDraft = {
             id: crypto.randomUUID(), product_id: productActivityState.productId,
             name: sourceObjective.name, completion_criteria: sourceObjective.completion_criteria || "",
+            category: sourceObjective.category || "", notes: sourceObjective.notes || "", comments: sourceObjective.comments || "",
             default_owner_id: sourceObjective.default_owner_id || null,
             target_days: sourceObjective.target_days ?? null,
             sort_order: Math.max(-1, ...targetObjectives.map((item) => Number(item.sort_order || 0))) + 1,
@@ -3683,7 +3749,6 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const selectedDependencies = new Set(normalizeIdList(current.dependency_template_ids, current.depends_on_template_id));
   const dependencyOptions = templates.filter((item) => item.id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
-  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -3712,10 +3777,11 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
-      <div class="task-schedule-row">
+      <div class="task-schedule-row task-schedule-row-wide">
         <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
         <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
         <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
+        <div class="field" title="Dias para iniciar depois que a tarefa da qual esta depende terminar (data real se concluída; senão, a prevista)."><label>Iniciar após dependência (dias)</label><input id="pa-start-after" type="number" min="0" step="1" value="${esc(current.start_after_days ?? "")}" placeholder="Ex.: 2"></div>
         <label class="task-business-days" for="pa-business-days"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
       <div class="task-name-row">
@@ -3726,7 +3792,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("pa-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
@@ -3809,6 +3875,7 @@ async function saveProductActivity() {
     recurrence: document.getElementById("pa-recurrence").value || "once",
     priority: document.getElementById("pa-priority").value || "normal",
     target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
+    start_after_days: document.getElementById("pa-start-after").value === "" ? null : Number(document.getElementById("pa-start-after").value),
     consider_business_days: document.getElementById("pa-business-days").checked,
     activity,
     information: document.getElementById("pa-information").value.trim(),
@@ -3905,9 +3972,15 @@ const TASK_STATUS = [
 const CLIENT_ASSIGNEE_VALUE = "__client__";
 let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
 
-function assigneePickerOptions() {
+function internalAssigneeUser(user) {
+  return ["admin", "collaborator"].includes(normalizedProfileRole(user?.role)) && (user?.status || "active") === "active";
+}
+
+function assigneePickerOptions(selected = []) {
+  const keep = new Set(selected instanceof Set ? selected : normalizeIdList(selected));
   return [
-    ...(cache?.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
+    ...(cache?.users || []).filter((user) => internalAssigneeUser(user) || keep.has(user.id))
+      .map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
     { value: CLIENT_ASSIGNEE_VALUE, label: "Cliente", detail: "Responsável da empresa" }
   ];
 }
@@ -3950,7 +4023,7 @@ function assigneeNames(ids, fallbackId = null, assignToClient = false) {
 
 function assigneeJobTitleOptions() {
   return [...new Map((cache?.users || [])
-    .filter((user) => user.status === "active" && String(user.job_title || "").trim())
+    .filter((user) => internalAssigneeUser(user) && String(user.job_title || "").trim())
     .map((user) => {
       const title = String(user.job_title).trim();
       return [title.toLocaleLowerCase("pt-BR"), { value: title, label: title }];
@@ -4477,19 +4550,21 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     const dependencyLabel = deliveryObjectiveDependencyLabel(objective);
     return `<tr data-objective-id="${esc(objective.id)}">
       <td><strong>${esc(objective.name)}</strong></td>
+      <td>${esc(objective.category || "—")}</td>
       <td>${esc(objective.completion_criteria || "—")}</td>
       <td>${esc(objective.comments || "—")}</td>
+      <td>${esc(objective.notes || "—")}</td>
       <td>${done}/${linked.length} · ${progress}%</td>
       <td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(objective.assignee_ids), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-objective-due" type="date" value="${esc(objective.due_date || "")}"></td>
       <td><select class="objective-control delivery-objective-status">${taskStatusOptions(objective.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
   return `<div class="task-table-wrap"><table><thead><tr>
-    <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="9" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
+    <th>Objetivo</th><th>Categoria</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="11" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
 }
 
 function deliveryObjectiveDependencyState(objective) {
@@ -4551,18 +4626,18 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
     return `<tr data-goal-id="${esc(goal.id)}">
-      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.metric)}</td>
+      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
-      <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
+      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(goal.assignee_ids), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-goal-due" type="date" value="${esc(goal.due_date || "")}"></td>
       <td><select class="objective-control delivery-goal-status">${taskStatusOptions(goal.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap"><table><thead><tr>
-    <th>Meta</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="11" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
+    <th>Meta</th><th>Categoria</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="13" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
   <div class="table-pagination"><span>${goals.length} meta(s)</span><div><span>Acompanhamento da entrega</span></div></div></div>`;
 }
 
@@ -4619,9 +4694,9 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
-  objectives: ["Objetivo", "Critério de conclusão", "Comentários", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
-  goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  objectives: ["Objetivo", "Categoria", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
+  goals: ["Meta", "Categoria", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
 
 function projectSectionValues(item, tasks = []) {
@@ -4633,7 +4708,7 @@ function projectSectionValues(item, tasks = []) {
       item.source_template_id ? "Produto" : "Dia a dia",
       PRIORITY_LABEL[item.priority || "normal"] || "Normal",
       dependencyNames(item.dependency_ids, item.depends_on_activity_id, tasks),
-      item.information || "—", item.group || "—", item.subgroup || "—", item.sector || "—", item.subsector || "—", item.module || "—", item.submodule || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
+      item.information || "—", item.group || "—", item.subgroup || "—", item.sector || "—", item.subsector || "—", item.module || "—", item.submodule || "—", item.category || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
       subtasks.total ? "Nas subtarefas" : `${checklist.done}/${checklist.total}`,
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
@@ -4653,7 +4728,7 @@ function projectSectionValues(item, tasks = []) {
     const done = linked.filter((task) => task.status === "done").length;
     const progress = linked.length ? Math.round(done / linked.length * 100) : 0;
     return [
-      item.name || "—", item.completion_criteria || "—", item.comments || "—", `${done}/${linked.length} · ${progress}%`,
+      item.name || "—", item.category || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
       deliveryObjectiveDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
@@ -4662,8 +4737,8 @@ function projectSectionValues(item, tasks = []) {
   const current = Number(item.current_value || 0);
   const target = Number(item.target_value || 0);
   return [
-    item.name || "—", item.metric || "—", current.toLocaleString("pt-BR"),
-    `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—",
+    item.name || "—", item.category || "—", item.metric || "—", current.toLocaleString("pt-BR"),
+    `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—", item.notes || "—",
     `${target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0}%`,
     deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
     item.due_date ? dt(item.due_date) : "—",
@@ -4744,10 +4819,12 @@ function renderProjectBoard(projectId) {
       : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
     body = view === "table" ? renderDeliveryObjectives(projectId, allTasks, rows)
+      : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER, "", `delivery-objectives:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "objectives", allTasks)
       : renderDeliverySectionDashboard(rows, "objectives", allTasks);
   } else {
     body = view === "table" ? renderDeliveryGoals(projectId, rows)
+      : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_GOAL_ADAPTER, "", `delivery-goals:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "goals")
       : renderDeliverySectionDashboard(rows, "goals");
   }
@@ -4757,7 +4834,7 @@ function renderProjectBoard(projectId) {
   if (projectBoardState.section === "objectives" && view === "table") wireDeliveryObjectives(projectId);
   if (projectBoardState.section === "goals" && view === "table") wireDeliveryGoals(projectId);
   wireProjectBoard(projectId);
-  if (projectBoardState.section === "activities" && view === "mindmap") {
+  if (view === "mindmap") {
     root.querySelectorAll(".delivery-mind-task-open[data-id]").forEach((button) =>
       button.addEventListener("click", () => openDeliveryTaskDrawer(projectId, button.dataset.id)));
     wireMindMap(root, () => renderProjectBoard(projectId));
@@ -4900,6 +4977,7 @@ async function updateProjectTask(taskId, patch) {
   if (isLive()) cache.activityRecords = tasks;
   else saveProjectTasks(tasks);
   refreshActivityCache();
+  if (patch.status || "actual_end_date" in patch) await recalculateDependencySchedules(task.project_id);
   return true;
 }
 
@@ -5002,7 +5080,7 @@ function openProjectViewMenu() {
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 198))}px`;
   panel.style.top = `${rect.bottom + 5}px`;
   panel.innerHTML = PROJECT_VIEW_MODES.map((mode) => {
-    const available = mode.id === "table" || projectBoardState.section === "activities";
+    const available = mode.id === "table" || projectBoardState.section === "activities" || (mode.id === "mindmap" && ["objectives", "goals"].includes(projectBoardState.section));
     return `<button class="view-option${projectBoardState.view === mode.id ? " active" : ""}" data-view="${mode.id}"${available ? "" : " disabled"}>
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${projectBoardState.view === mode.id ? "✓" : ""}</span>
   </button>`;
@@ -5103,7 +5181,6 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
   const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
-  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -5132,14 +5209,15 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
-      <div class="task-schedule-row task-schedule-row-compact">
+      <div class="task-schedule-row">
         <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
         <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
+        <div class="field" title="Dias para iniciar depois que a tarefa da qual esta depende terminar (data real se concluída; senão, a prevista)."><label>Iniciar após dependência (dias)</label><input id="project-task-start-after" type="number" min="0" step="1" value="${esc(current.start_after_days ?? "")}" placeholder="Ex.: 2"></div>
         <label class="task-business-days" for="project-task-business-days"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
-      <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("project-task-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
       <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("project-task-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
@@ -5219,6 +5297,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       actual_start_date: actualStart,
       actual_end_date: actualEnd,
       due_date: plannedEnd,
+      start_after_days: document.getElementById("project-task-start-after").value === "" ? null : Number(document.getElementById("project-task-start-after").value),
+      schedule_manual: editId && (plannedStart || null) === (current.planned_start_date || null) ? Boolean(current.schedule_manual) : Boolean(plannedStart),
       notes: current.notes || null,
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
       checklist: parentId ? (editId ? normalizeChecklist(current.checklist) : inheritedChecklist) : (subtasks.length ? [] : normalizeChecklist(current.checklist)),
@@ -5244,6 +5324,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       if (isLive()) cache.activityRecords = allTasks;
       else saveProjectTasks(allTasks);
       refreshActivityCache();
+      await recalculateDependencySchedules(projectId);
       projectBoardState.page = Math.max(1, Math.ceil(projectTasks(projectId).length / projectBoardState.pageSize));
       close();
       renderProjectBoard(projectId);
@@ -7629,6 +7710,51 @@ const DELIVERY_MIND_MAP_TASK_ADAPTER = {
   editAttrs: (item) => `data-id="${esc(item.id)}"`
 };
 
+const mindMapTitle = (adapter, item) => (adapter?.title || activityDisplayName)(item);
+const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }];
+const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (item.status || "todo"))?.label || "Em aberto";
+const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
+  scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
+  title: (item) => item.name || "Objetivo",
+  groupId: (item) => item.id,
+  parent: () => null,
+  dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => registrationProductName(node.item.product_id),
+  searchText: (item) => [registrationProductName(item.product_id), item.completion_criteria, item.comments, item.notes].join(" "),
+  editClass: "reg-template-edit",
+  editAttrs: (item) => `data-id="${esc(item.id)}" data-product="${esc(item.product_id)}"`
+};
+const REGISTRATION_MIND_MAP_GOAL_ADAPTER = {
+  ...REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER,
+  scope: "registration-goals", rootLabel: "Metas", countLabel: "meta(s)", addTitle: "Adicionar meta",
+  title: (item) => item.name || "Meta",
+  dependencies: (item) => normalizeIdList(item.dependency_goal_template_ids),
+  subtitle: (node) => `${registrationProductName(node.item.product_id)} · ${node.item.metric || "Sem indicador"}`,
+  searchText: (item) => [registrationProductName(item.product_id), item.metric, item.unit, item.comments, item.notes].join(" ")
+};
+const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
+  scope: "delivery-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos",
+  title: (item) => item.name || "Objetivo",
+  groupId: (item) => item.id,
+  parent: () => null,
+  dependencies: (item) => normalizeIdList(item.dependency_objective_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => node.item.due_date ? `${mindMapStatusLabel(node.item)} · ${dt(node.item.due_date)}` : mindMapStatusLabel(node.item),
+  searchText: (item) => [item.completion_criteria, item.comments, item.notes].join(" "),
+  editClass: "",
+  editAttrs: () => ""
+};
+const DELIVERY_MIND_MAP_GOAL_ADAPTER = {
+  ...DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER,
+  scope: "delivery-goals", rootLabel: "Metas",
+  title: (item) => item.name || "Meta",
+  dependencies: (item) => normalizeIdList(item.dependency_goal_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => `${Number(node.item.current_value || 0).toLocaleString("pt-BR")} / ${Number(node.item.target_value || 0).toLocaleString("pt-BR")} ${node.item.unit || ""}`.trim() + ` · ${mindMapStatusLabel(node.item)}`,
+  searchText: (item) => [item.metric, item.unit, item.comments, item.notes].join(" ")
+};
+
 function registrationTaskHierarchy(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
   const groups = new Map();
   items.forEach((item) => {
@@ -7657,7 +7783,7 @@ function registrationTaskHierarchy(items, adapter = REGISTRATION_MIND_MAP_TEMPLA
   });
   const roots = nodes.filter((node) => !node.parentId || !nodeById.has(node.parentId));
   const compare = (a, b) => Number(a.item.sort_order || 0) - Number(b.item.sort_order || 0)
-    || activityDisplayName(a.item).localeCompare(activityDisplayName(b.item), "pt-BR", { sensitivity: "base" });
+    || mindMapTitle(adapter, a.item).localeCompare(mindMapTitle(adapter, b.item), "pt-BR", { sensitivity: "base" });
   const remaining = new Map(roots.map((node) => [node.id, node]));
   const ordered = [];
   while (remaining.size) {
@@ -7670,22 +7796,25 @@ function registrationTaskHierarchy(items, adapter = REGISTRATION_MIND_MAP_TEMPLA
 }
 
 function registrationMindMapTaskHtml(node, hierarchy, orderById, adapter) {
-  const dependencyNames = [...node.dependencies].map((id) => hierarchy.nodeById.get(id)?.item).filter(Boolean).map(activityDisplayName);
+  const dependencyNames = [
+    ...[...node.dependencies].map((id) => hierarchy.nodeById.get(id)?.item).filter(Boolean).map((item) => mindMapTitle(adapter, item)),
+    ...(adapter.extraDependencyNames?.(node.item) || [])
+  ];
   const subtasks = hierarchy.children.get(node.id) || [];
   const order = orderById.get(node.id) || 0;
   const depsAttr = (entry) => esc([...entry.dependencies].join(","));
   return `<article class="registration-mind-task${node.item.status === "done" ? " is-done" : ""}" data-node-id="${esc(node.id)}" data-deps="${depsAttr(node)}">
-    <button class="registration-mind-task-main ${adapter.editClass}" type="button" ${adapter.editAttrs(node.item)}>
+    <button class="registration-mind-task-main ${adapter.editClass || "is-static"}" type="button" ${adapter.editAttrs(node.item)}${adapter.editClass ? "" : ' tabindex="-1"'}>
       <span class="registration-mind-order">${String(order).padStart(2, "0")}</span>
-      <span class="registration-mind-task-copy"><strong>${esc(activityDisplayName(node.item))}</strong><small>${esc(adapter.subtitle(node))}</small></span>
+      <span class="registration-mind-task-copy"><strong>${esc(mindMapTitle(adapter, node.item))}</strong><small>${esc(adapter.subtitle(node))}</small></span>
     </button>
     ${dependencyNames.length ? `<div class="registration-mind-dependency"><span>Após</span>${dependencyNames.map((name) => `<b>${esc(name)}</b>`).join("")}</div>` : ""}
-    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${esc(activityDisplayName(subtask.item))}</strong></button>`).join("")}</div>` : ""}
+    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${esc(mindMapTitle(adapter, subtask.item))}</strong></button>`).join("")}</div>` : ""}
   </article>`;
 }
 
-function registrationMindMapBuckets(nodes, orderById, level) {
-  const { key, empty } = REGISTRATION_MIND_MAP_LEVELS[level];
+function registrationMindMapBuckets(nodes, orderById, level, levels = REGISTRATION_MIND_MAP_LEVELS) {
+  const { key, empty } = levels[level];
   const buckets = new Map();
   nodes.forEach((node) => {
     const label = String(node.item[key] || "").trim();
@@ -7701,10 +7830,11 @@ function registrationMindMapBuckets(nodes, orderById, level) {
 function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orderById, adapter) {
   const branchKey = `${parentKey}::${bucket.key}`;
   const collapsed = !bucket.empty && registrationMindMapCollapsedBranches.has(branchKey);
-  const leaf = level === REGISTRATION_MIND_MAP_LEVELS.length - 1;
+  const levels = adapter.levels || REGISTRATION_MIND_MAP_LEVELS;
+  const leaf = level === levels.length - 1;
   const content = leaf
     ? `<div class="registration-mind-tasks">${bucket.nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById, adapter)).join("")}</div>`
-    : registrationMindMapBuckets(bucket.nodes, orderById, level + 1).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById, adapter)).join("");
+    : registrationMindMapBuckets(bucket.nodes, orderById, level + 1, levels).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById, adapter)).join("");
   const head = bucket.empty
     ? '<span class="registration-mind-pass" aria-hidden="true"></span>'
     : `<button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(bucket.label)}</strong><small>${bucket.nodes.length}</small></button>`;
@@ -7722,29 +7852,29 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
     if (!query) return true;
     const children = hierarchy.children.get(node.id) || [];
     const text = [...node.linked, ...children.flatMap((child) => child.linked)].flatMap((item) => [
-      activityDisplayName(item), item.category, item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, adapter.searchText(item)
+      mindMapTitle(adapter, item), item.category, item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, adapter.searchText(item)
     ]).join(" ").toLocaleLowerCase("pt-BR");
     return text.includes(query);
   });
-  const branches = registrationMindMapBuckets(nodes, orderById, 0).map((bucket) => registrationMindMapBranchHtml(bucket, scopeKey, 0, hierarchy, orderById, adapter)).join("");
-  const map = branches || `<div class="empty">${query ? "Nenhuma tarefa corresponde à busca." : "Nenhuma tarefa para exibir."}</div>`;
+  const branches = registrationMindMapBuckets(nodes, orderById, 0, adapter.levels || REGISTRATION_MIND_MAP_LEVELS).map((bucket) => registrationMindMapBranchHtml(bucket, scopeKey, 0, hierarchy, orderById, adapter)).join("");
+  const map = branches || `<div class="empty">${query ? "Nenhum item corresponde à busca." : "Nenhum item para exibir."}</div>`;
   const vertical = registrationMindMapOrientation === "vertical";
   const fullscreen = registrationMindMapFullscreen;
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
   return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}">
     <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
     <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
-    <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
+    <div class="registration-mindmap-root"><strong>${esc(adapter.rootLabel || "Tarefas")}</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>` };
 }
 
-function registrationTaskMindMapHtml(items) {
+function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
   const state = registrationTableState();
-  const map = registrationMindMapShellHtml(items, REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, state.search);
+  const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="muted">${map.count} tarefa(s) no mapa</span></div>
-    <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="Adicionar tarefa">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+    <div class="registration-toolbar-left"><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
+    <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
+    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${map.html}`;
 }
 
@@ -8157,12 +8287,13 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
         clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 9);
+    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_GOAL_ADAPTER);
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -8171,12 +8302,13 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
         clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th>Comentários</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 8);
+    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 10);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER);
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -8220,7 +8352,7 @@ function renderRegistrationsSection() {
     productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "objectives" };
     openProductObjectiveDrawer(null, button.dataset.id);
   }));
-  if (section === "activities" && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
+  if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
   wireRegistrationTable();
 }
 
@@ -8314,11 +8446,15 @@ function setupRegistrationToolbar(root, table) {
     addButton.title = originalLabel ? `Adicionar ${originalLabel.toLocaleLowerCase("pt-BR")}` : "Adicionar";
     center.appendChild(addButton);
   }
-  const viewControl = registrationsState.section === "activities"
+  const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
     ? '<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button>'
     : '<button class="view active" type="button">Tabela</button>';
-  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button>`;
+  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
+  right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegistrationDataMenu(event.currentTarget, table);
+  });
   const filterStrip = document.createElement("div");
   filterStrip.className = "registration-filter-strip";
   filterStrip.innerHTML = `<div class="registration-filter-badges"></div><button class="filter-clear-all registration-filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button>`;
@@ -8342,6 +8478,49 @@ function registrationColumnDefinitions(table) {
   return [...table.querySelectorAll("thead th[data-registration-key]")]
     .map((header) => ({ k: header.dataset.registrationKey, h: header.dataset.registrationLabel }))
     .sort((a, b) => Number(a.k.slice(1)) - Number(b.k.slice(1)));
+}
+
+function exportRegistrationCSV(table, visibleOnly) {
+  const tableState = registrationTableState();
+  const query = String(tableState.search || "").toLocaleLowerCase("pt-BR");
+  const isShown = (element) => element && !element.hidden && getComputedStyle(element).display !== "none";
+  const headers = [...table.querySelectorAll("thead th")].map((th, index) => ({ th, index }))
+    .filter(({ th }) => !th.classList.contains("table-actions-head") && !th.classList.contains("select-head")
+      && th.textContent.replace(/[▲▼]/g, "").trim() && (!visibleOnly || isShown(th)));
+  const rows = registrationTableRows(table, true).filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
+    && Object.entries(tableState.filters || {}).every(([key, selected]) => !selected?.size || selected.has(registrationCell(row, key)?.textContent.trim() || "—")))
+    .map((row) => headers.map(({ index }) => String(row.children[index]?.textContent || "").replace(/\s+/g, " ").trim()));
+  const columns = headers.map(({ th }, position) => ({ k: position, h: th.dataset.registrationLabel || th.textContent.replace(/[▲▼]/g, "").trim(), csv: (_value, row) => row[position] ?? "" }));
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  downloadCSV(columns, rows, `enterpriser_cadastros_${registrationsState.section}_${visibleOnly ? "colunas_visiveis" : "todas_colunas"}_${stamp}.csv`);
+  toast(`CSV exportado: ${rows.length} linha(s).`);
+}
+
+function openRegistrationDataMenu(anchor, table) {
+  document.getElementById("registration-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "registration-data-dd";
+  panel.className = "data-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Cadastros</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn registration-export-visible" type="button">Exportar colunas visíveis</button>
+    <button class="dd-menu-btn registration-export-all" type="button">Exportar todas as colunas</button>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.querySelector(".registration-export-visible").addEventListener("click", () => { panel.remove(); exportRegistrationCSV(table, true); });
+  panel.querySelector(".registration-export-all").addEventListener("click", () => { panel.remove(); exportRegistrationCSV(table, false); });
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
 }
 
 function registrationCell(row, key) {

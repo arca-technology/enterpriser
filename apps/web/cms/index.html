@@ -709,6 +709,8 @@
   .registration-mind-controls{position:absolute;top:10px;left:16px;z-index:6;display:flex;gap:4px;padding:3px;border:1px solid var(--border);border-radius:7px;background:color-mix(in srgb,var(--panel) 88%,transparent);box-shadow:0 4px 14px rgba(0,0,0,.18)}
   .registration-mindmap-shell.is-fullscreen{position:fixed;inset:0;z-index:7;background:var(--bg)}
   .registration-mind-task.is-done{opacity:.6}
+  .registration-mind-task-main.is-static{cursor:default}
+  .registration-mind-task-main.is-static:hover{background:transparent}
   /* Ligações de dependência entre tarefas do mapa mental. */
   .registration-mindmap-canvas{position:relative;z-index:0;padding-right:96px}
   .registration-mind-links{position:absolute;top:0;left:0;z-index:-1;overflow:visible;pointer-events:none}
@@ -868,6 +870,7 @@
   .activity-form-drawer .task-form-grid>.task-form-wide{grid-column:1 / -1}
   .activity-form-drawer .task-schedule-row{grid-column:1 / -1;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.82fr) 72px;gap:8px;align-items:end}
   .activity-form-drawer .task-schedule-row.task-schedule-row-compact{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 72px}
+  .activity-form-drawer .task-schedule-row.task-schedule-row-wide{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.82fr) minmax(0,.82fr) 72px}
   .activity-form-drawer .task-schedule-row>.field{min-width:0}
   .activity-form-drawer .task-business-days{height:38px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap}
   .activity-form-drawer .task-business-days input{width:14px;height:14px;flex:0 0 14px;margin:0;accent-color:var(--blue)}
@@ -1248,7 +1251,7 @@
     .activity-form-drawer.task-form-drawer{width:100vw;min-width:0;max-width:none}
     .activity-form-drawer .task-form-grid{grid-template-columns:1fr}
     .activity-form-drawer .task-form-grid>.field{grid-column:1}
-    .activity-form-drawer .task-schedule-row,.activity-form-drawer .task-schedule-row.task-schedule-row-compact{grid-column:1;grid-template-columns:repeat(2,minmax(0,1fr))}
+    .activity-form-drawer .task-schedule-row,.activity-form-drawer .task-schedule-row.task-schedule-row-compact,.activity-form-drawer .task-schedule-row.task-schedule-row-wide{grid-column:1;grid-template-columns:repeat(2,minmax(0,1fr))}
     .activity-form-drawer .task-name-row{grid-column:1;grid-template-columns:minmax(0,1fr) 108px}
     .activity-form-drawer .task-name-row>.field:first-child{grid-column:1 / -1}
     .modal-foot{padding:10px 12px}
