@@ -2880,8 +2880,16 @@ let productActivitySavePending = false;
 let productObjectiveSavePending = false;
 let productGoalSavePending = false;
 const registrationExpandedTaskGroups = new Set();
-const registrationMindMapCollapsedGroups = new Set();
-const registrationMindMapCollapsedCategories = new Set();
+const registrationMindMapCollapsedBranches = new Set();
+const REGISTRATION_MIND_MAP_LEVELS = [
+  { key: "category", empty: "Sem categoria" },
+  { key: "channel", empty: "Sem canal" },
+  { key: "module", empty: "Sem módulo" },
+  { key: "submodule", empty: "Sem submódulo" }
+];
+let registrationMindMapOrientation = (() => {
+  try { return localStorage.getItem("registrationMindMapOrientation") === "vertical" ? "vertical" : "horizontal"; } catch { return "horizontal"; }
+})();
 
 function productTemplateSubtasks(templateId, templates = loadProductActivities()) {
   return templates.filter((item) => item.parent_template_id === templateId);
@@ -7636,12 +7644,30 @@ function registrationMindMapTaskHtml(node, hierarchy, orderById, looseReason = "
   </article>`;
 }
 
-function registrationMindMapCategoryHtml(groupKey, categoryLabel, nodes, hierarchy, orderById) {
-  const categoryKey = `${groupKey}::${categoryLabel.toLocaleLowerCase("pt-BR")}`;
-  const collapsed = registrationMindMapCollapsedCategories.has(categoryKey);
-  return `<section class="registration-mind-category${collapsed ? " is-collapsed" : ""}">
-    <button class="registration-mind-category-toggle" type="button" data-category-key="${esc(categoryKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(categoryLabel)}</strong><small>${nodes.length}</small></button>
-    <div class="registration-mind-tasks"${collapsed ? " hidden" : ""}>${nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById)).join("")}</div>
+function registrationMindMapBuckets(nodes, orderById, level) {
+  const { key, empty } = REGISTRATION_MIND_MAP_LEVELS[level];
+  const buckets = new Map();
+  nodes.forEach((node) => {
+    const label = String(node.item[key] || "").trim();
+    const bucketKey = label.toLocaleLowerCase("pt-BR");
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, { key: bucketKey, label: label || empty, empty: !label, nodes: [], firstOrder: Infinity });
+    const bucket = buckets.get(bucketKey);
+    bucket.nodes.push(node);
+    bucket.firstOrder = Math.min(bucket.firstOrder, orderById.get(node.id) || 0);
+  });
+  return [...buckets.values()].sort((a, b) => a.firstOrder - b.firstOrder);
+}
+
+function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orderById) {
+  const branchKey = `${parentKey}::${bucket.key}`;
+  const collapsed = registrationMindMapCollapsedBranches.has(branchKey);
+  const leaf = level === REGISTRATION_MIND_MAP_LEVELS.length - 1;
+  const content = leaf
+    ? `<div class="registration-mind-tasks">${bucket.nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById)).join("")}</div>`
+    : registrationMindMapBuckets(bucket.nodes, orderById, level + 1).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById)).join("");
+  return `<section class="registration-mind-branch level-${level}${bucket.empty ? " is-empty" : ""}${collapsed ? " is-collapsed" : ""}">
+    <button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(bucket.label)}</strong><small>${bucket.nodes.length}</small></button>
+    <div class="registration-mind-children${leaf ? " is-leaf" : ""}"${collapsed ? " hidden" : ""}>${content}</div>
   </section>`;
 }
 
@@ -7654,45 +7680,18 @@ function registrationTaskMindMapHtml(items) {
     if (!query) return true;
     const children = hierarchy.children.get(node.id) || [];
     const text = [...node.linked, ...children.flatMap((child) => child.linked)].flatMap((item) => [
-      activityDisplayName(item), item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, registrationProductName(item.product_id)
+      activityDisplayName(item), item.category, item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, registrationProductName(item.product_id)
     ]).join(" ").toLocaleLowerCase("pt-BR");
     return text.includes(query);
   });
-  const completeGroups = new Map();
-  const loose = [];
-  nodes.forEach((node) => {
-    const group = String(node.item.group || "").trim();
-    const category = String(node.item.subgroup || "").trim();
-    if (!group || !category) {
-      loose.push({ node, reason: !group && !category ? "Sem grupo e subgrupo" : !group ? "Sem grupo" : "Sem subgrupo" });
-      return;
-    }
-    const groupKey = group.toLocaleLowerCase("pt-BR");
-    if (!completeGroups.has(groupKey)) completeGroups.set(groupKey, { label: group, categories: new Map(), firstOrder: orderById.get(node.id) });
-    const bucket = completeGroups.get(groupKey);
-    const categoryKey = category.toLocaleLowerCase("pt-BR");
-    if (!bucket.categories.has(categoryKey)) bucket.categories.set(categoryKey, { label: category, nodes: [] });
-    bucket.categories.get(categoryKey).nodes.push(node);
-    bucket.firstOrder = Math.min(bucket.firstOrder, orderById.get(node.id));
-  });
-  const branches = [...completeGroups.entries()].sort((a, b) => a[1].firstOrder - b[1].firstOrder).map(([groupKey, group]) => {
-    const collapsed = registrationMindMapCollapsedGroups.has(groupKey);
-    const categories = [...group.categories.values()].sort((a, b) => Math.min(...a.nodes.map((node) => orderById.get(node.id))) - Math.min(...b.nodes.map((node) => orderById.get(node.id))));
-    return `<section class="registration-mind-group${collapsed ? " is-collapsed" : ""}">
-      <button class="registration-mind-group-toggle" type="button" data-group-key="${esc(groupKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(group.label)}</strong><small>${categories.reduce((sum, category) => sum + category.nodes.length, 0)}</small></button>
-      <div class="registration-mind-categories"${collapsed ? " hidden" : ""}>${categories.map((category) => registrationMindMapCategoryHtml(groupKey, category.label, category.nodes, hierarchy, orderById)).join("")}</div>
-    </section>`;
-  }).join("");
-  const looseBranch = loose.length ? `<section class="registration-mind-group registration-mind-loose">
-    <button class="registration-mind-group-toggle" type="button" data-group-key="__loose"><span>${registrationMindMapCollapsedGroups.has("__loose") ? "▸" : "▾"}</span><strong>Sem hierarquia</strong><small>${loose.length}</small></button>
-    <div class="registration-mind-categories"${registrationMindMapCollapsedGroups.has("__loose") ? " hidden" : ""}><section class="registration-mind-category"><div class="registration-mind-tasks">${loose.map(({ node, reason }) => registrationMindMapTaskHtml(node, hierarchy, orderById, reason)).join("")}</div></section></div>
-  </section>` : "";
-  const map = (branches || looseBranch) ? `${branches}${looseBranch}` : '<div class="empty">Nenhuma tarefa corresponde à busca.</div>';
+  const branches = registrationMindMapBuckets(nodes, orderById, 0).map((bucket) => registrationMindMapBranchHtml(bucket, "root", 0, hierarchy, orderById)).join("");
+  const map = branches || '<div class="empty">Nenhuma tarefa corresponde à busca.</div>';
+  const vertical = registrationMindMapOrientation === "vertical";
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="muted">${nodes.length} tarefa(s) no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="Adicionar tarefa">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
-  </div><div class="registration-mindmap-shell"><div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas">
+    <div class="registration-toolbar-right"><div class="registration-mind-orientation" role="group" aria-label="Orientação do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button></div><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+  </div><div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}"><div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas">
     <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>`;
 }
@@ -7710,23 +7709,22 @@ function wireRegistrationMindMap(root) {
     event.stopPropagation();
     openRegistrationViewMenu();
   });
-  root.querySelectorAll(".registration-mind-group-toggle").forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.groupKey;
-    const branch = button.closest(".registration-mind-group")?.querySelector(":scope > .registration-mind-categories");
-    if (!branch) return;
-    branch.hidden = !branch.hidden;
-    button.querySelector("span").textContent = branch.hidden ? "▸" : "▾";
-    if (branch.hidden) registrationMindMapCollapsedGroups.add(key);
-    else registrationMindMapCollapsedGroups.delete(key);
+  root.querySelectorAll(".registration-mind-orientation [data-orientation]").forEach((button) => button.addEventListener("click", () => {
+    if (registrationMindMapOrientation === button.dataset.orientation) return;
+    registrationMindMapOrientation = button.dataset.orientation;
+    try { localStorage.setItem("registrationMindMapOrientation", registrationMindMapOrientation); } catch {}
+    renderRegistrationsSection();
   }));
-  root.querySelectorAll(".registration-mind-category-toggle").forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.categoryKey;
-    const tasks = button.closest(".registration-mind-category")?.querySelector(":scope > .registration-mind-tasks");
-    if (!tasks) return;
-    tasks.hidden = !tasks.hidden;
-    button.querySelector("span").textContent = tasks.hidden ? "▸" : "▾";
-    if (tasks.hidden) registrationMindMapCollapsedCategories.add(key);
-    else registrationMindMapCollapsedCategories.delete(key);
+  root.querySelectorAll(".registration-mind-toggle").forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.branchKey;
+    const branch = button.closest(".registration-mind-branch");
+    const children = branch?.querySelector(":scope > .registration-mind-children");
+    if (!children) return;
+    children.hidden = !children.hidden;
+    branch.classList.toggle("is-collapsed", children.hidden);
+    button.querySelector("span").textContent = children.hidden ? "▸" : "▾";
+    if (children.hidden) registrationMindMapCollapsedBranches.add(key);
+    else registrationMindMapCollapsedBranches.delete(key);
   }));
 }
 
