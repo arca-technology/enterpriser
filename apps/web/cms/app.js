@@ -215,6 +215,32 @@ function wireTaskGroupSelect(groupId, subgroupId) {
   group.addEventListener("change", () => update(false));
   update(true);
 }
+const TASK_STRUCTURE_REQUIRED_LABEL = "Canal, Módulo e Tipo";
+function taskStructureFieldsFilled(fieldIds) {
+  return fieldIds.every((id) => String(document.getElementById(id)?.value || "").trim());
+}
+function wireTaskStructureToggle(toggleId, inputId, labelId, requiredFieldIds = []) {
+  const toggle = document.getElementById(toggleId);
+  const input = document.getElementById(inputId);
+  const label = document.getElementById(labelId);
+  if (!toggle || !input || !label) return;
+  const locked = toggle.disabled;
+  const baseLabel = label.textContent.replace(/\s*\*$/, "");
+  const update = () => {
+    if (!locked) {
+      const ready = taskStructureFieldsFilled(requiredFieldIds);
+      toggle.disabled = !ready;
+      if (!ready) toggle.checked = false;
+      toggle.closest("label")?.setAttribute("title", ready ? "" : `Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`);
+    }
+    input.disabled = toggle.checked;
+    input.required = !toggle.checked;
+    label.textContent = toggle.checked ? baseLabel : `${baseLabel} *`;
+  };
+  toggle.addEventListener("change", update);
+  requiredFieldIds.forEach((id) => document.getElementById(id)?.addEventListener("input", update));
+  update();
+}
 const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
 const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
@@ -1572,7 +1598,7 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.channel, item.module, item.submodule, item.type, item.activity || item.title]
+  const parts = [item.channel, item.module, item.submodule, item.activity || item.title, item.type]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -3593,7 +3619,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const templates = allTemplates.filter((item) => item.product_id === productActivityState.productId);
   const editing = templates.find((item) => item.id === editId) || null;
   const cloneSource = templates.find((item) => item.id === cloneSourceId) || null;
-  const current = editing || (cloneSource ? { ...cloneSource, id: null, activity: `${cloneSource.activity} (cópia)` } : {});
+  const current = editing || (cloneSource ? { ...cloneSource, id: null, activity: cloneSource.activity ? `${cloneSource.activity} (cópia)` : "" } : {});
+  const useStructure = Boolean((editing || cloneSource) && !String(current.activity || "").trim());
   const requestedParent = allTemplates.find((item) => item.id === (editing?.parent_template_id || cloneSource?.parent_template_id || parentTemplateId)) || null;
   if (requestedParent?.parent_template_id) {
     toast("Uma subtarefa não pode receber outra subtarefa.", true);
@@ -3672,7 +3699,10 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
         <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
         <label class="task-business-days" for="pa-business-days"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
-      <div class="field task-form-wide"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+      <div class="task-name-row">
+        <div class="field"><label id="pa-activity-label">${productActivityParentGroupId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+        <label class="task-use-structure" for="pa-use-structure"><input id="pa-use-structure" type="checkbox"${useStructure ? " checked" : ""}><span>Usar estrutura</span></label>
+      </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
@@ -3701,8 +3731,9 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireMultiPicker("pa-dependencies");
   wireMultiPicker("pa-documents");
   wireMultiPicker("pa-tables");
+  wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-channel", "pa-module", "pa-type"]);
   renderProductActivityChecklistEditor();
-  document.getElementById("pa-activity")?.focus({ preventScroll: true });
+  (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-channel") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
 }
 
 function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
@@ -3721,8 +3752,10 @@ function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
 async function saveProductActivity() {
   if (productActivityState.editId ? !requireCurrentUserPermission("activityTemplates", "edit", "Tarefas") : !(currentUserCan("activityTemplates", "create") || currentUserCan("activityTemplates", "clone"))) { if (!productActivityState.editId) toast("Sem permissão para cadastrar tarefas.", true); return; }
   if (productActivitySavePending) return;
-  const activity = document.getElementById("pa-activity").value.trim();
-  if (!activity) { toast("Informe a tarefa.", true); return; }
+  const useStructure = document.getElementById("pa-use-structure").checked;
+  const activity = useStructure ? "" : document.getElementById("pa-activity").value.trim();
+  if (!useStructure && !activity) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
+  if (useStructure && !taskStructureFieldsFilled(["pa-channel", "pa-module", "pa-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
   const rows = loadProductActivities();
   const current = rows.find((item) => item.id === productActivityState.editId);
   const recordId = current?.id || crypto.randomUUID();
@@ -5050,13 +5083,17 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.recurrence || "once") ? " selected" : ""}>${label}</option>`).join("");
   const priorityOptions = PRIORITY_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.priority || "normal") ? " selected" : ""}>${label}</option>`).join("");
+  const useStructure = Boolean(editId && !String(current.title || "").trim());
   const overlay = document.createElement("div");
   overlay.id = "project-task-drawer-overlay";
   overlay.className = "activity-form-overlay";
   overlay.innerHTML = `<aside class="activity-form-drawer task-form-drawer"><h3>${editId ? (parentId ? "Editar subtarefa" : "Editar tarefa") : (parentId ? "Nova subtarefa" : "Nova tarefa")}<button class="modal-close-x" id="project-task-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form task-form-grid">
       <div class="field"><label>Origem</label><input value="${esc(parentTask ? `Subtarefa de ${activityDisplayName(parentTask)}` : current.source_template_id ? "Produto" : "Dia a dia")}" disabled></div>
-      <div class="field"><label>${parentId ? "Subtarefa" : "Tarefa"} *</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
+      <div class="task-name-row task-form-wide">
+        <div class="field"><label id="project-task-title-label">${parentId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
+        <label class="task-use-structure" for="project-task-use-structure"><input id="project-task-use-structure" type="checkbox"${useStructure ? " checked" : ""}${current.source_template_id ? " disabled" : ""}><span>Usar estrutura</span></label>
+      </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="project-task-information" rows="3" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
       <div class="field"><label>Grupo</label><select id="project-task-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group || parentTask?.group, "Sem grupo")}</select></div>
       <div class="field"><label>Subgrupo</label><select id="project-task-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group || parentTask?.group, TASK_GROUP_OPTIONS)] || [], current.subgroup || parentTask?.subgroup, "Sem subgrupo")}</select></div>
@@ -5097,6 +5134,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   wireMultiPicker("project-task-assignee-job-titles");
   wireMultiPicker("project-task-documents");
   wireMultiPicker("project-task-tables");
+  wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-channel", "project-task-module", "project-task-type"]);
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
@@ -5104,8 +5142,10 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   document.getElementById("project-task-save").addEventListener("click", async () => {
     const saveButton = document.getElementById("project-task-save");
     if (saveButton?.disabled) return;
-    const title = document.getElementById("project-task-title").value.trim();
-    if (!title) { toast("Informe a tarefa.", true); return; }
+    const useStructure = document.getElementById("project-task-use-structure").checked;
+    const title = useStructure ? "" : document.getElementById("project-task-title").value.trim();
+    if (!useStructure && !title) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
+    if (useStructure && !document.getElementById("project-task-use-structure").disabled && !taskStructureFieldsFilled(["project-task-channel", "project-task-module", "project-task-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
     const dependencyIds = multiPickerValues("project-task-dependencies");
     const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
@@ -5183,7 +5223,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       toast("Erro ao salvar tarefa · " + err.message, true);
     }
   });
-  document.getElementById("project-task-title").focus();
+  (document.getElementById("project-task-title").disabled ? document.getElementById("project-task-channel") : document.getElementById("project-task-title"))?.focus();
 }
 
 function projectTableRows(table) {

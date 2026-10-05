@@ -834,6 +834,11 @@
   .activity-form-drawer .task-schedule-row>.field{min-width:0}
   .activity-form-drawer .task-business-days{height:38px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-size:9.5px;font-weight:700;cursor:pointer;white-space:nowrap}
   .activity-form-drawer .task-business-days input{width:14px;height:14px;flex:0 0 14px;margin:0;accent-color:var(--blue)}
+  .activity-form-drawer .task-name-row{grid-column:1 / -1;display:grid;grid-template-columns:minmax(0,1fr) 108px;gap:8px;align-items:end}
+  .activity-form-drawer .task-name-row>.field{min-width:0}
+  .activity-form-drawer .task-use-structure{height:38px;display:flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .activity-form-drawer .task-use-structure:has(input:disabled){cursor:default;opacity:.55}
+  .activity-form-drawer .task-use-structure input{width:14px;height:14px;flex:0 0 14px;margin:0;accent-color:var(--blue)}
   .activity-form-drawer .task-form-grid textarea{min-height:68px}
   .ready-activity-search{padding:14px 18px;border-bottom:1px solid var(--border2)}
   .ready-activity-search input{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 10px;font:inherit}
@@ -1207,6 +1212,7 @@
     .activity-form-drawer .task-form-grid{grid-template-columns:1fr}
     .activity-form-drawer .task-form-grid>.field{grid-column:1}
     .activity-form-drawer .task-schedule-row,.activity-form-drawer .task-schedule-row.task-schedule-row-compact{grid-column:1;grid-template-columns:repeat(2,minmax(0,1fr))}
+    .activity-form-drawer .task-name-row{grid-column:1;grid-template-columns:minmax(0,1fr) 108px}
     .modal-foot{padding:10px 12px}
   }
   /* Status de tarefa editável diretamente nas tabelas. */
