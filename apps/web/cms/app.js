@@ -514,18 +514,111 @@ async function api(path, opts = {}) {
     throw new Error(`Perfil ${label}: alterações no banco estão bloqueadas.`);
   }
   const headers = { apikey: c.anonKey, Authorization: `Bearer ${token || c.anonKey}`, ...(opts.headers || {}) };
-  const res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
+  const startedAt = performance.now();
+  const [resource, query = ""] = String(path).split("?");
+  const entry = { at: new Date().toISOString(), method, resource, query: query.slice(0, 300), status: 0, ms: 0, error: "" };
+  let res;
+  try {
+    res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
+  } catch (networkError) {
+    entry.ms = Math.round(performance.now() - startedAt);
+    entry.error = networkError?.message || "Falha de rede";
+    recordApiRequest(entry);
+    throw networkError;
+  }
+  entry.status = res.status;
+  entry.ms = Math.round(performance.now() - startedAt);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
+    entry.error = `${res.statusText}${txt ? " · " + txt.slice(0, 500) : ""}`.trim();
+    recordApiRequest(entry);
     if (res.status === 401) {
       storeAuthSession(null);
       showLogin("Sua sessão expirou. Entre novamente.");
     }
     throw new Error(`${res.status} ${res.statusText}${txt ? " · " + txt.slice(0, 120) : ""}`);
   }
+  recordApiRequest(entry);
   if (res.status === 204) return null;
   const text = await res.text();
   return text.trim() ? JSON.parse(text) : null;
+}
+
+// ---------- Diagnóstico de chamadas e atividades dos usuários ----------
+const API_REQUEST_LOG = [];
+const API_REQUEST_LOG_LIMIT = 500;
+const DIAGNOSTIC_TABLES = new Set(["user_activities", "app_request_errors"]);
+function diagnosticInsert(table, body) {
+  if (!isLive() || !currentProfile?.id) return;
+  const c = getCfg();
+  getAccessToken().then((token) => {
+    if (!token) return null;
+    return fetch(`${c.url}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ profile_id: currentProfile.id, ...body })
+    });
+  }).catch(() => {});
+}
+function recordApiRequest(entry) {
+  API_REQUEST_LOG.unshift(entry);
+  if (API_REQUEST_LOG.length > API_REQUEST_LOG_LIMIT) API_REQUEST_LOG.length = API_REQUEST_LOG_LIMIT;
+  if (entry.error && !DIAGNOSTIC_TABLES.has(entry.resource) && entry.status !== 401) {
+    diagnosticInsert("app_request_errors", { method: entry.method, path: `${entry.resource}${entry.query ? `?${entry.query}` : ""}`.slice(0, 600), status: entry.status || null, message: entry.error.slice(0, 1000) });
+  }
+}
+let activityLogSuppressed = 0;
+const ACTIVITY_ENTITY_LABEL = {
+  companies: "Empresa", contacts: "Pessoa", deals: "Negócio", products: "Produto", projects: "Entrega", activities: "Tarefa",
+  users: "Usuário", pipelines: "Pipeline", productActivities: "Tarefa (cadastro)", productObjectives: "Objetivo (cadastro)",
+  productGoals: "Meta (cadastro)", deliveryObjectives: "Objetivo", deliveryGoals: "Meta", files: "Arquivo", processes: "Processo",
+  documents: "Documento", customTables: "Tabela", activityComments: "Comentário"
+};
+const ACTIVITY_LOG_SKIP_TABLES = new Set(["directMessages", "contactCompanies"]);
+function activitySourceRows(table) {
+  try {
+    if (table === "activities") return cache?.activityRecords || [];
+    if (table === "productActivities") return loadProductActivities();
+    if (table === "productObjectives") return loadProductObjectives();
+    if (table === "productGoals") return loadProductGoals();
+    if (table === "deliveryObjectives") return loadDeliveryObjectives();
+    if (table === "deliveryGoals") return loadDeliveryGoals();
+    return Array.isArray(cache?.[table]) ? cache[table] : [];
+  } catch (e) { return []; }
+}
+function activityRecordLabel(table, id, body = {}) {
+  const key = pk(table);
+  const stored = id == null ? null : activitySourceRows(table).find((item) => item?.[key] === id);
+  const source = { ...(stored || {}), ...(body || {}) };
+  if (["activities", "productActivities"].includes(table)) {
+    const label = activityDisplayName(source);
+    return label === "—" ? "" : label.slice(0, 200);
+  }
+  return String(source.name || source.title || source.trade_name || source.legal_name || source.full_name || source.email || source.body || "").slice(0, 200);
+}
+function activityUpdateVerb(table, body = {}) {
+  const keys = Object.keys(body || {}).filter((key) => !["updated_at", "actual_start_date", "actual_end_date"].includes(key));
+  if (body?.status && keys.length === 1 && ["activities", "deliveryObjectives", "deliveryGoals"].includes(table)) {
+    return { done: "Concluiu", doing: "Iniciou", todo: "Reabriu", canceled: "Cancelou" }[body.status] || "Alterou status de";
+  }
+  return "Editou";
+}
+function logUserActivity(action, table = null, id = null, label = "") {
+  if (!isLive() || activityLogSuppressed > 0) return;
+  if (table && ACTIVITY_LOG_SKIP_TABLES.has(table)) return;
+  diagnosticInsert("user_activities", {
+    action,
+    entity_type: table ? (ACTIVITY_ENTITY_LABEL[table] || table) : null,
+    entity_id: id == null ? null : String(id),
+    entity_label: label || null
+  });
+}
+function withActivityLogSuppressed(fn) {
+  return async function (...args) {
+    activityLogSuppressed += 1;
+    try { return await fn.apply(this, args); }
+    finally { activityLogSuppressed -= 1; }
+  };
 }
 
 async function fetchTable(name) {
@@ -551,7 +644,9 @@ async function createRow(table, body) {
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
   const r = await api(remoteTable(table), { method: "POST", headers: j, body: JSON.stringify(toRemoteBody(table, body)) });
   const row = Array.isArray(r) ? r[0] : r;
-  return fromRemoteRow(table, row);
+  const created = fromRemoteRow(table, row);
+  logUserActivity("Criou", table, created?.[pk(table)] ?? body?.[pk(table)], activityRecordLabel(table, null, { ...body, ...(created || {}) }));
+  return created;
 }
 async function createActivityOrLoadExisting(body) {
   try {
@@ -571,13 +666,18 @@ async function updateRow(table, id, body) {
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
   const r = await api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: j, body: JSON.stringify(toRemoteBody(table, body)) });
   const row = Array.isArray(r) ? r[0] : r;
-  return fromRemoteRow(table, row);
+  const updated = fromRemoteRow(table, row);
+  logUserActivity(activityUpdateVerb(table, body), table, id, activityRecordLabel(table, id, { ...body, ...(updated || {}) }));
+  return updated;
 }
 async function deleteRow(table, id) {
   if (!requireDataPermission(table, "delete")) throw new Error("Operação não permitida para este usuário.");
   const k = pk(table);
   if (!isLive()) { DEMO[table] = DEMO[table].filter((x) => x[k] !== id); return; }
-  return api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+  const label = activityRecordLabel(table, id);
+  const result = await api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+  logUserActivity("Excluiu", table, id, label);
+  return result;
 }
 
 async function emailAccountsRequest(method = "GET", body = null) {
@@ -1225,6 +1325,13 @@ async function recalculateDependencySchedules(projectId = null) {
   refreshActivityCache();
   return true;
 }
+migrateLocalOperationalData = withActivityLogSuppressed(migrateLocalOperationalData);
+syncProductObjectives = withActivityLogSuppressed(syncProductObjectives);
+syncProductGoals = withActivityLogSuppressed(syncProductGoals);
+syncProductActivities = withActivityLogSuppressed(syncProductActivities);
+syncDeliveryObjectiveDependencies = withActivityLogSuppressed(syncDeliveryObjectiveDependencies);
+syncDeliveryGoalDependencies = withActivityLogSuppressed(syncDeliveryGoalDependencies);
+recalculateDependencySchedules = withActivityLogSuppressed(recalculateDependencySchedules);
 function activityOccurrenceSort(a, b) {
   return String(a.due_date || "9999-12-31").localeCompare(String(b.due_date || "9999-12-31"))
     || Number(a.sort_order || 0) - Number(b.sort_order || 0)
@@ -12236,32 +12343,121 @@ function openUpdatesModal() {
   </div>`, { closeOnOverlay: true });
 }
 
+let adminLogState = { tab: "session", onlyErrors: false, search: "", errors: [], loading: false };
+function adminLogTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+function adminLogStatus(status, failed) {
+  return `<span class="log-status ${failed ? "err" : "ok"}">${status ? esc(status) : "REDE"}</span>`;
+}
+function renderAdminLog() {
+  const body = document.getElementById("admin-log-body");
+  if (!body) return;
+  const query = adminLogState.search.trim().toLocaleLowerCase("pt-BR");
+  const matches = (text) => !query || text.toLocaleLowerCase("pt-BR").includes(query);
+  document.querySelectorAll(".admin-log-tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === adminLogState.tab));
+  const onlyErrors = document.getElementById("admin-log-only-errors");
+  if (onlyErrors) onlyErrors.closest("label").hidden = adminLogState.tab !== "session";
+  if (adminLogState.tab === "session") {
+    const rows = API_REQUEST_LOG.filter((item) => (!adminLogState.onlyErrors || item.error)
+      && matches(`${item.method} ${item.resource} ${item.query} ${item.status} ${item.error}`));
+    const errorCount = API_REQUEST_LOG.filter((item) => item.error).length;
+    document.getElementById("admin-log-count").textContent = `${rows.length} chamada(s) · ${errorCount} erro(s) nesta sessão`;
+    body.innerHTML = `<table><thead><tr><th>Data/hora</th><th>Método</th><th>Recurso</th><th>Status</th><th>Tempo</th><th>Detalhe</th></tr></thead><tbody>${rows.map((item) => `<tr class="${item.error ? "log-row-error" : ""}">
+      <td>${esc(adminLogTime(item.at))}</td><td><strong>${esc(item.method)}</strong></td><td>${esc(item.resource)}</td>
+      <td>${adminLogStatus(item.status, Boolean(item.error))}</td><td>${esc(item.ms)} ms</td>
+      <td class="log-detail">${esc(item.error || item.query || "—")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nenhuma chamada registrada.</td></tr>'}</tbody></table>`;
+    return;
+  }
+  if (adminLogState.loading) { body.innerHTML = '<div class="empty">Carregando erros...</div>'; return; }
+  const rows = adminLogState.errors.filter((item) => matches(`${userDisplayName(item.profile_id)} ${item.method} ${item.path} ${item.status} ${item.message}`));
+  document.getElementById("admin-log-count").textContent = `${rows.length} erro(s) registrados`;
+  body.innerHTML = `<table><thead><tr><th>Data/hora</th><th>Usuário</th><th>Método</th><th>Recurso</th><th>Status</th><th>Mensagem</th></tr></thead><tbody>${rows.map((item) => `<tr class="log-row-error">
+    <td>${esc(adminLogTime(item.created_at))}</td><td>${esc(item.profile_id ? userDisplayName(item.profile_id) : "—")}</td><td><strong>${esc(item.method || "—")}</strong></td>
+    <td class="log-detail">${esc(item.path || "—")}</td><td>${adminLogStatus(item.status, true)}</td><td class="log-detail">${esc(item.message || "—")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nenhum erro registrado.</td></tr>'}</tbody></table>`;
+}
+async function loadAdminLogErrors() {
+  adminLogState.loading = true;
+  renderAdminLog();
+  try {
+    adminLogState.errors = isLive() ? (await api("app_request_errors?select=*&order=created_at.desc&limit=500")) || [] : [];
+  } catch (error) {
+    adminLogState.errors = [];
+    toast(`Não foi possível carregar os erros · ${error.message}`, true);
+  }
+  adminLogState.loading = false;
+  renderAdminLog();
+}
 function openAdminLog() {
   if (!currentUserIsAdmin()) { toast("LOG disponível apenas para administradores.", true); return; }
-  const sources = {
-    companies: "Empresa",
-    contacts: "Contato",
-    deals: "Negociação",
-    projects: "Entrega",
-    activityRecords: "Tarefa",
-    goals: "Meta",
-    objectives: "Objetivo",
-    products: "Produto",
-    users: "Usuário"
-  };
-  const rows = Object.entries(sources).flatMap(([key, type]) =>
-    (cache[key] || []).map((item) => ({
-      type,
-      name: item.name || item.title || item.trade_name || item.legal_name || item.full_name || item.contact_name || "Registro sem nome",
-      at: item.updated_at || item.created_at || ""
-    }))
-  ).filter((item) => item.at).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 100);
-  const body = rows.length
-    ? rows.map((item) => `<tr><td>${esc(item.type)}</td><td><strong>${esc(item.name)}</strong></td><td>${esc(new Date(item.at).toLocaleString("pt-BR"))}</td><td class="table-actions-cell">${tableActionButtons()}</td></tr>`).join("")
-    : '<tr><td colspan="4" class="empty">Nenhuma alteração registrada.</td></tr>';
-  shell("Log · Alterações recentes", `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Registro</th><th>Data</th>${tableActionsHead()}</tr></thead><tbody>${body}</tbody></table></div>
-    <div class="modal-foot"><button class="btn" id="log-close">Fechar</button></div>`, { cls: "wide" });
-  document.getElementById("log-close").addEventListener("click", closeModal);
+  adminLogState = { tab: "session", onlyErrors: false, search: "", errors: [], loading: false };
+  shell("Log · Chamadas ao banco", `<div class="modal-toolbar registration-toolbar admin-log-toolbar">
+      <div class="registration-toolbar-left"><button class="view admin-log-tab active" type="button" data-tab="session">Esta sessão</button><button class="view admin-log-tab" type="button" data-tab="errors">Erros de todos</button><span class="muted" id="admin-log-count"></span></div>
+      <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="admin-log-search" placeholder="Buscar por recurso, status ou erro..."></div>
+      <div class="registration-toolbar-right"><label class="admin-log-check"><input type="checkbox" id="admin-log-only-errors"> Só erros</label><button class="btn" id="admin-log-refresh" type="button" title="Atualizar">↻</button></div>
+    </div><div class="full-body admin-log-body table-wrap" id="admin-log-body"></div>`, { cls: "full" });
+  document.querySelectorAll(".admin-log-tab").forEach((button) => button.addEventListener("click", () => {
+    adminLogState.tab = button.dataset.tab;
+    if (adminLogState.tab === "errors") loadAdminLogErrors();
+    else renderAdminLog();
+  }));
+  document.getElementById("admin-log-search").addEventListener("input", (event) => { adminLogState.search = event.target.value; renderAdminLog(); });
+  document.getElementById("admin-log-only-errors").addEventListener("change", (event) => { adminLogState.onlyErrors = event.target.checked; renderAdminLog(); });
+  document.getElementById("admin-log-refresh").addEventListener("click", () => adminLogState.tab === "errors" ? loadAdminLogErrors() : renderAdminLog());
+  renderAdminLog();
+}
+
+// ---------- Atividades dos usuários ----------
+let userActivitiesState = { rows: [], userId: "", search: "", loading: false };
+function userActivityText(row) {
+  const entity = row.entity_type ? ` ${String(row.entity_type).toLocaleLowerCase("pt-BR")}` : "";
+  return `${row.action || "—"}${entity}${row.entity_label ? ` · ${row.entity_label}` : ""}`;
+}
+function renderUserActivities() {
+  const body = document.getElementById("user-activities-body");
+  if (!body) return;
+  if (userActivitiesState.loading) { body.innerHTML = '<div class="empty">Carregando atividades...</div>'; return; }
+  const query = userActivitiesState.search.trim().toLocaleLowerCase("pt-BR");
+  const rows = userActivitiesState.rows.filter((row) => !query
+    || `${userDisplayName(row.profile_id)} ${userActivityText(row)}`.toLocaleLowerCase("pt-BR").includes(query));
+  document.getElementById("user-activities-count").textContent = `${rows.length} atividade(s)`;
+  body.innerHTML = `<table><thead><tr><th>Nome</th><th>Atividade</th><th>Data/hora</th></tr></thead><tbody>${rows.map((row) => `<tr>
+    <td><strong>${esc(userDisplayName(row.profile_id))}</strong></td><td>${esc(userActivityText(row))}</td><td>${esc(adminLogTime(row.created_at))}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">Nenhuma atividade registrada.</td></tr>'}</tbody></table>`;
+}
+async function loadUserActivities() {
+  userActivitiesState.loading = true;
+  renderUserActivities();
+  const filters = [];
+  const profileId = currentUserIsAdmin() ? userActivitiesState.userId : currentProfile?.id;
+  if (profileId) filters.push(`profile_id=eq.${encodeURIComponent(profileId)}`);
+  try {
+    userActivitiesState.rows = isLive()
+      ? (await api(`user_activities?select=*&order=created_at.desc&limit=1000${filters.length ? `&${filters.join("&")}` : ""}`)) || []
+      : [];
+  } catch (error) {
+    userActivitiesState.rows = [];
+    toast(`Não foi possível carregar as atividades · ${error.message}`, true);
+  }
+  userActivitiesState.loading = false;
+  renderUserActivities();
+}
+function openUserActivities() {
+  const admin = currentUserIsAdmin();
+  userActivitiesState = { rows: [], userId: "", search: "", loading: true };
+  const users = [...(cache?.users || [])].sort((a, b) => userDisplayName(a.id).localeCompare(userDisplayName(b.id), "pt-BR", { sensitivity: "base" }));
+  const userFilter = admin
+    ? `<select id="user-activities-user" class="user-activities-user" aria-label="Filtrar por usuário"><option value="">Todos os usuários</option>${users.map((user) => `<option value="${esc(user.id)}">${esc(userDisplayName(user.id))}</option>`).join("")}</select>`
+    : "";
+  shell(admin ? "Atividades · Todos os usuários" : "Minhas atividades", `<div class="modal-toolbar registration-toolbar">
+      <div class="registration-toolbar-left"><span class="muted" id="user-activities-count">Carregando...</span></div>
+      <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="user-activities-search" placeholder="Buscar por nome ou atividade..."></div>
+      <div class="registration-toolbar-right">${userFilter}<button class="btn" id="user-activities-refresh" type="button" title="Atualizar">↻</button></div>
+    </div><div class="full-body table-wrap" id="user-activities-body"></div>`, { cls: "full" });
+  document.getElementById("user-activities-search").addEventListener("input", (event) => { userActivitiesState.search = event.target.value; renderUserActivities(); });
+  document.getElementById("user-activities-user")?.addEventListener("change", (event) => { userActivitiesState.userId = event.target.value; loadUserActivities(); });
+  document.getElementById("user-activities-refresh").addEventListener("click", loadUserActivities);
+  loadUserActivities();
 }
 
 function activeProfileId() {
@@ -12650,6 +12846,7 @@ function handleAction(action) {
     return;
   }
   if (action === "chat") { openInternalChat(); return; }
+  if (action === "activities") { openUserActivities(); return; }
   if (action === "integrations") {
     sidePanel("Integrações", integrationsHtml(), { closeOnOverlay: true });
     wireIntegrations();
@@ -12672,6 +12869,7 @@ document.getElementById("login-form")?.addEventListener("submit", async (event) 
     const password = document.getElementById("login-password").value;
     storeAuthSession(await authRequest("token?grant_type=password", { email, password }));
     await init();
+    logUserActivity("Entrou no sistema");
   } catch (err) {
     storeAuthSession(null);
     error.textContent = err.message === "Invalid login credentials" ? "E-mail ou senha inválidos." : err.message;

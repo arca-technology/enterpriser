@@ -1079,7 +1079,7 @@
     .brand-home{height:48px;display:flex;align-items:center;flex:1 1 auto;font-size:12px}
     header .actions{height:48px;flex:0 0 auto;gap:0}
     header .actions .ico{width:40px;height:40px;padding:9px}
-    header .actions [data-action="notifications"],header .actions [data-action="chat"],header .actions [data-action="integrations"],header .actions [data-action="settings"]{display:none}
+    header .actions [data-action="notifications"],header .actions [data-action="chat"],header .actions [data-action="activities"],header .actions [data-action="integrations"],header .actions [data-action="settings"]{display:none}
     header nav{order:3;position:static;transform:none;width:calc(100vw - 16px);height:45px;margin:0;justify-content:flex-start;gap:5px;overflow-x:auto;scrollbar-width:none}
     header nav::-webkit-scrollbar{display:none}
     header .tab{min-width:auto;height:34px;padding:0 14px;font-size:10.5px}
@@ -1297,6 +1297,18 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
 .internal-chat-back{width:30px;height:30px;padding:0;font-size:20px}
 .internal-chat-disabled{padding:14px;border-top:1px solid var(--border);background:var(--panel);color:var(--muted);font-size:10px;line-height:1.5}
 .internal-chat-message-meta{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:9px;color:var(--muted)}
+  /* LOG (chamadas ao banco) e Atividades em tela cheia. */
+  .admin-log-toolbar .registration-toolbar-left{gap:6px}
+  .admin-log-tab{width:auto;padding:0 12px;white-space:nowrap}
+  #admin-log-count,#user-activities-count{white-space:nowrap}
+  .admin-log-check{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);white-space:nowrap}
+  .admin-log-body table td,#user-activities-body table td{white-space:nowrap}
+  .admin-log-body .log-detail{max-width:560px;white-space:normal;word-break:break-word;color:var(--muted);font-size:11px}
+  .log-status{display:inline-block;min-width:40px;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:800;text-align:center}
+  .log-status.ok{background:color-mix(in srgb,#2ea36b 18%,transparent);color:#2ea36b}
+  .log-status.err{background:color-mix(in srgb,#e5484d 18%,transparent);color:#e5484d}
+  .admin-log-body tr.log-row-error td{background:color-mix(in srgb,#e5484d 6%,transparent)}
+  .user-activities-user{height:30px;max-width:220px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font:inherit;font-size:11px;padding:0 8px}
 </style>
 </head>
 <body>
@@ -1345,6 +1357,8 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
         <svg viewBox="0 0 20 20"><path d="M10 3a4 4 0 0 0-4 4v3l-1.5 2.2h11L14 10V7a4 4 0 0 0-4-4z"/><path d="M8.4 15.5a1.8 1.8 0 0 0 3.2 0"/></svg></button>
       <button class="ico" data-action="chat" title="Chat">
         <svg viewBox="0 0 20 20"><path d="M3 4.5h14v9H8l-4 3v-3H3z"/><path d="M6 8h8M6 10.5h5"/></svg></button>
+      <button class="ico" data-action="activities" title="Atividades">
+        <svg viewBox="0 0 20 20"><path d="M2.5 10h3.2l2.1-5.5 4.4 11 2.1-5.5h3.2"/></svg></button>
       <button class="ico" data-action="integrations" title="Integrações">
         <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.5"/></svg></button>
       <button class="ico" data-action="theme" title="Tema claro/escuro" id="theme-btn"></button>
