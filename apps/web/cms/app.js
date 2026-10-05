@@ -215,7 +215,7 @@ function wireTaskGroupSelect(groupId, subgroupId) {
   group.addEventListener("change", () => update(false));
   update(true);
 }
-const TASK_STRUCTURE_REQUIRED_LABEL = "Canal, Módulo e Tipo";
+const TASK_STRUCTURE_REQUIRED_LABEL = "Categoria, Canal, Módulo e Tipo";
 function taskStructureFieldsFilled(fieldIds) {
   return fieldIds.every((id) => String(document.getElementById(id)?.value || "").trim());
 }
@@ -772,6 +772,7 @@ function activityRemoteBody(task) {
     subsector: task.subsector || null,
     module: task.module || null,
     submodule: task.submodule || null,
+    category: task.category || null,
     channel: task.channel || null,
     type: task.type || null,
     recurrence: task.recurrence || "once",
@@ -807,6 +808,7 @@ function productActivityRemoteBody(template) {
     subsector: template.subsector || null,
     module: template.module || null,
     submodule: template.submodule || null,
+    category: template.category || null,
     channel: template.channel || null,
     type: template.type || null,
     activity: template.activity,
@@ -1063,6 +1065,7 @@ async function syncProductActivities() {
           subsector: template.subsector || "",
           module: template.module || "",
           submodule: template.submodule || "",
+          category: template.category || "",
           channel: template.channel || "",
           type: template.type || "",
           recurrence: template.recurrence || "once",
@@ -1598,7 +1601,7 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.channel, item.module, item.submodule, item.activity || item.title, item.type]
+  const parts = [item.category, item.channel, item.module, item.submodule, item.activity || item.title, item.type]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -2898,7 +2901,7 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
+  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.category, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR"))
     .join("|");
 }
@@ -3634,6 +3637,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       subsector: requestedParent.subsector || "",
       module: requestedParent.module || "",
       submodule: requestedParent.submodule || "",
+      category: requestedParent.category || "",
       channel: requestedParent.channel || "",
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
@@ -3689,8 +3693,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Categoria</label><input id="pa-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
-      <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="task-schedule-row">
@@ -3701,6 +3705,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       </div>
       <div class="task-name-row">
         <div class="field"><label id="pa-activity-label">${productActivityParentGroupId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+        <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
         <label class="task-use-structure" for="pa-use-structure"><input id="pa-use-structure" type="checkbox"${useStructure ? " checked" : ""}><span>Usar estrutura</span></label>
       </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
@@ -3731,9 +3736,9 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireMultiPicker("pa-dependencies");
   wireMultiPicker("pa-documents");
   wireMultiPicker("pa-tables");
-  wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-channel", "pa-module", "pa-type"]);
+  wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
   renderProductActivityChecklistEditor();
-  (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-channel") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
+  (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-category") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
 }
 
 function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
@@ -3755,7 +3760,7 @@ async function saveProductActivity() {
   const useStructure = document.getElementById("pa-use-structure").checked;
   const activity = useStructure ? "" : document.getElementById("pa-activity").value.trim();
   if (!useStructure && !activity) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
-  if (useStructure && !taskStructureFieldsFilled(["pa-channel", "pa-module", "pa-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
+  if (useStructure && !taskStructureFieldsFilled(["pa-category", "pa-channel", "pa-module", "pa-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
   const rows = loadProductActivities();
   const current = rows.find((item) => item.id === productActivityState.editId);
   const recordId = current?.id || crypto.randomUUID();
@@ -3783,6 +3788,7 @@ async function saveProductActivity() {
     subsector: document.getElementById("pa-subsector").value.trim(),
     module: document.getElementById("pa-module").value.trim(),
     submodule: document.getElementById("pa-submodule").value.trim(),
+    category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
@@ -5092,6 +5098,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Origem</label><input value="${esc(parentTask ? `Subtarefa de ${activityDisplayName(parentTask)}` : current.source_template_id ? "Produto" : "Dia a dia")}" disabled></div>
       <div class="task-name-row task-form-wide">
         <div class="field"><label id="project-task-title-label">${parentId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
+        <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
         <label class="task-use-structure" for="project-task-use-structure"><input id="project-task-use-structure" type="checkbox"${useStructure ? " checked" : ""}${current.source_template_id ? " disabled" : ""}><span>Usar estrutura</span></label>
       </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="project-task-information" rows="3" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
@@ -5099,8 +5106,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Subgrupo</label><select id="project-task-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group || parentTask?.group, TASK_GROUP_OPTIONS)] || [], current.subgroup || parentTask?.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="project-task-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector || parentTask?.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="project-task-subsector" value="${esc(current.subsector || parentTask?.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Categoria</label><input id="project-task-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
-      <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="task-schedule-row task-schedule-row-compact">
@@ -5134,7 +5141,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   wireMultiPicker("project-task-assignee-job-titles");
   wireMultiPicker("project-task-documents");
   wireMultiPicker("project-task-tables");
-  wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-channel", "project-task-module", "project-task-type"]);
+  wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-category", "project-task-channel", "project-task-module", "project-task-type"]);
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
@@ -5145,7 +5152,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     const useStructure = document.getElementById("project-task-use-structure").checked;
     const title = useStructure ? "" : document.getElementById("project-task-title").value.trim();
     if (!useStructure && !title) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
-    if (useStructure && !document.getElementById("project-task-use-structure").disabled && !taskStructureFieldsFilled(["project-task-channel", "project-task-module", "project-task-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
+    if (useStructure && !document.getElementById("project-task-use-structure").disabled && !taskStructureFieldsFilled(["project-task-category", "project-task-channel", "project-task-module", "project-task-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
     const dependencyIds = multiPickerValues("project-task-dependencies");
     const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
@@ -5170,6 +5177,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       subsector: document.getElementById("project-task-subsector").value.trim(),
       module: document.getElementById("project-task-module").value.trim(),
       submodule: document.getElementById("project-task-submodule").value.trim(),
+      category: document.getElementById("project-task-category").value.trim(),
       channel: document.getElementById("project-task-channel").value.trim(),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
@@ -5223,7 +5231,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       toast("Erro ao salvar tarefa · " + err.message, true);
     }
   });
-  (document.getElementById("project-task-title").disabled ? document.getElementById("project-task-channel") : document.getElementById("project-task-title"))?.focus();
+  (document.getElementById("project-task-title").disabled ? document.getElementById("project-task-category") : document.getElementById("project-task-title"))?.focus();
 }
 
 function projectTableRows(table) {
