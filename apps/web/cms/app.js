@@ -7825,7 +7825,7 @@ const DELIVERY_MIND_MAP_TASK_ADAPTER = {
 };
 
 const mindMapTitle = (adapter, item) => (adapter?.title || activityDisplayName)(item);
-const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }];
+const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }, { key: "channel", empty: "Sem canal" }];
 const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (item.status || "todo"))?.label || "Em aberto";
 const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
