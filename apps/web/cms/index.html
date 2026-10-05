@@ -679,6 +679,46 @@
   .registration-subtask-row .table-actions-cell{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
   .product-activity-list .pa-subtask-row td:first-child{border-left:3px solid var(--cyan)}
   .product-activity-list .pa-subtask-row td:nth-child(7){padding-left:22px}
+  .registration-view-mindmap{width:110px}
+  .registration-mindmap-shell{display:flex;min-height:0;flex:1 1 auto;overflow:hidden;background:var(--bg)}
+  .registration-mindmap-scroll{width:100%;height:100%;box-sizing:border-box;overflow:auto;padding:18px}
+  .registration-mindmap-canvas{display:grid;min-width:980px;grid-template-columns:150px minmax(760px,1fr);gap:38px;align-items:center}
+  .registration-mindmap-root{position:sticky;left:18px;z-index:5;display:grid;place-items:center;align-content:center;width:112px;height:72px;border:2px solid var(--cyan);border-radius:6px;background:var(--panel);box-shadow:0 6px 18px rgba(0,0,0,.14)}
+  .registration-mindmap-root strong{font-size:12px;text-transform:uppercase}
+  .registration-mindmap-root span{color:var(--muted);font-size:10px}
+  .registration-mindmap-branches{display:grid;gap:16px}
+  .registration-mind-group{position:relative;display:grid;grid-template-columns:190px minmax(0,1fr);gap:30px;align-items:start}
+  .registration-mind-group::before{position:absolute;top:18px;right:calc(100% + 1px);width:38px;border-top:1px solid var(--cyan);content:""}
+  .registration-mind-group-toggle,.registration-mind-category-toggle{display:grid;min-height:36px;grid-template-columns:18px minmax(0,1fr) 26px;align-items:center;gap:6px;border:1px solid var(--border);border-left:3px solid var(--cyan);border-radius:5px;background:var(--panel2);color:var(--text);padding:6px 8px;text-align:left;font:inherit;cursor:pointer}
+  .registration-mind-group-toggle:hover,.registration-mind-category-toggle:hover{border-color:var(--cyan)}
+  .registration-mind-group-toggle strong,.registration-mind-category-toggle strong{overflow:hidden;font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+  .registration-mind-group-toggle small,.registration-mind-category-toggle small{display:grid;min-width:22px;height:20px;place-items:center;border-radius:4px;background:var(--blue);color:#fff;font-size:9px;font-weight:800}
+  .registration-mind-categories{position:relative;display:grid;gap:12px;padding-left:26px;border-left:1px solid var(--border)}
+  .registration-mind-category{position:relative;display:grid;grid-template-columns:180px minmax(0,1fr);gap:26px;align-items:start}
+  .registration-mind-category::before{position:absolute;top:18px;left:-26px;width:26px;border-top:1px solid var(--border);content:""}
+  .registration-mind-category-toggle{border-left-color:var(--blue)}
+  .registration-mind-tasks{display:grid;gap:8px}
+  .registration-mind-task{min-width:360px;overflow:hidden;border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:5px;background:var(--panel)}
+  .registration-mind-task.is-loose{border-left-color:#d79422}
+  .registration-mind-task-main{display:grid;width:100%;grid-template-columns:34px minmax(0,1fr) auto;align-items:center;gap:8px;border:0;background:transparent;color:var(--text);padding:8px 10px;text-align:left;font:inherit;cursor:pointer}
+  .registration-mind-task-main:hover{background:var(--row-hover)}
+  .registration-mind-order{display:grid;width:28px;height:28px;place-items:center;border-radius:50%;background:var(--blue);color:#fff;font-size:9px;font-weight:800}
+  .registration-mind-task-copy{display:grid;min-width:0;gap:2px}
+  .registration-mind-task-copy strong{overflow:hidden;font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+  .registration-mind-task-copy small{overflow:hidden;color:var(--muted);font-size:9px;text-overflow:ellipsis;white-space:nowrap}
+  .registration-mind-warning{border:1px solid color-mix(in srgb,#d79422 60%,var(--border));border-radius:4px;color:#d79422;padding:3px 5px;font-size:8.5px;font-weight:800;white-space:nowrap}
+  .registration-mind-dependency{display:flex;align-items:center;gap:5px;overflow-x:auto;padding:6px 10px;border-top:1px solid var(--border2);color:var(--muted);font-size:8.5px;white-space:nowrap}
+  .registration-mind-dependency b{border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);padding:2px 5px;font-weight:700}
+  .registration-mind-subtasks{display:grid;border-top:1px solid var(--border2)}
+  .registration-mind-subtasks button{display:grid;grid-template-columns:40px minmax(0,1fr);align-items:center;gap:6px;border:0;border-bottom:1px solid var(--border2);background:color-mix(in srgb,var(--panel2) 56%,var(--panel));color:var(--text);padding:7px 10px;text-align:left;font:inherit;cursor:pointer}
+  .registration-mind-subtasks button:last-child{border-bottom:0}
+  .registration-mind-subtasks button:hover{background:var(--row-hover)}
+  .registration-mind-subtasks span{color:var(--cyan);font-size:9px;font-weight:800}
+  .registration-mind-subtasks strong{overflow:hidden;font-size:9.5px;text-overflow:ellipsis;white-space:nowrap}
+  .registration-mind-loose .registration-mind-group-toggle{border-left-color:#d79422}
+  .registration-mind-loose .registration-mind-group-toggle small{background:#b66f10}
+  .registration-mind-loose .registration-mind-category{grid-template-columns:minmax(0,1fr)}
+  .registration-mind-category.is-collapsed{align-items:center}
   .registration-filter-strip{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:20px;height:20px;flex:0 0 20px;padding:1px 8px;background:var(--bg);border-bottom:1px solid var(--border2);box-sizing:border-box}
   .tools-filter-strip{position:relative;overflow:hidden}
   .tools-loading-progress{position:absolute;right:0;bottom:0;left:0;height:2px;background:color-mix(in srgb,var(--cyan) 18%,transparent);overflow:hidden}
