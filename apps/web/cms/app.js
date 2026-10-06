@@ -264,6 +264,8 @@ function wireTaskStructureToggle(toggleId, inputId, labelId, requiredFieldIds = 
   update();
 }
 const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
+// Tipos de contato que a empresa define e replica para as pessoas vinculadas.
+const COMPANY_CONTACT_TYPE_OPTIONS = ["Cliente", "Fornecedor", "Parceiro"];
 const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
   let ids = value;
@@ -1942,6 +1944,7 @@ function columns(tab, c) {
       { k: "tax_id", h: "CNPJ", cls: "muted company-sticky-col company-sticky-col-1", thCls: "company-sticky-col company-sticky-col-1" },
       { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2" },
       { k: "trade_name", h: "NOME FANTASIA" },
+      { k: "contact_type", h: "TIPO DE CONTATO", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((type) => `<span class="tool-tag">${esc(type)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "email", h: "E-MAIL", cls: "muted" },
       { k: "phone", h: "TELEFONE", cls: "muted" },
       { k: "headquarters", h: "SEDE" },
@@ -2210,6 +2213,7 @@ function fields(tab, c) {
       { k: "tax_id", label: "CNPJ", req: true, full: true, lookup: "cnpj" },
       { k: "legal_name", label: "Nome empresarial", full: true },
       { k: "trade_name", label: "Nome fantasia" },
+      { k: "contact_type", label: "Tipo de contato", type: "multi", options: COMPANY_CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, placeholder: "Vazio", help: "Aceita mais de uma opção. Ao salvar, as pessoas vinculadas recebem estes tipos; vazio não altera as pessoas." },
       { k: "email", label: "E-mail" },
       { k: "phone", label: "Telefone" },
       { k: "headquarters", label: "Sede" },
@@ -6244,14 +6248,16 @@ function renderActiveFilterBadges() {
   };
 }
 
-// ---------- Filtros de coluna (lista, número e mês/ano) ----------
+// ---------- Filtros de coluna (lista, número e período) ----------
 // Todas as tabelas guardam o filtro da coluna como um Set de valores. Os
-// filtros de número (entre, maior, menor...) e de data (mês/ano) usam
-// FilterRule, que responde .size, .has() e iteração como um Set — assim os
-// pontos que aplicam e exibem os filtros continuam funcionando.
+// filtros de número (entre, maior, menor...) e de data (período com
+// calendário) usam FilterRule, que responde .size, .has() e iteração como um
+// Set — assim os pontos que aplicam e exibem os filtros continuam funcionando.
 const FILTER_BLANKS = new Set(["", "—", "-", "(em branco)", "(vazio)"]);
-const FILTER_MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+const FILTER_MONTH_NAMES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const FILTER_WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
 const FILTER_NUMBER_OPS = [["between", "Entre"], ["gt", "Maior que"], ["gte", "Maior ou igual a"], ["lt", "Menor que"], ["lte", "Menor ou igual a"], ["eq", "Igual a"]];
+const FILTER_DATE_PRESETS = [["today", "Hoje"], ["this_week", "Esta semana"], ["last_week", "Semana passada"], ["this_month", "Este mês"], ["last_month", "Mês passado"], ["month", "Selecionar mês"], ["custom", "Período customizado"]];
 
 function filterNumberValue(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -6265,23 +6271,39 @@ function filterNumberValue(value) {
   return Number.isFinite(number) ? number : null;
 }
 
-function filterMonthValue(value) {
+// Data (AAAA-MM-DD) a partir de ISO ou dd/mm/aaaa; "" quando não é data.
+function filterDayValue(value) {
   const text = String(value ?? "").trim();
-  let match = text.match(/^(\d{4})-(\d{2})/);
-  if (match) return `${match[1]}-${match[2]}`;
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`;
   match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-  if (match) return `${match[3]}-${match[2]}`;
+  if (match) return `${match[3]}-${match[2]}-${match[1]}`;
   return "";
 }
-
-const filterMonthLabel = (month) => month ? `${FILTER_MONTHS[Number(month.slice(5, 7)) - 1] || month.slice(5, 7)}/${month.slice(0, 4)}` : "(em branco)";
+const filterIsoDay = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const filterDateFromIso = (iso) => { const [year, month, day] = iso.split("-").map(Number); return new Date(year, month - 1, day); };
+const filterBrDay = (iso) => iso ? iso.split("-").reverse().join("/") : "";
 const filterNumberLabel = (number) => Number(number).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+
+function filterPresetRange(preset, base = new Date()) {
+  const today = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  const shift = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  if (preset === "today") return [today, today];
+  if (preset === "this_week") { const start = shift(today, -today.getDay()); return [start, shift(start, 6)]; }
+  if (preset === "last_week") { const start = shift(today, -today.getDay() - 7); return [start, shift(start, 6)]; }
+  if (preset === "this_month") return [new Date(today.getFullYear(), today.getMonth(), 1), new Date(today.getFullYear(), today.getMonth() + 1, 0)];
+  if (preset === "last_month") return [new Date(today.getFullYear(), today.getMonth() - 1, 1), new Date(today.getFullYear(), today.getMonth(), 0)];
+  return null;
+}
 
 class FilterRule {
   constructor(kind, data) { Object.assign(this, data, { kind }); }
   get size() { return 1; }
   has(value) {
-    if (this.kind === "month") return this.months.has(filterMonthValue(value));
+    if (this.kind === "range") {
+      const day = filterDayValue(value);
+      return Boolean(day) && day >= this.from && day <= this.to;
+    }
     const number = filterNumberValue(value);
     if (number == null) return false;
     if (this.op === "between") return number >= Math.min(this.a, this.b) && number <= Math.max(this.a, this.b);
@@ -6292,10 +6314,7 @@ class FilterRule {
     return number === this.a;
   }
   get label() {
-    if (this.kind === "month") {
-      const months = [...this.months].sort();
-      return months.length <= 3 ? months.map(filterMonthLabel).join(", ") : `${months.length} meses`;
-    }
+    if (this.kind === "range") return this.from === this.to ? filterBrDay(this.from) : `${filterBrDay(this.from)} – ${filterBrDay(this.to)}`;
     if (this.op === "between") return `entre ${filterNumberLabel(this.a)} e ${filterNumberLabel(this.b)}`;
     return `${{ gt: ">", gte: "≥", lt: "<", lte: "≤", eq: "=" }[this.op]} ${filterNumberLabel(this.a)}`;
   }
@@ -6314,21 +6333,167 @@ function filterColumnKind(values, key = "", hint = "") {
   return numeric ? "number" : "list";
 }
 
+// Seletor de período (calendários de início e fim + atalhos), no padrão dos
+// filtros de data de mercado.
+function mountDateRangeFilter(panel, { title, current, onApply }) {
+  const rule = current instanceof FilterRule && current.kind === "range" ? current : null;
+  const todayIso = filterIsoDay(new Date());
+  const range = { from: rule?.from || "", to: rule?.to || "" };
+  let preset = "custom";
+  const startView = filterDateFromIso(range.from || todayIso);
+  const views = [new Date(startView.getFullYear(), startView.getMonth() - (range.from ? 0 : 1), 1), null];
+  const endView = range.to ? filterDateFromIso(range.to) : null;
+  views[1] = endView && (endView.getFullYear() * 12 + endView.getMonth()) > (views[0].getFullYear() * 12 + views[0].getMonth())
+    ? new Date(endView.getFullYear(), endView.getMonth(), 1)
+    : new Date(views[0].getFullYear(), views[0].getMonth() + 1, 1);
+  let pickYear = views[0].getFullYear();
+  panel.classList.add("filter-dd-date");
+  panel.style.maxHeight = "none";
+  panel.innerHTML = `<div class="dd-head"><span>${esc(title)}</span><span>Período</span></div>
+    <div class="dr">
+      <div class="dr-main">
+        <div class="dr-cals">
+          ${[["from", "Início do período"], ["to", "Fim do período"]].map(([side, label], index) => `<div class="dr-col">
+            <label>${label}</label><input class="dr-input" data-side="${side}" inputmode="numeric" placeholder="dd/mm/aaaa" maxlength="10">
+            <div class="dr-cal" data-cal="${index}"></div>
+          </div>`).join("")}
+        </div>
+        <div class="dr-monthpick" hidden></div>
+      </div>
+      <div class="dr-presets">${FILTER_DATE_PRESETS.map(([id, label]) => `<button class="dr-preset" type="button" data-preset="${id}">${label}</button>`).join("")}</div>
+    </div>
+    <div class="dd-foot dr-foot"><button class="btn danger dd-clear" type="button">Limpar</button><span></span><button class="btn dr-cancel" type="button">Cancelar</button><button class="btn primary dd-apply" type="button">Filtrar</button></div>`;
+  const inputs = { from: panel.querySelector('[data-side="from"]'), to: panel.querySelector('[data-side="to"]') };
+  const calendarHtml = (view, index) => {
+    const year = view.getFullYear();
+    const month = view.getMonth();
+    const first = new Date(year, month, 1);
+    const start = new Date(year, month, 1 - first.getDay());
+    const days = Array.from({ length: 42 }, (_, offset) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + offset));
+    const cells = days.map((date) => {
+      const iso = filterIsoDay(date);
+      const to = range.to || range.from;
+      const cls = [
+        "dr-day",
+        date.getMonth() !== month ? "out" : "",
+        iso === todayIso ? "today" : "",
+        range.from && iso >= range.from && iso <= to ? "in" : "",
+        iso === range.from ? "start" : "",
+        iso === to && range.from ? "end" : ""
+      ].filter(Boolean).join(" ");
+      return `<button class="${cls}" type="button" data-day="${iso}">${date.getDate()}</button>`;
+    }).join("");
+    return `<div class="dr-cal-head"><button class="dr-nav" type="button" data-nav="${index}" data-step="-1" aria-label="Mês anterior">«</button><b>${FILTER_MONTH_NAMES[month]} ${year}</b><button class="dr-nav" type="button" data-nav="${index}" data-step="1" aria-label="Próximo mês">»</button></div>
+      <div class="dr-grid">${FILTER_WEEKDAYS.map((day) => `<span>${day}</span>`).join("")}${cells}</div>`;
+  };
+  const monthPickHtml = () => `<div class="dr-cal-head"><button class="dr-nav" type="button" data-year-step="-1" aria-label="Ano anterior">«</button><b>${pickYear}</b><button class="dr-nav" type="button" data-year-step="1" aria-label="Próximo ano">»</button></div>
+    <div class="dr-months">${FILTER_MONTH_NAMES.map((name, index) => {
+      const from = filterIsoDay(new Date(pickYear, index, 1));
+      const on = range.from === from && range.to === filterIsoDay(new Date(pickYear, index + 1, 0));
+      return `<button class="dr-month${on ? " on" : ""}" type="button" data-month="${index}">${name.slice(0, 3)}</button>`;
+    }).join("")}</div>`;
+  const draw = () => {
+    inputs.from.value = filterBrDay(range.from);
+    inputs.to.value = filterBrDay(range.to);
+    panel.querySelectorAll(".dr-cal").forEach((calendar, index) => { calendar.innerHTML = calendarHtml(views[index], index); });
+    const monthMode = preset === "month";
+    panel.querySelector(".dr-cals").hidden = monthMode;
+    const picker = panel.querySelector(".dr-monthpick");
+    picker.hidden = !monthMode;
+    if (monthMode) picker.innerHTML = monthPickHtml();
+    panel.querySelectorAll("[data-preset]").forEach((button) => button.classList.toggle("on", button.dataset.preset === preset));
+  };
+  const showRange = () => {
+    if (!range.from) return;
+    const from = filterDateFromIso(range.from);
+    views[0] = new Date(from.getFullYear(), from.getMonth(), 1);
+    const to = filterDateFromIso(range.to || range.from);
+    views[1] = (to.getFullYear() * 12 + to.getMonth()) > (from.getFullYear() * 12 + from.getMonth())
+      ? new Date(to.getFullYear(), to.getMonth(), 1)
+      : new Date(from.getFullYear(), from.getMonth() + 1, 1);
+  };
+  const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
+  panel.addEventListener("mousedown", (event) => {
+    const day = event.target.closest("[data-day]");
+    const nav = event.target.closest("[data-nav]");
+    const presetButton = event.target.closest("[data-preset]");
+    const monthButton = event.target.closest("[data-month]");
+    const yearStep = event.target.closest("[data-year-step]");
+    if (day) {
+      stop(event);
+      const iso = day.dataset.day;
+      preset = "custom";
+      if (!range.from || range.to) { range.from = iso; range.to = ""; }
+      else if (iso < range.from) range.from = iso;
+      else range.to = iso;
+      draw();
+    } else if (nav) {
+      stop(event);
+      const index = Number(nav.dataset.nav);
+      views[index] = new Date(views[index].getFullYear(), views[index].getMonth() + Number(nav.dataset.step), 1);
+      draw();
+    } else if (presetButton) {
+      stop(event);
+      preset = presetButton.dataset.preset;
+      const preset_range = filterPresetRange(preset);
+      if (preset_range) { range.from = filterIsoDay(preset_range[0]); range.to = filterIsoDay(preset_range[1]); showRange(); }
+      if (preset === "month" && range.from) pickYear = filterDateFromIso(range.from).getFullYear();
+      draw();
+    } else if (monthButton) {
+      stop(event);
+      const index = Number(monthButton.dataset.month);
+      range.from = filterIsoDay(new Date(pickYear, index, 1));
+      range.to = filterIsoDay(new Date(pickYear, index + 1, 0));
+      showRange();
+      draw();
+    } else if (yearStep) {
+      stop(event);
+      pickYear += Number(yearStep.dataset.yearStep);
+      draw();
+    }
+  });
+  Object.entries(inputs).forEach(([side, input]) => {
+    input.addEventListener("input", () => {
+      const digits = input.value.replace(/\D/g, "").slice(0, 8);
+      input.value = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)].filter(Boolean).join("/");
+    });
+    input.addEventListener("change", () => {
+      const iso = filterDayValue(input.value);
+      if (input.value && !iso) { toast("Use a data no formato dd/mm/aaaa.", true); draw(); return; }
+      range[side] = iso;
+      if (range.from && range.to && range.to < range.from) [range.from, range.to] = [range.to, range.from];
+      preset = "custom";
+      showRange();
+      draw();
+    });
+  });
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { stop(event); handler(); });
+  on(".dd-clear", () => onApply(null));
+  on(".dr-cancel", () => panel.remove());
+  on(".dd-apply", () => {
+    ["from", "to"].forEach((side) => { const iso = filterDayValue(inputs[side].value); if (iso) range[side] = iso; });
+    if (!range.from) { toast("Selecione o início do período.", true); return; }
+    const to = range.to || range.from;
+    onApply(new FilterRule("range", { from: range.from <= to ? range.from : to, to: range.from <= to ? to : range.from }));
+  });
+  draw();
+  const rect = panel.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) panel.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+  if (rect.bottom > window.innerHeight - 8) panel.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+}
+
 // Monta o conteúdo do painel de filtro (cabeçalho, corpo e rodapé) e chama
 // onApply com o novo filtro (Set, FilterRule ou null para limpar).
 function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", labelFor = (value) => (value === "" ? "(em branco)" : value), current = null, onApply }) {
   const kind = filterColumnKind(values, key, hint);
+  if (kind === "date") { mountDateRangeFilter(panel, { title, current, onApply }); return; }
   const selected = new Set(current instanceof FilterRule ? [] : current || []);
-  const rule = current instanceof FilterRule ? current : null;
-  const months = new Set(rule?.kind === "month" ? rule.months : []);
-  const monthValues = kind === "date" ? [...new Set(values.map(filterMonthValue))].sort().reverse() : [];
-  const years = [...new Set(monthValues.filter(Boolean).map((month) => month.slice(0, 4)))];
-  const head = `<div class="dd-head"><span>${esc(title)}</span><span>${kind === "date" ? `${monthValues.filter(Boolean).length} meses` : values.length}</span></div>`;
+  const rule = current instanceof FilterRule && current.kind === "number" ? current : null;
   const numberRule = kind === "number" ? `<div class="dd-rule">
       <select class="dd-rule-op"><option value="">Condição…</option>${FILTER_NUMBER_OPS.map(([id, label]) => `<option value="${id}"${rule?.op === id ? " selected" : ""}>${label}</option>`).join("")}</select>
-      <div class="dd-rule-inputs"><input class="dd-rule-a" type="number" step="any" placeholder="Valor" value="${rule?.kind === "number" ? esc(String(rule.a)) : ""}"><span class="dd-rule-and">e</span><input class="dd-rule-b" type="number" step="any" placeholder="Valor" value="${rule?.kind === "number" && rule.op === "between" ? esc(String(rule.b)) : ""}"></div>
+      <div class="dd-rule-inputs"><input class="dd-rule-a" type="number" step="any" placeholder="Valor" value="${rule ? esc(String(rule.a)) : ""}"><span class="dd-rule-and">e</span><input class="dd-rule-b" type="number" step="any" placeholder="Valor" value="${rule?.op === "between" ? esc(String(rule.b)) : ""}"></div>
     </div>` : "";
-  panel.innerHTML = `${head}${numberRule}${kind === "date" ? "" : '<div class="dd-search"><input placeholder="Buscar..."></div>'}<div class="dd-list${kind === "date" ? " dd-months" : ""}"></div>
+  panel.innerHTML = `<div class="dd-head"><span>${esc(title)}</span><span>${values.length}</span></div>${numberRule}<div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
     <div class="dd-foot"><button class="btn dd-all" type="button">Todos</button><button class="btn danger dd-clear" type="button">Limpar</button><button class="btn primary dd-apply" type="button">Aplicar</button></div>`;
   const list = panel.querySelector(".dd-list");
   const search = panel.querySelector(".dd-search input");
@@ -6339,7 +6504,7 @@ function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", lab
     panel.querySelector(".dd-rule-and").hidden = op.value !== "between";
     panel.querySelector(".dd-rule-b").hidden = op.value !== "between";
   };
-  const drawList = () => {
+  const draw = () => {
     const query = String(search?.value || "").trim().toLocaleLowerCase("pt-BR");
     list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query) || labelFor(value).toLocaleLowerCase("pt-BR").includes(query))
       .map((value) => `<div class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(labelFor(value))}</span></div>`).join("");
@@ -6347,52 +6512,20 @@ function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", lab
       event.preventDefault(); event.stopPropagation();
       const value = item.dataset.value;
       if (selected.has(value)) selected.delete(value); else selected.add(value);
-      drawList();
+      draw();
     }));
   };
-  const drawMonths = () => {
-    list.innerHTML = years.map((year) => {
-      const yearMonths = monthValues.filter((month) => month.startsWith(`${year}-`));
-      const allOn = yearMonths.every((month) => months.has(month));
-      return `<div class="dd-year"><button class="dd-year-toggle${allOn ? " on" : ""}" type="button" data-year="${year}">${year}</button><div class="dd-month-grid">${FILTER_MONTHS.map((label, index) => {
-        const month = `${year}-${String(index + 1).padStart(2, "0")}`;
-        const present = yearMonths.includes(month);
-        return `<button class="dd-month${months.has(month) ? " on" : ""}" type="button" data-month="${month}"${present ? "" : " disabled"}>${label}</button>`;
-      }).join("")}</div></div>`;
-    }).join("") + (monthValues.includes("") ? `<div class="dd-item${months.has("") ? " on" : ""}" data-month=""><span class="dd-check">${months.has("") ? "✓" : ""}</span><span>(em branco)</span></div>` : "");
-    list.querySelectorAll("[data-month]").forEach((button) => button.addEventListener("mousedown", (event) => {
-      event.preventDefault(); event.stopPropagation();
-      const month = button.dataset.month;
-      if (months.has(month)) months.delete(month); else months.add(month);
-      drawMonths();
-    }));
-    list.querySelectorAll("[data-year]").forEach((button) => button.addEventListener("mousedown", (event) => {
-      event.preventDefault(); event.stopPropagation();
-      const yearMonths = monthValues.filter((month) => month.startsWith(`${button.dataset.year}-`));
-      const allOn = yearMonths.every((month) => months.has(month));
-      yearMonths.forEach((month) => allOn ? months.delete(month) : months.add(month));
-      drawMonths();
-    }));
-  };
-  const draw = kind === "date" ? drawMonths : drawList;
   draw();
   syncRuleInputs();
   op?.addEventListener("change", syncRuleInputs);
-  search?.addEventListener("input", drawList);
+  search?.addEventListener("input", draw);
   const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); handler(); });
   on(".dd-all", () => {
-    if (kind === "date") {
-      if (months.size === monthValues.length) months.clear(); else monthValues.forEach((month) => months.add(month));
-    } else if (selected.size === values.length) selected.clear();
-    else values.forEach((value) => selected.add(value));
+    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
     draw();
   });
   on(".dd-clear", () => onApply(null));
   on(".dd-apply", () => {
-    if (kind === "date") {
-      onApply(months.size && months.size < monthValues.length ? new FilterRule("month", { months: new Set(months) }) : null);
-      return;
-    }
     if (op?.value) {
       const a = Number(panel.querySelector(".dd-rule-a").value);
       const b = Number(panel.querySelector(".dd-rule-b").value);
@@ -6404,7 +6537,7 @@ function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", lab
     }
     onApply(selected.size && selected.size < values.length ? new Set(selected) : null);
   });
-  (op && rule ? op : search || panel.querySelector(".dd-apply"))?.focus();
+  (op && rule ? op : search)?.focus();
 }
 
 function openColumnFilter(th, key) {
@@ -7661,6 +7794,33 @@ function upsertCachedEntity(tab, saved) {
   return index >= 0 ? rows[index] : saved;
 }
 
+// Replica os tipos da empresa (Cliente, Fornecedor, Parceiro) para as pessoas
+// vinculadas. A pessoa fica com os tipos de todas as suas empresas e mantém os
+// próprios tipos que não vêm da empresa (Colaborador, Network). Empresa sem
+// tipo não altera ninguém.
+async function syncCompanyContactTypes(companyId, contactIds, companyTypes) {
+  if (!companyTypes.length || !cache?.contacts) return 0;
+  let updated = 0;
+  for (const contactId of normalizeIdList(contactIds)) {
+    const contact = cache.contacts.find((item) => item.id === contactId);
+    if (!contact) continue;
+    const companyIds = [...new Set([...normalizeIdList(contact.company_ids), companyId])];
+    const fromCompanies = companyIds.flatMap((id) => id === companyId ? companyTypes : normalizeTextList(cache.companyById?.[id]?.contact_type));
+    const current = normalizeTextList(contact.contact_type);
+    const next = normalizeTextList([...current.filter((type) => !COMPANY_CONTACT_TYPE_OPTIONS.includes(type)), ...fromCompanies]);
+    const value = next.join("; ") || null;
+    if ((current.join("; ") || null) === value) continue;
+    try {
+      const saved = await updateRow("contacts", contactId, { contact_type: value });
+      contact.contact_type = saved?.contact_type ?? value;
+      updated += 1;
+    } catch (error) {
+      toast(`Erro ao atualizar o tipo de ${contact.name || "pessoa"} · ${error.message}`, true);
+    }
+  }
+  return updated;
+}
+
 function updateCachedContactCompanyLinks({ contactId = null, companyId = null, relatedIds = [] }) {
   if (!cache) return;
   const ids = [...new Set(normalizeIdList(relatedIds))];
@@ -7720,7 +7880,10 @@ async function saveForm(tab, id, fs, opts = {}) {
     delete body.company_ids;
     body.company_id = linkedCompanyIds[0] || null;
   }
-  if (tab === "companies") delete body.contact_ids;
+  if (tab === "companies") {
+    delete body.contact_ids;
+    body.contact_type = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type)).join("; ") || null;
+  }
   if (tab === "projects") {
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
     if (body.status === "active") body.substatus = null;
@@ -7791,6 +7954,8 @@ async function saveForm(tab, id, fs, opts = {}) {
       const qsaContactIds = await companyQsaContactIds(saved.tax_id, saved.qsa);
       linkedContactIds.push(...qsaContactIds.filter((contactId) => !linkedContactIds.includes(contactId)));
       await replaceContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
+      const synced = await syncCompanyContactTypes(saved.tax_id, linkedContactIds, normalizeTextList(body.contact_type));
+      if (synced) toast(`Tipo de contato atualizado em ${synced} pessoa(s) vinculada(s).`);
     }
     if (tab === "deals" && body.status === "won" && body.company_id) {
       const dealId = effectiveId || saved?.id;
@@ -7896,7 +8061,7 @@ function openSettings() {
 // Cada página tem apresentação e seções com passo a passo, recursos e dicas.
 const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
 const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
-const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por mês/ano. Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
+const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
 const HELP_PAGES = {
@@ -7924,7 +8089,7 @@ const HELP_PAGES = {
     lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
     sections: [
       { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b> para preencher razão social, nome fantasia, abertura, situação cadastral, capital social, atividades, endereço e QSA.", "Sócios do QSA que já são pessoas cadastradas são vinculados automaticamente.", "Complete o contato e salve."],
-        cards: [["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
+        cards: [["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION
     ] },
   conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
