@@ -1829,8 +1829,8 @@ const taskPlannedEnd = (task) => task?.planned_end_date || task?.due_date || nul
 const taskStatusLabel = (status) => TASK_STATUS.find((item) => item.id === status)?.label || "Em aberto";
 const taskStatusTone = (status) => status === "done" ? "won" : status === "canceled" ? "lost" : status === "doing" ? "negotiation" : "lead";
 function inlineTaskStatus(task, className = "inline-task-status") {
-  const disabled = !currentUserCan("activities", "operate");
-  return `<select class="${className}" data-id="${esc(task.id)}" title="Alterar status"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task))}</select>`;
+  const disabled = !currentUserCan("activities", "operate") || taskStatusLocked(task);
+  return `<select class="${className}" data-id="${esc(task.id)}" title="${taskStatusLocked(task) ? "Somente administradores alteram esta tarefa" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
 }
 function taskDeadlineState(task) {
   const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
@@ -2440,12 +2440,15 @@ function taskBulkProvider(rows, rerender, keys = null) {
       if ("planned_end_date" in changes) changes.due_date = changes.planned_end_date;
       if (dates) changes.schedule_manual = true;
       let updated = 0;
+      let refused = 0;
       const projects = new Set();
       for (const id of ids) {
         const task = loadProjectTasks().find((item) => item.id === id);
         if (!task) continue;
+        if (changes.status && taskStatusTransitionError(task.status || "todo", changes.status)) { refused += 1; continue; }
         if (await updateProjectTask(id, changes)) { updated += 1; projects.add(task.project_id); }
       }
+      if (refused) toast(`${refused} tarefa(s) mantida(s) pelo fluxo de status: Em andamento não volta para Em aberto e cancelar ou reabrir é só para administradores.`, true);
       if (dates) for (const projectId of projects) await recalculateDependencySchedules(projectId);
       return updated;
     },
@@ -4729,8 +4732,25 @@ document.addEventListener("click", (event) => {
   });
 });
 
-function taskStatusOptions(selected = "todo", blocked = false) {
-  return TASK_STATUS.map((s) => `<option value="${s.id}"${s.id === selected ? " selected" : ""}${blocked && !["todo", "canceled"].includes(s.id) ? " disabled" : ""}>${s.label}</option>`).join("");
+// Fluxo de status das tarefas: Em andamento não volta para Em aberto,
+// Atendido e Cancelado só são reabertos por administradores e só
+// administradores cancelam tarefas em aberto ou em andamento.
+function taskStatusTransitionError(from = "todo", to = "todo") {
+  if (!to || to === from) return "";
+  const admin = currentUserIsAdmin();
+  if (from === "done" && !admin) return "Tarefa Atendida só pode ser alterada por administradores.";
+  if (from === "canceled" && !admin) return "Tarefa Cancelada só pode ser reaberta por administradores.";
+  if (from === "doing" && to === "todo") return "Tarefa Em andamento não pode voltar para Em aberto.";
+  if (to === "canceled" && ["todo", "doing"].includes(from) && !admin) return "Somente administradores podem cancelar tarefas.";
+  return "";
+}
+const taskStatusLocked = (task) => ["done", "canceled"].includes(task?.status) && !currentUserIsAdmin();
+
+function taskStatusOptions(selected = "todo", blocked = false, flow = false) {
+  return TASK_STATUS.map((s) => {
+    const disabled = (blocked && !["todo", "canceled"].includes(s.id)) || (flow && taskStatusTransitionError(selected, s.id));
+    return `<option value="${s.id}"${s.id === selected ? " selected" : ""}${disabled ? " disabled" : ""}>${s.label}</option>`;
+  }).join("");
 }
 
 function taskDependencies(task, tasks = loadProjectTasks()) {
@@ -4776,7 +4796,7 @@ function taskCardHtml(task) {
       ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}" type="button">Checklist ${checklist.done}/${checklist.total}</button>`
       : `<div class="task-subtask-summary">Subtarefas ${subtasks.done}/${subtasks.total} · checklist nas subtarefas</div>`}
     <div class="task-actions">
-      <select class="task-status"${blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked)}</select>
+      <select class="task-status"${taskStatusLocked(task) ? ' title="Somente administradores alteram esta tarefa" disabled' : blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked, true)}</select>
       ${parent ? "" : '<button class="rowbtn task-add-subtask" title="Adicionar subtarefa">＋</button>'}
       <button class="rowbtn task-edit" title="Editar tarefa">✎</button>
       ${task.source_template_id ? '<span class="muted">Produto</span>' : '<button class="rowbtn del-task" title="Excluir tarefa">✕</button>'}
@@ -5530,6 +5550,11 @@ async function updateProjectTask(taskId, patch) {
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
+  const transitionError = patch.status ? taskStatusTransitionError(task.status || "todo", patch.status) : "";
+  if (transitionError) {
+    toast(transitionError, true);
+    return false;
+  }
   const operationalTasks = operationalProjectTasks(task.project_id);
   if (patch.status && !["todo", "canceled"].includes(patch.status) && taskIsBlocked(task, operationalTasks)) {
     const dependency = taskDependencies(task, operationalTasks).find((item) => item.status !== "done");
@@ -5539,7 +5564,7 @@ async function updateProjectTask(taskId, patch) {
   if (patch.status && patch.status !== "done" && task.status === "done") {
     const activeDependent = operationalTasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
     if (activeDependent) {
-      toast(`Volte "${activityDisplayName(activeDependent)}" para Em aberto antes de reabrir esta tarefa.`, true);
+      toast(`"${activityDisplayName(activeDependent)}" depende desta tarefa e já foi iniciada; não é possível reabrir.`, true);
       return false;
     }
   }
