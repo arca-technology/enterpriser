@@ -157,8 +157,27 @@ const DELIVERY_CHANNEL_OPTIONS = {
   erp: ["BLING", "OLIST"],
   marketplaces: ["AMAZON", "MAGAZINE LUIZA", "MERCADO LIVRE", "SHEIN", "SHOPEE", "TIKTOKSHOP"],
   stores: ["LOJA FÍSICA", "BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
-  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "TOTAL EXPRESS"]
+  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "MERCADO ENVIOS", "NUVEM ENVIO", "TOTAL EXPRESS"],
+  financial: [
+    "BANCO DO BRASIL", "BRADESCO", "BTG PACTUAL", "C6 BANK", "CAIXA", "INTER", "ITAÚ", "NUBANK", "SANTANDER", "SICOOB", "SICREDI",
+    "APPMAX", "ASAAS", "CIELO", "EFÍ", "GETNET", "MERCADO PAGO", "NUVEM PAGO", "PAGAR.ME", "PAGBANK", "PAYPAL", "REDE", "STONE", "STRIPE", "VINDI"
+  ]
 };
+const DELIVERY_COMPANY_SETUP_OPTIONS = ["ABERTA"];
+// Canais que trazem contas financeiras e fretes automaticamente.
+const DELIVERY_AUTO_SETUPS = [
+  { channel: "MERCADO LIVRE", financial: ["MERCADO PAGO"], freight: ["MERCADO ENVIOS"] },
+  { channel: "NUVEM SHOP", financial: ["NUVEM PAGO"], freight: ["NUVEM ENVIO"] },
+  { channel: "TRAY", financial: ["VINDI"], freight: [] }
+];
+function deliveryAutoSetups(marketplaces = [], stores = []) {
+  const active = new Set([...normalizeTextList(marketplaces), ...normalizeTextList(stores)].map(normalizeDeliveryChannel));
+  const rules = DELIVERY_AUTO_SETUPS.filter((rule) => active.has(normalizeDeliveryChannel(rule.channel)));
+  return { financial: normalizeTextList(rules.flatMap((rule) => rule.financial)), freight: normalizeTextList(rules.flatMap((rule) => rule.freight)) };
+}
+function projectStoreList(project) {
+  return normalizeTextList(project?.store_platforms).length ? normalizeTextList(project.store_platforms) : normalizeTextList(project?.store_platform ? [project.store_platform] : []);
+}
 const MANAGED_DELIVERY_CHANNELS = new Set(Object.values(DELIVERY_CHANNEL_OPTIONS).flat().map(normalizeDeliveryChannel));
 const deliveryChannelOptions = (group) => DELIVERY_CHANNEL_OPTIONS[group].map((value) => ({ value, label: value }));
 function normalizeDeliveryChannel(value) {
@@ -170,7 +189,9 @@ function activatedDeliveryChannels(project) {
     ...normalizeTextList(project?.marketplace_channels),
     ...normalizeTextList(project?.store_platforms),
     project?.store_platform,
-    ...normalizeTextList(project?.freight_channels)
+    ...normalizeTextList(project?.freight_channels),
+    ...normalizeTextList(project?.financial_accounts),
+    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project))).flat()
   ].filter(Boolean).map(normalizeDeliveryChannel));
 }
 function projectChannelEnabled(project, channel) {
@@ -2253,7 +2274,9 @@ function fields(tab, c) {
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
       { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
-      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" }];
+      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" },
+      { k: "company_setup", label: "Situação da empresa", type: "select", options: DELIVERY_COMPANY_SETUP_OPTIONS.map((value) => ({ value, label: value })), full: true },
+      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar bancos e gateways", help: "Mercado Livre inclui Mercado Pago e Mercado Envios; Nuvem Shop inclui Nuvem Pago e Nuvem Envio; Tray inclui Vindi." }];
   }
 }
 
@@ -5146,20 +5169,94 @@ function renderDeliveryStatusMatrix(rows, kind, tasks = []) {
   }).join("")}</div>`;
 }
 
+function deliveryGoalPercent(goal) {
+  const current = Number(goal.current_value || 0);
+  const target = Number(goal.target_value || 0);
+  if (deliveryGoalReached(goal, current)) return 100;
+  if (goal.comparison === "at_most") return current ? Math.max(0, Math.min(99, Math.round(target / current * 100))) : 0;
+  if (goal.comparison === "exactly") return target || current ? Math.max(0, Math.min(99, Math.round(Math.min(current, target) / Math.max(current, target) * 100))) : 0;
+  return target ? Math.max(0, Math.min(99, Math.round(current / target * 100))) : 0;
+}
+
+function deliveryObjectivePercent(objective, tasks) {
+  if (objective.status === "done") return 100;
+  const linked = tasks.filter((task) => task.objective_id === objective.id);
+  return linked.length ? Math.round(linked.filter((task) => task.status === "done").length / linked.length * 100) : 0;
+}
+
+function dashboardBarHtml(percent, tone = "") {
+  return `<div class="okr-bar${tone ? ` ${tone}` : ""}"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div><b class="okr-percent">${percent}%</b>`;
+}
+
+function deliveryOkrBoardHtml(objectives, goals, tasks) {
+  const key = (item) => [item.category, item.channel].map((value) => String(value || "").trim().toLocaleUpperCase("pt-BR")).join(" · ") || "—";
+  const label = (item) => [item.category || "Sem categoria", item.channel || "Sem canal"].join(" · ");
+  const groups = new Map();
+  const ensure = (item) => {
+    const id = key(item);
+    if (!groups.has(id)) groups.set(id, { label: label(item), objectives: [], goals: [] });
+    return groups.get(id);
+  };
+  objectives.forEach((objective) => ensure(objective).objectives.push(objective));
+  goals.forEach((goal) => ensure(goal).goals.push(goal));
+  if (!groups.size) return '<div class="empty">Cadastre objetivos e metas para montar o OKR.</div>';
+  const today = new Date().toISOString().slice(0, 10);
+  return `<div class="okr-board">${[...groups.values()].map((group) => {
+    const krPercents = group.goals.map(deliveryGoalPercent);
+    const objectivePercents = group.objectives.map((objective) => deliveryObjectivePercent(objective, tasks));
+    const overall = krPercents.length ? Math.round(krPercents.reduce((a, b) => a + b, 0) / krPercents.length)
+      : objectivePercents.length ? Math.round(objectivePercents.reduce((a, b) => a + b, 0) / objectivePercents.length) : 0;
+    return `<section class="okr-card">
+      <header><span>${esc(group.label)}</span>${dashboardBarHtml(overall, overall >= 100 ? "is-done" : "")}</header>
+      <div class="okr-section"><span class="okr-tag">O</span><div class="okr-list">${group.objectives.map((objective) => {
+        const percent = deliveryObjectivePercent(objective, tasks);
+        const late = objective.due_date && objective.status !== "done" && objective.due_date < today;
+        return `<div class="okr-item"><strong>${esc(objective.name || "Objetivo")}</strong><small>${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+      }).join("") || '<span class="muted">Sem objetivo nesta Categoria/Canal</span>'}</div></div>
+      <div class="okr-section"><span class="okr-tag is-kr">KR</span><div class="okr-list">${group.goals.map((goal) => {
+        const percent = deliveryGoalPercent(goal);
+        const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
+        return `<div class="okr-item"><strong>${esc(goal.name || "Meta")}</strong><small>${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+      }).join("") || '<span class="muted">Sem metas (resultados-chave) nesta Categoria/Canal</span>'}</div></div>
+    </section>`;
+  }).join("")}</div>`;
+}
+
 function renderDeliverySectionDashboard(rows, kind, tasks = []) {
+  const projectId = projectBoardState.projectId;
+  const objectives = kind === "objectives" ? rows : loadDeliveryObjectives().filter((item) => item.project_id === projectId);
+  const goals = kind === "goals" ? rows : loadDeliveryGoals().filter((item) => item.project_id === projectId);
+  const today = new Date().toISOString().slice(0, 10);
   const done = rows.filter((item) => item.status === "done").length;
   const doing = rows.filter((item) => item.status === "doing").length;
   const blocked = rows.filter((item) => kind === "objectives" ? deliveryObjectiveDependencyState(item).blocked : deliveryGoalDependencyState(item).blocked).length;
-  const overdue = rows.filter((item) => item.due_date && item.status !== "done" && item.due_date < new Date().toISOString().slice(0, 10)).length;
-  const linked = kind === "objectives" ? tasks.filter((task) => rows.some((item) => item.id === task.objective_id)).length : 0;
-  return `<div class="project-dashboard">
-    <div class="metric"><div class="k">${kind === "objectives" ? "Objetivos" : "Metas"}</div><div class="v">${rows.length}</div></div>
-    <div class="metric"><div class="k">Em andamento</div><div class="v">${doing}</div></div>
-    <div class="metric"><div class="k">Concluídos</div><div class="v">${done}</div></div>
-    <div class="metric"><div class="k">Bloqueados</div><div class="v">${blocked}</div></div>
-    <div class="metric"><div class="k">Atrasados</div><div class="v">${overdue}</div></div>
-    ${kind === "objectives" ? `<div class="metric"><div class="k">Tarefas vinculadas</div><div class="v">${linked}</div></div>` : ""}
-  </div>`;
+  const overdue = rows.filter((item) => item.due_date && item.status !== "done" && item.due_date < today).length;
+  const average = (values) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
+  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${label}</div><div class="v">${value}</div>${hint ? `<div class="metric-hint">${hint}</div>` : ""}</div>`;
+  const cards = kind === "objectives"
+    ? [
+      metric("Objetivos", rows.length),
+      metric("Progresso médio", `${average(rows.map((item) => deliveryObjectivePercent(item, tasks)))}%`, "Tarefas concluídas dos objetivos"),
+      metric("Concluídos", done, rows.length ? `${Math.round(done / rows.length * 100)}% do total` : ""),
+      metric("Em andamento", doing),
+      metric("Bloqueados", blocked),
+      metric("Atrasados", overdue),
+      metric("Tarefas vinculadas", tasks.filter((task) => rows.some((item) => item.id === task.objective_id)).length)
+    ]
+    : [
+      metric("Metas (KPIs)", rows.length),
+      metric("Atingimento médio", `${average(rows.map(deliveryGoalPercent))}%`, "Valor atual x valor-alvo"),
+      metric("Metas atingidas", rows.filter((goal) => deliveryGoalReached(goal)).length, rows.length ? `${Math.round(rows.filter((goal) => deliveryGoalReached(goal)).length / rows.length * 100)}% do total` : ""),
+      metric("Em andamento", doing),
+      metric("Bloqueadas", blocked),
+      metric("Atrasadas", overdue)
+    ];
+  const kpis = kind === "goals" && rows.length ? `<section class="dashboard-block"><h4>KPIs</h4><div class="kpi-list">${rows.map((goal) => {
+    const percent = deliveryGoalPercent(goal);
+    const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
+    return `<div class="kpi-row"><div><strong>${esc(goal.name || "Meta")}</strong><small>${esc(goal.metric || "Sem indicador")}</small></div><span class="kpi-values">${Number(goal.current_value || 0).toLocaleString("pt-BR")} <small>/ ${esc(target)}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+  }).join("")}</div></section>` : "";
+  return `<div class="delivery-dashboard"><div class="project-dashboard">${cards.join("")}</div>${kpis}<section class="dashboard-block"><h4>OKR <small>Objetivos (O) e Resultados-chave (KR) ligados pela mesma Categoria e Canal</small></h4>${deliveryOkrBoardHtml(objectives, goals, tasks)}</section></div>`;
 }
 
 function projectSectionRows(projectId, section = projectBoardState.section) {
@@ -5302,7 +5399,7 @@ function renderProjectBoard(projectId) {
     body = view === "table" ? renderDeliveryGoals(projectId, rows)
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_GOAL_ADAPTER, "", `delivery-goals:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "goals")
-      : renderDeliverySectionDashboard(rows, "goals");
+      : renderDeliverySectionDashboard(rows, "goals", allTasks);
   }
   root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${["table", "mindmap"].includes(view) ? projectFilterStripHtml() : ""}${body}</div>`;
   const table = root.querySelector("table");
@@ -6923,6 +7020,10 @@ function openForm(tab, id, opts = {}) {
     let val = record ? record[f.k] : f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
+    if (tab === "projects" && record && ["financial_accounts", "freight_channels"].includes(f.k)) {
+      const auto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
+      val = normalizeTextList([...normalizeTextList(val), ...(f.k === "financial_accounts" ? auto.financial : auto.freight)]);
+    }
     const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
     let ctrl;
     if (f.type === "multi") {
@@ -7063,9 +7164,16 @@ function openForm(tab, id, opts = {}) {
     const persistedChannels = {
       marketplaces: normalizeTextList(record?.marketplace_channels),
       stores: normalizeTextList(record?.store_platforms).length ? normalizeTextList(record.store_platforms) : normalizeTextList(record?.store_platform ? [record.store_platform] : []),
-      freight: normalizeTextList(record?.freight_channels)
+      freight: normalizeTextList(record?.freight_channels),
+      financial: normalizeTextList(record?.financial_accounts)
     };
-    let inheritedChannels = { marketplaces: [], stores: [], freight: [] };
+    if (record) {
+      const persistedAuto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
+      persistedChannels.freight = normalizeTextList([...persistedChannels.freight, ...persistedAuto.freight]);
+      persistedChannels.financial = normalizeTextList([...persistedChannels.financial, ...persistedAuto.financial]);
+    }
+    let inheritedChannels = { marketplaces: [], stores: [], freight: [], financial: [] };
+    let currentAuto = { financial: [], freight: [] };
     let inheritedErp = "";
     const replaceChannelPicker = (key, group, selected, locked) => {
       const picker = document.getElementById(`form-${key}`);
@@ -7079,17 +7187,22 @@ function openForm(tab, id, opts = {}) {
       const currentSelections = {
         marketplaces: multiPickerValues("form-marketplace_channels").filter((channel) => !inheritedChannels.marketplaces.includes(channel)),
         stores: multiPickerValues("form-store_platforms").filter((channel) => !inheritedChannels.stores.includes(channel)),
-        freight: multiPickerValues("form-freight_channels").filter((channel) => !inheritedChannels.freight.includes(channel))
+        freight: multiPickerValues("form-freight_channels").filter((channel) => !inheritedChannels.freight.includes(channel)),
+        financial: multiPickerValues("form-financial_accounts").filter((channel) => !inheritedChannels.financial.includes(channel))
       };
       inheritedChannels = {
         marketplaces: normalizeTextList(previous?.marketplace_channels),
         stores: normalizeTextList(previous?.store_platforms).length ? normalizeTextList(previous.store_platforms) : normalizeTextList(previous?.store_platform ? [previous.store_platform] : []),
-        freight: normalizeTextList(previous?.freight_channels)
+        freight: normalizeTextList(previous?.freight_channels),
+        financial: normalizeTextList(previous?.financial_accounts)
       };
       inheritedErp = previous?.erp_platform || "";
       replaceChannelPicker("marketplace_channels", "marketplaces", normalizeTextList([...currentSelections.marketplaces, ...inheritedChannels.marketplaces]), normalizeTextList([...persistedChannels.marketplaces, ...inheritedChannels.marketplaces]));
       replaceChannelPicker("store_platforms", "stores", normalizeTextList([...currentSelections.stores, ...inheritedChannels.stores]), normalizeTextList([...persistedChannels.stores, ...inheritedChannels.stores]));
       replaceChannelPicker("freight_channels", "freight", normalizeTextList([...currentSelections.freight, ...inheritedChannels.freight]), normalizeTextList([...persistedChannels.freight, ...inheritedChannels.freight]));
+      replaceChannelPicker("financial_accounts", "financial", normalizeTextList([...currentSelections.financial, ...inheritedChannels.financial]), normalizeTextList([...persistedChannels.financial, ...inheritedChannels.financial]));
+      currentAuto = { financial: [], freight: [] };
+      applyAutoSetups();
       if (erpEl) {
         const persistedErp = record?.erp_platform || "";
         const userErp = erpEl.value === previousInheritedErp && !persistedErp ? "" : erpEl.value;
@@ -7098,6 +7211,23 @@ function openForm(tab, id, opts = {}) {
         erpEl.closest(".field")?.classList.toggle("field-disabled", Boolean(persistedErp || inheritedErp));
       }
     };
+    // Mercado Livre, Nuvem Shop e Tray trazem contas financeiras e fretes automáticos.
+    function applyAutoSetups() {
+      const auto = deliveryAutoSetups(multiPickerValues("form-marketplace_channels"), multiPickerValues("form-store_platforms"));
+      [["financial_accounts", "financial"], ["freight_channels", "freight"]].forEach(([key, group]) => {
+        const fixed = new Set([...persistedChannels[group], ...inheritedChannels[group]]);
+        const dropped = currentAuto[group].filter((value) => !auto[group].includes(value) && !fixed.has(value));
+        const current = multiPickerValues(`form-${key}`);
+        const selected = normalizeTextList([...current.filter((value) => !dropped.includes(value)), ...auto[group]]);
+        const locked = normalizeTextList([...fixed, ...auto[group]]);
+        const same = selected.length === current.length && selected.every((value) => current.includes(value));
+        if (!same || dropped.length || auto[group].length !== currentAuto[group].length) replaceChannelPicker(key, group, selected, locked);
+      });
+      currentAuto = auto;
+    }
+    form?.addEventListener("multi-picker-change", (event) => {
+      if (["form-marketplace_channels", "form-store_platforms"].includes(event.target?.id)) applyAutoSetups();
+    }, true);
     const syncContinuityOptions = () => {
       if (!continuationEl) return;
       const companyCnpj = normalizeCnpj(companyEl?.value);
@@ -7461,6 +7591,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       const previousStores = normalizeTextList(previousDelivery.store_platforms).length ? normalizeTextList(previousDelivery.store_platforms) : normalizeTextList(previousDelivery.store_platform ? [previousDelivery.store_platform] : []);
       body.store_platforms = normalizeTextList([...previousStores, ...normalizeTextList(body.store_platforms)]);
       body.freight_channels = normalizeTextList([...normalizeTextList(previousDelivery.freight_channels), ...normalizeTextList(body.freight_channels)]);
+      body.financial_accounts = normalizeTextList([...normalizeTextList(previousDelivery.financial_accounts), ...normalizeTextList(body.financial_accounts)]);
     }
     if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
     const currentStores = normalizeTextList(current?.store_platforms).length ? normalizeTextList(current.store_platforms) : normalizeTextList(current?.store_platform ? [current.store_platform] : []);
@@ -7468,6 +7599,11 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (removedStore) { toast(`A loja ${removedStore} já está ativada e não pode ser removida.`, true); return; }
     const removedMarketplace = normalizeTextList(current?.marketplace_channels).find((channel) => !normalizeTextList(body.marketplace_channels).includes(channel));
     if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
+    const autoSetups = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
+    body.freight_channels = normalizeTextList([...normalizeTextList(body.freight_channels), ...autoSetups.freight]);
+    body.financial_accounts = normalizeTextList([...normalizeTextList(body.financial_accounts), ...autoSetups.financial]);
+    const removedFinancial = normalizeTextList(current?.financial_accounts).find((channel) => !body.financial_accounts.includes(channel));
+    if (removedFinancial) { toast(`A conta financeira ${removedFinancial} já está ativada e não pode ser removida.`, true); return; }
     const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
   }
@@ -12438,8 +12574,9 @@ function openToolProcess(id) {
 
 const PROCESS_ELEMENTS = { task: "Tarefa", decision: "Decisão", end: "Fim" };
 const PROCESS_LANE_OPTIONS = [["responsible", "Responsável"], ["system", "Sistema"], ["module", "Módulo"]];
-const BPMN = { laneHead: 150, colW: 250, rowH: 140, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
+const BPMN = { laneHead: 150, levelW: 130, levelH: 40, colW: 250, rowH: 140, laneW: 236, rankH: 150, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
 let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
+let processFlowOrientation = (() => { try { return localStorage.getItem("processFlowOrientation") || "vertical"; } catch { return "vertical"; } })();
 let processFlowZoom = 1;
 
 function processStepTitle(step, index) {
@@ -12473,48 +12610,86 @@ function processFlowGraph(steps) {
   return { nodes, edges };
 }
 
-function processFlowLayout(steps, laneBy) {
+function processFlowLaneOf(step, laneBy) {
+  if (laneBy === "module") {
+    const module = String(step?.module || "").trim();
+    const submodule = String(step?.submodule || "").trim();
+    if (!module && !submodule) return null;
+    return { key: `${module || "Sem módulo"}\u0001${submodule || "Sem submódulo"}`, group: module || "Sem módulo", name: submodule || "Sem submódulo" };
+  }
+  const value = String((laneBy === "system" ? step?.system : step?.responsible) || "").trim();
+  return value ? { key: value, group: null, name: value } : null;
+}
+
+function processFlowLayout(steps, laneBy, orientation = processFlowOrientation) {
   const graph = processFlowGraph(steps);
+  const vertical = orientation === "vertical";
   const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
-  const laneValue = (step) => String((laneBy === "system" ? step?.system : laneBy === "module" ? step?.module : step?.responsible) || "").trim();
-  const emptyLane = laneBy === "system" ? "Sem sistema" : laneBy === "module" ? "Sem módulo" : "Sem responsável";
-  const lanes = [];
+  const emptyLane = laneBy === "system" ? "Sem sistema" : laneBy === "module" ? null : "Sem responsável";
+  const fallbackLane = laneBy === "module"
+    ? { key: "Sem módulo\u0001Sem submódulo", group: "Sem módulo", name: "Sem submódulo" }
+    : { key: emptyLane, group: null, name: emptyLane };
   const laneOf = new Map();
+  let previousLane = null;
   graph.nodes.forEach((node) => {
     let source = node.step;
     if (node.kind === "start") source = steps[0];
     if (node.implicit) source = steps[steps.length - 1];
-    const name = laneValue(source) || emptyLane;
-    if (!lanes.includes(name)) lanes.push(name);
-    laneOf.set(node.id, name);
+    let lane = processFlowLaneOf(source, laneBy);
+    if (!lane) lane = node.kind !== "task" && previousLane ? previousLane : fallbackLane;
+    laneOf.set(node.id, lane);
+    if (node.kind !== "start") previousLane = lane;
   });
-  const column = new Map();
+  const lanes = [];
+  [...laneOf.values()].forEach((lane) => { if (!lanes.some((item) => item.key === lane.key)) lanes.push(lane); });
+  if (laneBy === "module") {
+    const groupOrder = [];
+    lanes.forEach((lane) => { if (!groupOrder.includes(lane.group)) groupOrder.push(lane.group); });
+    lanes.sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group));
+  }
+  const rank = new Map();
   graph.nodes.forEach((node, index) => {
-    if (node.kind === "start") { column.set(node.id, 0); return; }
-    const incoming = graph.edges.filter((edge) => edge.to === node.id && order.get(edge.from) < index && column.has(edge.from));
-    column.set(node.id, incoming.length ? Math.max(...incoming.map((edge) => column.get(edge.from) + 1)) : (column.get(graph.nodes[index - 1].id) || 0) + 1);
+    if (node.kind === "start") { rank.set(node.id, 0); return; }
+    const incoming = graph.edges.filter((edge) => edge.to === node.id && order.get(edge.from) < index && rank.has(edge.from));
+    rank.set(node.id, incoming.length ? Math.max(...incoming.map((edge) => rank.get(edge.from) + 1)) : (rank.get(graph.nodes[index - 1].id) || 0) + 1);
   });
   const slots = new Map();
   const slotOf = new Map();
   graph.nodes.forEach((node) => {
-    const key = `${laneOf.get(node.id)}|${column.get(node.id)}`;
+    const key = `${laneOf.get(node.id).key}|${rank.get(node.id)}`;
     const slot = slots.get(key) || 0;
     slots.set(key, slot + 1);
     slotOf.set(node.id, slot);
   });
-  const laneRows = new Map(lanes.map((lane) => [lane, Math.max(1, ...[...slots.entries()].filter(([key]) => key.startsWith(`${lane}|`)).map(([, count]) => count))]));
-  let top = 0;
-  const laneTop = new Map();
-  lanes.forEach((lane) => { laneTop.set(lane, top); top += laneRows.get(lane) * BPMN.rowH; });
+  const levels = laneBy === "module" ? 2 : 1;
+  const laneUnit = vertical ? BPMN.laneW : BPMN.rowH;
+  const head = vertical ? levels * BPMN.levelH : (levels === 2 ? 2 * BPMN.levelW : BPMN.laneHead);
+  const laneSpan = new Map(lanes.map((lane) => [lane.key, Math.max(1, ...[...slots.entries()].filter(([key]) => key.startsWith(`${lane.key}|`)).map(([, count]) => count)) * laneUnit]));
+  const laneStart = new Map();
+  let offset = vertical ? 0 : 0;
+  lanes.forEach((lane) => { laneStart.set(lane.key, offset); offset += laneSpan.get(lane.key); });
+  const maxRank = Math.max(...rank.values());
   const size = (node) => node.kind === "task" ? [BPMN.taskW, BPMN.taskH] : node.kind === "decision" ? [BPMN.diamond, BPMN.diamond] : [BPMN.event, BPMN.event];
   const boxes = new Map(graph.nodes.map((node) => {
     const [w, h] = size(node);
-    const x = BPMN.laneHead + column.get(node.id) * BPMN.colW + (BPMN.colW - w) / 2;
-    const y = laneTop.get(laneOf.get(node.id)) + slotOf.get(node.id) * BPMN.rowH + (BPMN.rowH - h) / 2;
+    const lane = laneOf.get(node.id);
+    const along = laneStart.get(lane.key) + slotOf.get(node.id) * laneUnit;
+    const x = vertical ? along + (BPMN.laneW - w) / 2 : head + rank.get(node.id) * BPMN.colW + (BPMN.colW - w) / 2;
+    const y = vertical ? head + rank.get(node.id) * BPMN.rankH + (BPMN.rankH - h) / 2 : along + (BPMN.rowH - h) / 2;
     return [node.id, { x, y, w, h, kind: node.kind }];
   }));
-  const width = BPMN.laneHead + (Math.max(...column.values()) + 1) * BPMN.colW + BPMN.pad;
-  return { graph, lanes, laneTop, laneRows, boxes, column, width, height: top };
+  const width = vertical ? offset : head + (maxRank + 1) * BPMN.colW + BPMN.pad;
+  const height = vertical ? head + (maxRank + 1) * BPMN.rankH + BPMN.pad : offset;
+  return { graph, lanes, laneStart, laneSpan, boxes, column: rank, width, height, head, levels, vertical };
+}
+
+function processFlowEntryPoint(box, side) {
+  if (box.kind === "decision") {
+    if (side === "right") return [box.x + box.w * 0.78, box.y + box.h * 0.28];
+    return [box.x + box.w * 0.72, box.y + box.h * 0.78];
+  }
+  if (side === "right") return [box.x + box.w, box.y + box.h * 0.3];
+  return [box.x + box.w * 0.72, box.y + box.h];
 }
 
 function processFlowEdgePath(edge, layout) {
@@ -12523,39 +12698,75 @@ function processFlowEdgePath(edge, layout) {
   if (!from || !to) return null;
   const forward = layout.column.get(edge.to) > layout.column.get(edge.from);
   const exit = edge.exit || 0;
+  if (layout.vertical) {
+    let x1 = from.x + from.w / 2;
+    let y1 = from.y + from.h;
+    if (exit === 1) { x1 = from.x + from.w; y1 = from.y + from.h / 2; }
+    if (exit === 2) { x1 = from.x; y1 = from.y + from.h / 2; }
+    if (forward) {
+      const x2 = to.x + to.w / 2;
+      const y2 = to.y;
+      if (exit === 1 || exit === 2) return { d: `M${x1},${y1} H${x2} V${y2 - 4}`, labelAt: [exit === 1 ? x1 + 6 : x1 - 30, y1 - 6] };
+      const mid = y1 + Math.min(40, (y2 - y1) / 2);
+      return { d: Math.abs(x1 - x2) < 1 ? `M${x1},${y1} V${y2 - 4}` : `M${x1},${y1} V${mid} H${x2} V${y2 - 4}`, labelAt: [x1 + 6, y1 + 14] };
+    }
+    const sx = exit === 2 ? from.x : from.x + from.w;
+    const sy = from.y + from.h / 2;
+    const [tx, ty] = processFlowEntryPoint(to, "right");
+    const side = exit === 2 ? Math.min(from.x, to.x) - 18 - exit * 8 : Math.max(from.x + from.w, to.x + to.w) + 18 + exit * 8;
+    return { d: `M${sx},${sy} H${side} V${ty} H${tx + 4}`, labelAt: [sx + (exit === 2 ? -30 : 6), sy - 6] };
+  }
   let x1 = from.x + from.w;
   let y1 = from.y + from.h / 2;
   if (exit === 1) { x1 = from.x + from.w / 2; y1 = from.y + from.h; }
   if (exit === 2) { x1 = from.x + from.w / 2; y1 = from.y; }
   const x2 = to.x;
   const y2 = to.y + to.h / 2;
-  let d;
-  let labelAt;
   if (forward) {
-    if (exit === 1 || exit === 2) {
-      d = `M${x1},${y1} V${y2} H${x2 - 4}`;
-      labelAt = [x1 + 6, exit === 1 ? y1 + 14 : y1 - 6];
-    } else {
-      const mid = x1 + Math.min(40, (x2 - x1) / 2);
-      d = Math.abs(y1 - y2) < 1 ? `M${x1},${y1} H${x2 - 4}` : `M${x1},${y1} H${mid} V${y2} H${x2 - 4}`;
-      labelAt = [x1 + 6, y1 - 6];
-    }
-  } else {
-    const bottom = Math.max(from.y + from.h, to.y + to.h) + 18 + exit * 8;
-    const sx = exit === 2 ? x1 : from.x + from.w / 2;
-    const sy = exit === 2 ? y1 : from.y + from.h;
-    const tx = to.x + to.w * 0.72;
-    d = exit === 2
-      ? `M${sx},${sy} V${Math.min(from.y, to.y) - 18} H${tx} V${to.y - 4}`
-      : `M${sx},${sy} V${bottom} H${tx} V${to.kind === "decision" ? to.y + to.h * 0.78 + 4 : to.y + to.h + 4}`;
-    labelAt = [sx + 6, exit === 2 ? sy - 6 : sy + 14];
+    if (exit === 1 || exit === 2) return { d: `M${x1},${y1} V${y2} H${x2 - 4}`, labelAt: [x1 + 6, exit === 1 ? y1 + 14 : y1 - 6] };
+    const mid = x1 + Math.min(40, (x2 - x1) / 2);
+    return { d: Math.abs(y1 - y2) < 1 ? `M${x1},${y1} H${x2 - 4}` : `M${x1},${y1} H${mid} V${y2} H${x2 - 4}`, labelAt: [x1 + 6, y1 - 6] };
   }
-  return { d, labelAt };
+  const sx = exit === 2 ? x1 : from.x + from.w / 2;
+  const sy = exit === 2 ? y1 : from.y + from.h;
+  const [tx, ty] = processFlowEntryPoint(to, "bottom");
+  const d = exit === 2
+    ? `M${sx},${sy} V${Math.min(from.y, to.y) - 18} H${tx} V${to.y - 4}`
+    : `M${sx},${sy} V${Math.max(from.y + from.h, to.y + to.h) + 18 + exit * 8} H${tx} V${ty + 4}`;
+  return { d, labelAt: [sx + 6, exit === 2 ? sy - 6 : sy + 14] };
+}
+
+function processFlowHeadsHtml(layout) {
+  const { vertical, lanes, laneStart, laneSpan, head, levels } = layout;
+  const cell = (start, span, level, text, cls) => {
+    const style = vertical
+      ? `left:${start}px;width:${span}px;top:${level * BPMN.levelH}px;height:${BPMN.levelH}px`
+      : `top:${start}px;height:${span}px;left:${level * BPMN.levelW}px;width:${levels === 2 ? BPMN.levelW : BPMN.laneHead}px`;
+    return `<div class="bpmn-lane-head${cls ? ` ${cls}` : ""}" style="${style}"><span>${esc(text)}</span></div>`;
+  };
+  let cells = "";
+  if (levels === 2) {
+    const groups = [];
+    lanes.forEach((lane) => {
+      const last = groups[groups.length - 1];
+      if (last && last.group === lane.group) last.span += laneSpan.get(lane.key);
+      else groups.push({ group: lane.group, start: laneStart.get(lane.key), span: laneSpan.get(lane.key) });
+    });
+    cells += groups.map((group) => cell(group.start, group.span, 0, group.group, "is-group")).join("");
+    cells += lanes.map((lane) => cell(laneStart.get(lane.key), laneSpan.get(lane.key), 1, lane.name)).join("");
+  } else cells = lanes.map((lane) => cell(laneStart.get(lane.key), laneSpan.get(lane.key), 0, lane.name)).join("");
+  const style = vertical ? `width:${layout.width}px;height:${head}px` : `width:${head}px;height:${layout.height}px`;
+  return `<div class="bpmn-heads${vertical ? " is-vertical" : ""}" style="${style}">${cells}</div>`;
 }
 
 function processFlowCanvasHtml(process, steps) {
-  const layout = processFlowLayout(steps, processFlowLaneBy);
-  const lanes = layout.lanes.map((lane) => `<div class="bpmn-lane" style="top:${layout.laneTop.get(lane)}px;height:${layout.laneRows.get(lane) * BPMN.rowH}px"><div class="bpmn-lane-head"><span>${esc(lane)}</span></div></div>`).join("");
+  const layout = processFlowLayout(steps, processFlowLaneBy, processFlowOrientation);
+  const bands = layout.lanes.map((lane) => {
+    const start = layout.laneStart.get(lane.key);
+    const span = layout.laneSpan.get(lane.key);
+    const style = layout.vertical ? `left:${start}px;width:${span}px;top:0;bottom:0` : `top:${start}px;height:${span}px;left:0;right:0`;
+    return `<div class="bpmn-lane${layout.vertical ? " is-vertical" : ""}" style="${style}"></div>`;
+  }).join("");
   const edges = layout.graph.edges.map((edge) => {
     const path = processFlowEdgePath(edge, layout);
     if (!path) return "";
@@ -12564,17 +12775,20 @@ function processFlowCanvasHtml(process, steps) {
   const nodes = layout.graph.nodes.map((node) => {
     const box = layout.boxes.get(node.id);
     const style = `left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px`;
-    if (node.kind === "start") return `<div class="bpmn-node bpmn-event bpmn-start" style="${style}" title="Início"></div><span class="bpmn-event-label" style="left:${box.x - 27}px;top:${box.y + box.h + 4}px">Início</span>`;
+    const labelStyle = layout.vertical
+      ? `left:${box.x + box.w + 8}px;top:${box.y + box.h / 2 - 7}px;text-align:left`
+      : `left:${box.x - 27}px;top:${box.y + box.h + 4}px`;
+    if (node.kind === "start") return `<div class="bpmn-node bpmn-event bpmn-start" style="${style}" title="Início"></div><span class="bpmn-event-label" style="${labelStyle}">Início</span>`;
     const step = node.step;
     if (node.kind === "end") {
       const label = node.implicit ? "Fim" : processStepTitle(step, node.index);
-      return `<button class="bpmn-node bpmn-event bpmn-end" type="button" style="${style}" ${node.implicit ? "disabled" : `data-step="${esc(step.id)}"`} title="${esc(label)}"></button><span class="bpmn-event-label" style="left:${box.x - 27}px;top:${box.y + box.h + 4}px">${esc(label)}</span>`;
+      return `<button class="bpmn-node bpmn-event bpmn-end" type="button" style="${style}" ${node.implicit ? "disabled" : `data-step="${esc(step.id)}"`} title="${esc(label)}"></button><span class="bpmn-event-label" style="${labelStyle}">${esc(label)}</span>`;
     }
     if (node.kind === "decision") return `<button class="bpmn-node bpmn-decision" type="button" style="${style}" data-step="${esc(step.id)}" title="${esc(step.label)}"><span class="bpmn-diamond" aria-hidden="true"></span><span class="bpmn-decision-text">${esc(step.label || "Decisão")}</span><span class="bpmn-number">${node.index + 1}</span></button>`;
     const meta = [step.system, step.module].filter(Boolean).join(" · ");
     return `<button class="bpmn-node bpmn-task" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${step.label && meta ? `<small>${esc(meta)}</small>` : ""}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
   }).join("");
-  return `<div class="bpmn-canvas" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${lanes}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
+  return `<div class="bpmn-canvas${layout.vertical ? " is-vertical" : ""}" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${processFlowHeadsHtml(layout)}${bands}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
 }
 
 function processFlowDetailHtml(process, step, index) {
@@ -12605,7 +12819,7 @@ function openToolProcessFlow(id) {
   const content = `<div class="bpmn-view">
     <div class="bpmn-toolbar">
       <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
-      <div class="bpmn-controls"><span class="muted">Raias por</span><div class="bpmn-lane-switch" role="group" aria-label="Raias por">${laneButtons()}</div>
+      <div class="bpmn-controls"><div class="bpmn-lane-switch" role="group" aria-label="Orientação"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical">⇅</button></div><span class="muted">Raias por</span><div class="bpmn-lane-switch" role="group" aria-label="Raias por">${laneButtons()}</div>
         <button class="btn bpmn-zoom-out" type="button" title="Diminuir zoom">−</button><button class="btn bpmn-zoom-reset" type="button" title="Voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="btn bpmn-zoom-in" type="button" title="Aumentar zoom">+</button></div>
     </div>
     <div class="bpmn-body"><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
@@ -12624,7 +12838,16 @@ function openToolProcessFlow(id) {
     detail.innerHTML = processFlowDetailHtml(process, steps[index], index);
     detail.hidden = false;
     detail.querySelector(".bpmn-detail-close")?.addEventListener("click", () => { detail.hidden = true; node.classList.remove("is-selected"); });
-    detail.querySelector(".bpmn-detail-edit")?.addEventListener("click", () => { closeFlow(); openToolProcessForm(process.id); });
+    detail.querySelector(".bpmn-detail-edit")?.addEventListener("click", () => openToolProcessForm(process.id, {
+      focusStep: node.dataset.step,
+      onSaved: () => {
+        const position = { left: scroller.scrollLeft, top: scroller.scrollTop };
+        closeFlow();
+        openToolProcessFlow(process.id);
+        const next = document.querySelector(".process-flow-modal .bpmn-scroll");
+        if (next) { next.scrollLeft = position.left; next.scrollTop = position.top; }
+      }
+    }));
   }));
   const redraw = () => {
     if (!steps.length) return;
@@ -12632,6 +12855,13 @@ function openToolProcessFlow(id) {
     wireNodes();
   };
   wireNodes();
+  view.querySelectorAll(".bpmn-orientation").forEach((button) => button.addEventListener("click", () => {
+    processFlowOrientation = button.dataset.orientation;
+    try { localStorage.setItem("processFlowOrientation", processFlowOrientation); } catch {}
+    view.querySelectorAll(".bpmn-orientation").forEach((item) => item.classList.toggle("active", item === button));
+    detail.hidden = true;
+    redraw();
+  }));
   view.querySelectorAll("[data-lane-by]").forEach((button) => button.addEventListener("click", () => {
     processFlowLaneBy = button.dataset.laneBy;
     try { localStorage.setItem("processFlowLaneBy", processFlowLaneBy); } catch {}
@@ -12739,7 +12969,7 @@ function emptyProcessStep() {
   return { id: crypto.randomUUID(), system: "", module: "", submodule: "", group: "", type: "", url: "", details: "", element: "task", label: "", responsible: "", next: "", outcomes: [] };
 }
 
-function openToolProcessForm(id = null) {
+function openToolProcessForm(id = null, options = {}) {
   if (!requireCurrentUserPermission("processes", id ? "edit" : "create", "Processos")) return;
   const current = toolProcessRows().find((item) => item.id === id) || {};
   let draftSteps = normalizeProcessSteps(current.steps);
@@ -12784,6 +13014,11 @@ function openToolProcessForm(id = null) {
     stepsRoot.querySelectorAll(".process-step-down").forEach((button) => button.addEventListener("click", () => { const index = Number(button.closest(".process-step-editor").dataset.index); if (index < draftSteps.length - 1) { [draftSteps[index + 1], draftSteps[index]] = [draftSteps[index], draftSteps[index + 1]]; drawSteps(); } }));
   };
   drawSteps();
+  if (options.focusStep) {
+    const focusIndex = draftSteps.findIndex((step) => step.id === options.focusStep);
+    const focusEditor = stepsRoot.querySelector(`.process-step-editor[data-index="${focusIndex}"]`);
+    if (focusEditor) requestAnimationFrame(() => { focusEditor.scrollIntoView({ block: "center" }); focusEditor.classList.add("is-focused"); });
+  }
   document.getElementById("tool-process-step-add").addEventListener("click", () => { draftSteps.push(emptyProcessStep()); drawSteps(); stepsRoot.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" }); });
   document.getElementById("tool-process-cancel").addEventListener("click", () => closeToolProcessPanel(closePanel));
   document.getElementById("tool-process-save").addEventListener("click", async () => {
@@ -12824,6 +13059,7 @@ function openToolProcessForm(id = null) {
       }
       toast("Processo salvo.");
       closeToolProcessPanel(closePanel);
+      options.onSaved?.(saved);
     } catch (err) {
       button.disabled = false; button.textContent = "Salvar";
       toast("Erro ao salvar processo · " + err.message, true);
