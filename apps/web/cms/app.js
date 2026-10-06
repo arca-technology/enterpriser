@@ -2622,7 +2622,7 @@ function openTableBulkEditor(anchor, provider, ids) {
 
 function wireSecondaryTableSelection(table, scope) {
   if (!table || table.querySelector("thead .secondary-select-all")) return;
-  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty") && !row.dataset.groupRow);
   const selected = secondaryTableSelection(scope);
   const headRow = table.tHead?.rows?.[0];
   if (!headRow) return;
@@ -2637,6 +2637,11 @@ function wireSecondaryTableSelection(table, scope) {
     const cell = document.createElement("td");
     cell.className = "select-cell";
     cell.innerHTML = `<input type="checkbox" class="secondary-row-select" aria-label="Selecionar linha"${selected.has(rowId) ? " checked" : ""}>`;
+    row.insertBefore(cell, row.firstChild);
+  });
+  table.querySelectorAll("tbody tr[data-group-row]").forEach((row) => {
+    const cell = document.createElement("td");
+    cell.className = "select-cell";
     row.insertBefore(cell, row.firstChild);
   });
   table.querySelectorAll("tbody tr .empty").forEach((cell) => {
@@ -5299,7 +5304,7 @@ function renderProjectBoard(projectId) {
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "goals")
       : renderDeliverySectionDashboard(rows, "goals");
   }
-  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${view === "table" ? projectFilterStripHtml() : ""}${body}</div>`;
+  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${["table", "mindmap"].includes(view) ? projectFilterStripHtml() : ""}${body}</div>`;
   const table = root.querySelector("table");
   if (table && view === "table") wireProjectTableColumns(table);
   if (projectBoardState.section === "objectives" && view === "table") wireDeliveryObjectives(projectId);
@@ -8400,14 +8405,48 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   </div></div></div>` };
 }
 
-function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
+// Aplica no mapa mental os mesmos filtros de coluna da tabela (lidos da tabela recém-montada).
+function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
+  const state = registrationTableState();
+  const table = root.querySelector("table");
+  const active = Object.entries(state.filters || {}).filter(([, values]) => values?.size);
+  const labels = new Map();
+  [...(table?.querySelectorAll("thead th") || [])].forEach((header, index) => {
+    if (header.textContent.trim().toLocaleUpperCase("pt-BR") !== "AÇÕES") labels.set(`c${index}`, { index, label: header.textContent.trim() });
+  });
+  const filters = active.map(([key, values]) => ({ key, values, label: labels.get(key)?.label || "Coluna" }));
+  if (!table || !active.length) return [items, adapter, filters];
+  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty") && !row.classList.contains("registration-subtask-row"));
+  const passing = rows.filter((row) => active.every(([key, selected]) => {
+    const index = labels.get(key)?.index;
+    return selected.has((index == null ? null : row.children[index])?.textContent.trim() || "—");
+  }));
+  if (kind === "activities") {
+    const groups = new Set(passing.map((row) => row.dataset.taskGroup).filter(Boolean));
+    return [items.filter((item) => {
+      if (groups.has(item.template_group_id || item.id)) return true;
+      const parent = productTemplateParent(item, items);
+      return Boolean(parent && groups.has(parent.template_group_id || parent.id));
+    }), adapter, filters];
+  }
+  const ids = new Set(passing.map((row) => row.querySelector("[data-id]")?.dataset.id).filter(Boolean));
+  return [items.filter((item) => ids.has(item.id)), adapter, filters];
+}
+
+function mindMapFilterStripHtml(filters, badgeClass = "mind-filter-badge", clearClass = "mind-filter-clear-all") {
+  if (!filters?.length) return "";
+  return `<div class="registration-filter-strip"><div class="registration-filter-badges">${filters.map((filter) =>
+    `<button class="registration-filter-badge ${badgeClass}" data-key="${esc(filter.key)}" title="Limpar filtro"><span>${esc(filter.label)}: ${esc([...filter.values].join(", "))}</span><b>×</b></button>`).join("")}</div><button class="filter-clear-all ${clearClass}" type="button"${filters.length < 2 ? " hidden" : ""}><span aria-hidden="true">×</span> Limpar tudo</button></div>`;
+}
+
+function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, filters = []) {
   const state = registrationTableState();
   const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
-  </div>${map.html}`;
+  </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
 
 let registrationMindMapGlobalWired = false;
@@ -8645,6 +8684,14 @@ function wireMindMap(root, rerender) {
 
 function wireRegistrationMindMap(root) {
   const state = registrationTableState();
+  root.querySelectorAll(".mind-filter-badge").forEach((badge) => badge.addEventListener("click", () => {
+    delete state.filters[badge.dataset.key];
+    renderRegistrationsSection();
+  }));
+  root.querySelector(".mind-filter-clear-all")?.addEventListener("click", () => {
+    state.filters = {};
+    renderRegistrationsSection();
+  });
   root.querySelector(".registration-mind-search")?.addEventListener("input", (event) => {
     state.search = event.target.value;
     renderRegistrationsSection();
@@ -8764,9 +8811,7 @@ function renderRegistrationsSection() {
   if (section === "activities") {
     const items = loadProductActivities();
     const tableState = registrationTableState();
-    if (tableState.view === "mindmap") {
-      root.innerHTML = registrationTaskMindMapHtml(items);
-    } else {
+    {
     const groups = new Map();
     items.forEach((item) => {
       const key = item.template_group_id || item.id;
@@ -8843,6 +8888,7 @@ function renderRegistrationsSection() {
       })}</td></tr>${childRows}`;
     }).join("");
     root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 30, "Tarefa");
+    if (tableState.view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
     const items = loadProductGoals();
@@ -8858,7 +8904,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
-    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_GOAL_ADAPTER);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -8873,7 +8919,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
-    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(items, REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -9930,13 +9976,14 @@ const TOOL_COLUMN_DEFS = {
   ],
   emails: [{ k: "cnpj", h: "CNPJ" }, { k: "client", h: "Cliente" }, { k: "email", h: "Email" }, { k: "password", h: "Senha" }, { k: "tags", h: "Tags" }],
   processes: [
-    { k: "title", h: "Nome do processo" }, { k: "category", h: "Categoria" },
+    { k: "title", h: "Nome do processo" }, { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" },
     { k: "tags", h: "Tags" }, { k: "steps", h: "Etapas" }
   ],
   documents: [
     { k: "title", h: "Nome" }, { k: "document_type", h: "Tipo" },
-    { k: "category", h: "Categoria" }, { k: "system_name", h: "Sistema" },
-    { k: "module_name", h: "Módulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
+    { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
   ],
   tables: [
     { k: "name", h: "Nome" }, { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
@@ -10698,7 +10745,7 @@ function renderToolProcesses(root) {
     const stepValues = normalizeProcessSteps(process.steps).flatMap((step) =>
       [step.system, step.module, step.submodule, step.group, step.type, step.url, step.details]
     );
-    const searchable = [process.title, process.category, ...normalizeTextList(process.tags), ...stepValues];
+    const searchable = [process.title, process.category, process.system_name, process.module_name, process.submodule_name, ...normalizeTextList(process.tags), ...stepValues];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolProcessValue(process, key))
@@ -10800,11 +10847,12 @@ const DOCUMENT_TYPE_LABELS = {
 function documentGeneratedTitle(documentItem) {
   const type = DOCUMENT_TYPE_LABELS[documentItem.document_type] || DOCUMENT_TYPE_LABELS.documentation;
   return [
-    type,
     documentItem.category || "Sem categoria",
     documentItem.system_name || "ENTERPRISER CMS",
-    documentItem.module_name || "Geral"
-  ].map((value) => String(value).trim().toLocaleUpperCase("pt-BR")).join("_");
+    documentItem.module_name || "Geral",
+    documentItem.submodule_name,
+    type
+  ].map((value) => String(value || "").trim()).filter(Boolean).map((value) => value.toLocaleUpperCase("pt-BR")).join(" | ");
 }
 
 function normalizeDocumentBlock(block, fallbackHtml = "") {
@@ -10915,7 +10963,7 @@ function renderToolDocuments(root) {
   const query = toolsState.search.trim().toLocaleLowerCase("pt-BR");
   const tableState = toolTableState("documents");
   const documents = allDocuments.filter((documentItem) => {
-    const searchable = [toolDocumentValue(documentItem, "title"), documentItem.system_name, documentItem.module_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
+    const searchable = [toolDocumentValue(documentItem, "title"), documentItem.system_name, documentItem.module_name, documentItem.submodule_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolDocumentValue(documentItem, key))
@@ -10926,9 +10974,28 @@ function renderToolDocuments(root) {
       toolDocumentValue(b, tableState.sortKey), "pt-BR", { numeric: true, sensitivity: "base" }
     ) * tableState.sortDir);
   }
+  const grouped = Boolean(toolsState.groupDocuments);
+  const groupKey = (documentItem) => [documentItem.category, documentItem.system_name || "ENTERPRISER CMS", documentItem.module_name]
+    .map((value) => String(value || "—").trim().toLocaleUpperCase("pt-BR")).join(" | ");
+  if (grouped) {
+    const order = new Map();
+    documents.forEach((documentItem) => { const key = groupKey(documentItem); if (!order.has(key)) order.set(key, order.size); });
+    documents.sort((a, b) => order.get(groupKey(a)) - order.get(groupKey(b)));
+  }
+  const groupCounts = documents.reduce((counts, documentItem) => counts.set(groupKey(documentItem), (counts.get(groupKey(documentItem)) || 0) + 1), new Map());
   const page = paginateToolRows(documents, "documents");
   const columns = visibleToolColumns("documents");
-  const rows = page.rows.length ? page.rows.map((documentItem) => `<tr data-id="${esc(documentItem.id)}">
+  let previousGroup = null;
+  const rows = page.rows.length ? page.rows.map((documentItem) => {
+    const key = groupKey(documentItem);
+    const groupId = `doc-group:${key}`;
+    const header = grouped && key !== previousGroup
+      ? `<tr class="client-group-row tool-group-row" data-group-row="true" data-expand-id="${esc(groupId)}">${columns.map((col, index) => index === 0
+        ? `<td><button class="client-group-toggle tool-group-toggle" type="button" title="Expandir/recolher ${esc(key)}"><strong>${esc(key)}</strong><span class="registration-subtask-count">${groupCounts.get(key) || 0}</span></button></td>`
+        : "<td></td>").join("")}<td class="table-actions-cell"></td></tr>`
+      : "";
+    previousGroup = key;
+    return header + `<tr data-id="${esc(documentItem.id)}"${grouped ? ` data-expand-parent="${esc(groupId)}" hidden` : ""}>
     ${columns.map((col) => {
       if (col.k === "title") return `<td><button class="process-open-link tool-document-open" data-id="${esc(documentItem.id)}">${esc(toolDocumentValue(documentItem, "title"))}</button></td>`;
       if (col.k === "tags") return `<td><span class="tool-tags">${normalizeTextList(documentItem.tags).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("") || '<span class="muted">—</span>'}</span></td>`;
@@ -10940,12 +11007,26 @@ function renderToolDocuments(root) {
       clone: { className: "tool-document-clone", attrs: { "data-id": documentItem.id }, title: "Clonar documentação", enabled: currentUserCan("documents", "clone") },
       delete: { className: "tool-document-delete", attrs: { "data-id": documentItem.id }, title: "Excluir documentação", enabled: currentUserCan("documents", "delete") }
     })}</td>
-  </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
+  </tr>`;
+  }).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
   root.innerHTML = `${toolsToolbarHtml(documents.length, "Adicionar documentação", "tool-document-add", currentUserCan("documents", "create"))}${toolFilterStrip("documents", tableState, { loading: remoteToolDocumentsLoading, error: remoteToolDocumentsError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(documents.length, "documents")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "documents");
   wireToolsLoadRetry(root, "documents");
   wireSecondaryTableSelection(root.querySelector("table"), "tools:documents");
+  const groupButton = root.querySelector(".table-group-btn");
+  if (groupButton) {
+    groupButton.disabled = false;
+    groupButton.title = grouped ? "Desagrupar" : "Agrupar por Categoria, Canal e Módulo";
+    groupButton.setAttribute("aria-pressed", String(grouped));
+    groupButton.classList.toggle("active", grouped);
+    groupButton.addEventListener("click", () => {
+      toolsState.groupDocuments = !toolsState.groupDocuments;
+      renderToolsSection();
+    });
+  }
+  root.querySelectorAll(".tool-group-toggle").forEach((button) => button.addEventListener("click", () =>
+    button.closest("tr")?.querySelector(":scope > .expand-cell .table-row-expand")?.click()));
   document.getElementById("tool-document-add")?.addEventListener("click", () => openToolDocumentForm());
   root.querySelectorAll(".tool-document-open").forEach((button) => button.addEventListener("click", () => openToolDocument(button.dataset.id)));
   root.querySelectorAll(".tool-document-edit").forEach((button) => button.addEventListener("click", () => openToolDocumentForm(button.dataset.id)));
@@ -11821,8 +11902,9 @@ function openToolDocumentForm(id = null) {
     <div class="document-editor-info">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
-      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CMS")}" placeholder="Sistema">
-      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
+      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CMS")}" placeholder="Canal" title="Canal">
+      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo" title="Módulo">
+      <input id="tool-document-submodule" value="${esc(current.submodule_name || "")}" placeholder="Submódulo" title="Submódulo">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
     </div>
     <div class="document-editor-toolbar" role="toolbar" aria-label="Formatação e blocos">
@@ -12024,10 +12106,11 @@ async function saveDocumentationEditor() {
     document_type: document.getElementById("tool-document-type").value,
     category: document.getElementById("tool-document-category").value.trim(),
     system_name: document.getElementById("tool-document-system").value.trim(),
-    module_name: document.getElementById("tool-document-module").value.trim()
+    module_name: document.getElementById("tool-document-module").value.trim(),
+    submodule_name: document.getElementById("tool-document-submodule").value.trim()
   };
   if (!metadata.category || !metadata.system_name || !metadata.module_name || !contentValue) {
-    toast("Preencha tipo, categoria, sistema, módulo e conteúdo.", true);
+    toast("Preencha tipo, categoria, canal, módulo e conteúdo.", true);
     return;
   }
   const button = document.getElementById("tool-document-save");
@@ -12037,6 +12120,7 @@ async function saveDocumentationEditor() {
     title: documentGeneratedTitle(metadata),
     system_name: metadata.system_name,
     module_name: metadata.module_name,
+    submodule_name: metadata.submodule_name || null,
     document_type: metadata.document_type,
     category: metadata.category,
     tags: normalizeTextList(document.getElementById("tool-document-tags").value),
@@ -12268,6 +12352,7 @@ async function cloneToolDocument(id) {
     title: documentGeneratedTitle(source),
     system_name: source.system_name || "ENTERPRISER CMS",
     module_name: source.module_name || null,
+    submodule_name: source.submodule_name || null,
     document_type: source.document_type || "documentation",
     category: source.category || null,
     tags: normalizeTextList(source.tags),
@@ -12475,8 +12560,11 @@ function openToolProcessForm(id = null) {
   if (!draftSteps.length) draftSteps = [emptyProcessStep()];
   const content = `<div class="form process-form">
     <div class="field full"><label>Nome do processo *</label><input id="tool-process-title" value="${esc(current.title || "")}" placeholder="Ex.: Criar pedido de venda no Bling"></div>
-    <div class="field"><label>Categoria</label><input id="tool-process-category" value="${esc(current.category || "")}" placeholder="Ex.: Operações"></div>
-    <div class="field"><label>Tags</label><input id="tool-process-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Bling, Nota fiscal, Financeiro"></div>
+    <div class="field"><label>Categoria</label><input id="tool-process-category" value="${esc(current.category || "")}" placeholder="Ex.: ERP"></div>
+    <div class="field"><label>Canal</label><input id="tool-process-channel" value="${esc(current.system_name || "")}" placeholder="Ex.: Bling"></div>
+    <div class="field"><label>Módulo</label><input id="tool-process-module" value="${esc(current.module_name || "")}" placeholder="Ex.: Vendas"></div>
+    <div class="field"><label>Submódulo</label><input id="tool-process-submodule" value="${esc(current.submodule_name || "")}" placeholder="Ex.: Pedidos"></div>
+    <div class="field full"><label>Tags</label><input id="tool-process-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Bling, Nota fiscal, Financeiro"></div>
     <div class="field full"><div class="process-steps-head"><label>Etapas *</label><button class="btn" id="tool-process-step-add" type="button">+ Etapa</button></div><div id="tool-process-steps" class="process-steps-editor"></div></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-cancel">Cancelar</button><button class="btn primary" id="tool-process-save">Salvar</button></div>`;
   const closePanel = document.getElementById("tools-root")
@@ -12512,6 +12600,9 @@ function openToolProcessForm(id = null) {
     const body = {
       title,
       category: document.getElementById("tool-process-category").value.trim() || null,
+      system_name: document.getElementById("tool-process-channel").value.trim() || null,
+      module_name: document.getElementById("tool-process-module").value.trim() || null,
+      submodule_name: document.getElementById("tool-process-submodule").value.trim() || null,
       tags: normalizeTextList(document.getElementById("tool-process-tags").value),
       steps,
       version: id ? Number(current.version || 1) + 1 : 1,
