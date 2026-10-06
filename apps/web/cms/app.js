@@ -5360,7 +5360,7 @@ function projectToolbarHtml(client, product, total) {
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
       <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização: ${esc(activePrimaryLabel)}">${viewTriggerInner(activePrimaryMode)}</button>
-      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>
+      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz"${projectBoardState.section === "activities" ? "" : " disabled"}>${viewButtonInner("matrix")}</button>
       <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard" title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button>
       <button class="btn project-data-btn" type="button" title="Dados">⬆⬇</button>
     </div>
@@ -5381,6 +5381,7 @@ function renderProjectBoard(projectId) {
   const rows = filterProjectSectionRows(allRows, allTasks);
   const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
   const product = cache.productById[project.product_id]?.name || "Sem produto";
+  if (projectBoardState.section !== "activities" && projectBoardState.view === "matrix") projectBoardState.view = "table";
   const view = projectBoardState.view || "table";
   let body = "";
   if (projectBoardState.section === "activities") {
@@ -12815,14 +12816,12 @@ function openToolProcessFlow(id) {
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process) return;
   const steps = normalizeProcessSteps(process.steps);
-  const laneButtons = () => PROCESS_LANE_OPTIONS.map(([value, label]) => `<button class="view${processFlowLaneBy === value ? " active" : ""}" type="button" data-lane-by="${value}">${label}</button>`).join("");
+  const laneButtons = () => PROCESS_LANE_OPTIONS.map(([value, label]) => `<button class="view bpmn-lane-btn${processFlowLaneBy === value ? " active" : ""}" type="button" data-lane-by="${value}" title="Raias por ${label}">${label}</button>`).join("");
   const content = `<div class="bpmn-view">
     <div class="bpmn-toolbar">
       <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
-      <div class="bpmn-controls"><div class="bpmn-lane-switch" role="group" aria-label="Orientação"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical">⇅</button></div><span class="muted">Raias por</span><div class="bpmn-lane-switch" role="group" aria-label="Raias por">${laneButtons()}</div>
-        <button class="btn bpmn-zoom-out" type="button" title="Diminuir zoom">−</button><button class="btn bpmn-zoom-reset" type="button" title="Voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="btn bpmn-zoom-in" type="button" title="Aumentar zoom">+</button></div>
     </div>
-    <div class="bpmn-body"><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
+    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span>${laneButtons()}<span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-flow-close">Fechar</button></div>`;
   const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, { cls: "full process-flow-modal", closeOnOverlay: true });
   document.getElementById("tool-process-flow-close").addEventListener("click", closeFlow);
