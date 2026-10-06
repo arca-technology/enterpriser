@@ -701,12 +701,13 @@
   .bpmn-task small{color:var(--muted);font-size:9px;line-height:1.3}
   .bpmn-task em{color:var(--cyan);font-size:9px;font-style:normal;font-weight:700}
   .bpmn-task .bpmn-number{position:absolute;top:8px;left:8px}
-  .bpmn-task.is-detailed{justify-content:flex-start;gap:5px;padding-top:9px;overflow:hidden}
-  .bpmn-task-meta{display:grid;gap:2px;font-size:9px;line-height:1.35;color:var(--muted)}
-  .bpmn-task-meta span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .bpmn-task-meta b{color:var(--text);font-weight:700}
-  .bpmn-task-notes{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;padding-top:4px;border-top:1px dashed var(--border);color:var(--text);font-size:9px;line-height:1.4}
-  .bpmn-task-link{color:var(--cyan);font-size:9px;font-weight:700}
+  .bpmn-task{overflow:hidden}
+  .bpmn-task.has-system{padding-left:56px}
+  .bpmn-task.has-system .bpmn-number{left:28px}
+  .bpmn-task-system{position:absolute;top:0;bottom:0;left:0;width:20px;display:flex;align-items:center;justify-content:center;border-left:1px solid var(--border2);background:rgba(47,107,216,.10);color:var(--blue);font-size:8.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;white-space:nowrap;overflow:hidden;writing-mode:vertical-rl;transform:rotate(180deg)}
+  .bpmn-task .bpmn-task-path{color:var(--muted);font-size:8.5px;font-weight:700;letter-spacing:.2px;text-transform:uppercase;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bpmn-task.is-detailed{justify-content:flex-start;gap:4px;padding-top:9px}
+  .bpmn-task-notes{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px;padding-top:5px;border-top:1px dashed var(--border);color:var(--text);font-size:9px;line-height:1.4}
   .bpmn-lane-group{position:relative;display:inline-flex;align-items:center;gap:4px}
   .bpmn-details-toggle{font-size:14px}
   .bpmn-lane-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:40;min-width:160px;padding:5px;border:1px solid var(--border);border-radius:8px;background:var(--panel);box-shadow:0 12px 30px rgba(0,0,0,.35)}

@@ -8943,7 +8943,7 @@ const HELP_PAGES = {
     sections: [
       { title: "Cadastrar as etapas", steps: ["Preencha Categoria, Canal, Módulo e Submódulo.", "Adicione as etapas e escolha o elemento: <b>Tarefa</b>, <b>Decisão</b> ou <b>Fim</b>.", "Defina o responsável (cargo, Cliente ou Sistema) e a próxima etapa.", "Nas decisões, rotule as saídas (ex.: Sim → 4, Não → 2)."],
         tips: ["Escolher uma etapa anterior como próxima cria um retrabalho (loop)."] },
-      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "No botão à direita do painel: Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["ⓘ Detalhes", "Ao lado das raias. Ativo, cada etapa mostra no próprio fluxo responsável, sistema, módulo, grupo, tipo e detalhes."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
+      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "No botão à direita do painel: Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["Card da etapa", "Sistema na vertical à esquerda, módulo/submódulo acima do nome. ⓘ (ao lado das raias) mostra também os detalhes da etapa no próprio card."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
     ] },
   "tool-documents": { kicker: "Ferramentas", title: "Documentação", path: ["Rodapé", "Ferramentas", "Documentação"],
     lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
@@ -13911,7 +13911,7 @@ const PROCESS_ELEMENTS = { task: "Tarefa", decision: "Decisão", end: "Fim" };
 const PROCESS_LANE_OPTIONS = [["responsible", "Responsável"], ["system", "Sistema"], ["module", "Módulo"]];
 const BPMN = { laneHead: 150, levelW: 130, levelH: 40, colW: 250, rowH: 140, laneW: 236, rankH: 150, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
 const BPMN_COMPACT = { rowH: 140, rankH: 150, taskH: 92 };
-const BPMN_DETAILED = { rowH: 236, rankH: 244, taskH: 188 };
+const BPMN_DETAILED = { rowH: 196, rankH: 206, taskH: 148 };
 let processFlowShowDetails = (() => { try { return localStorage.getItem("processFlowShowDetails") === "1"; } catch { return false; } })();
 Object.assign(BPMN, processFlowShowDetails ? BPMN_DETAILED : BPMN_COMPACT);
 let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
@@ -14125,12 +14125,12 @@ function processFlowCanvasHtml(process, steps) {
       return `<button class="bpmn-node bpmn-event bpmn-end" type="button" style="${style}" ${node.implicit ? "disabled" : `data-step="${esc(step.id)}"`} title="${esc(label)}"></button><span class="bpmn-event-label" style="${labelStyle}">${esc(label)}</span>`;
     }
     if (node.kind === "decision") return `<button class="bpmn-node bpmn-decision" type="button" style="${style}" data-step="${esc(step.id)}" title="${esc(step.label)}"><span class="bpmn-diamond" aria-hidden="true"></span><span class="bpmn-decision-text">${esc(step.label || "Decisão")}</span><span class="bpmn-number">${node.index + 1}</span></button>`;
-    const meta = [step.system, step.module].filter(Boolean).join(" · ");
-    if (processFlowShowDetails) {
-      const rows = [["Resp.", step.responsible], ["Sistema", step.system], ["Módulo", [step.module, step.submodule].filter(Boolean).join(" › ")], ["Grupo", step.group], ["Tipo", step.type]].filter(([, value]) => value);
-      return `<button class="bpmn-node bpmn-task is-detailed" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${rows.length ? `<span class="bpmn-task-meta">${rows.map(([label, value]) => `<span><b>${label}</b> ${esc(value)}</span>`).join("")}</span>` : ""}${step.details ? `<span class="bpmn-task-notes">${esc(step.details)}</span>` : ""}${safeHttpUrl(step.url) ? '<span class="bpmn-task-link">🔗 Link de referência</span>' : ""}</button>`;
-    }
-    return `<button class="bpmn-node bpmn-task" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${step.label && meta ? `<small>${esc(meta)}</small>` : ""}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
+    // Card: sistema na vertical à esquerda, módulo/submódulo acima do nome e,
+    // com ⓘ ativo, só os detalhes da etapa a mais.
+    const path = [step.module, step.submodule].filter(Boolean).join(" / ");
+    const title = step.label || step.submodule || step.module || processStepTitle(step, node.index);
+    const details = processFlowShowDetails && step.details ? `<span class="bpmn-task-notes">${esc(step.details)}</span>` : "";
+    return `<button class="bpmn-node bpmn-task${step.system ? " has-system" : ""}${processFlowShowDetails ? " is-detailed" : ""}" type="button" style="${style}" data-step="${esc(step.id)}">${step.system ? `<span class="bpmn-task-system" title="Sistema">${esc(step.system)}</span>` : ""}<span class="bpmn-number">${node.index + 1}</span>${path && path !== title ? `<small class="bpmn-task-path">${esc(path)}</small>` : ""}<strong>${esc(title)}</strong>${details}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
   }).join("");
   return `<div class="bpmn-canvas${layout.vertical ? " is-vertical" : ""}" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${processFlowHeadsHtml(layout)}${bands}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
 }
