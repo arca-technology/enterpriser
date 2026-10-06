@@ -266,6 +266,12 @@ function wireTaskStructureToggle(toggleId, inputId, labelId, requiredFieldIds = 
 const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
 // Tipos de contato que a empresa define e replica para as pessoas vinculadas.
 const COMPANY_CONTACT_TYPE_OPTIONS = ["Cliente", "Fornecedor", "Parceiro"];
+const BR_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"];
+const taxIdDigits = (value) => String(value || "").replace(/\D/g, "");
+function companyHasDelivery(taxId) {
+  const digits = taxIdDigits(taxId);
+  return Boolean(digits) && (cache?.projects || []).some((project) => taxIdDigits(project.company_id) === digits);
+}
 const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
   let ids = value;
@@ -1676,6 +1682,7 @@ async function loadAll() {
   });
   companies.forEach((company) => {
     company.contact_ids = [...new Set(contactIdsByCompany.get(company.tax_id) || [])];
+    company.state_registration_text = normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ");
   });
   const conversations = loadConversations();
   const projectById = byId(projects);
@@ -1924,6 +1931,7 @@ async function createProjectFromDeal(deal) {
     });
     toast("Entrega criada automaticamente a partir do negócio ganho.");
     await provisionDeliveryResources(savedProject);
+    if (deal.company_id) await ensureCompanyClientType(deal.company_id);
   } catch (err) {
     toast("Erro ao criar entrega automática · " + err.message, true);
   }
@@ -1950,6 +1958,8 @@ function columns(tab, c) {
       { k: "headquarters", h: "SEDE" },
       { k: "founded_at", h: "DATA DE ABERTURA", fmt: dt },
       { k: "registration_status", h: "SITUAÇÃO CADASTRAL" },
+      { k: "state_registration_text", h: "INSCRIÇÃO ESTADUAL", cls: "muted" },
+      { k: "municipal_registration", h: "INSCRIÇÃO MUNICIPAL", cls: "muted" },
       { k: "qsa", h: "QSA", fmt: (v) => multiLineCell(v) },
       { k: "share_capital", h: "CAPITAL SOCIAL", num: true, fmt: brl, cls: "pos" },
       { k: "activities", h: "ATIVIDADES" },
@@ -2211,21 +2221,23 @@ function fields(tab, c) {
   switch (tab) {
     case "companies": return [
       { k: "tax_id", label: "CNPJ", req: true, full: true, lookup: "cnpj" },
-      { k: "legal_name", label: "Nome empresarial", full: true },
-      { k: "trade_name", label: "Nome fantasia" },
-      { k: "contact_type", label: "Tipo de contato", type: "multi", options: COMPANY_CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, placeholder: "Vazio", help: "Aceita mais de uma opção. Ao salvar, as pessoas vinculadas recebem estes tipos; vazio não altera as pessoas." },
-      { k: "email", label: "E-mail" },
-      { k: "phone", label: "Telefone" },
-      { k: "headquarters", label: "Sede" },
-      { k: "founded_at", label: "Data de abertura", type: "date" },
-      { k: "registration_status", label: "Situação cadastral" },
-      { k: "qsa", label: "QSA", type: "textarea", full: true, placeholder: "Nome/Nome Empresarial: NOME | Qualificação: 49-Sócio-Administrador; ..." },
-      { k: "share_capital", label: "Capital social (R$)", type: "number", min: 0, step: 0.01 },
-      { k: "activities", label: "Atividades", full: true },
-      { k: "address", label: "Endereço", full: true },
-      { k: "zip_code", label: "CEP" },
-      { k: "city", label: "Cidade" },
-      { k: "state", label: "UF" },
+      { k: "legal_name", label: "Nome empresarial", full: true, receita: true },
+      { k: "trade_name", label: "Nome fantasia", receita: true },
+      { k: "contact_type", label: "Tipo de contato", type: "multi", options: COMPANY_CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, placeholder: "Vazio", lockedValues: (record) => companyHasDelivery(record?.tax_id) ? ["Cliente"] : [], help: "Aceita mais de uma opção. Ao salvar, as pessoas vinculadas recebem estes tipos; vazio não altera as pessoas. Empresa com entrega é sempre Cliente." },
+      { k: "email", label: "E-mail", receita: true },
+      { k: "phone", label: "Telefone", receita: true },
+      { k: "headquarters", label: "Sede", receita: true },
+      { k: "founded_at", label: "Data de abertura", type: "date", receita: true },
+      { k: "registration_status", label: "Situação cadastral", receita: true },
+      { k: "state_registrations", label: "Inscrições estaduais", type: "ie_list", full: true, help: "A primeira é a do estado da empresa. Preenchida pela consulta quando disponível; adicione outras UFs se a empresa tiver inscrição como substituta." },
+      { k: "municipal_registration", label: "Inscrição municipal" },
+      { k: "qsa", label: "QSA", type: "textarea", full: true, receita: true },
+      { k: "share_capital", label: "Capital social (R$)", type: "number", min: 0, step: 0.01, receita: true },
+      { k: "activities", label: "Atividades", full: true, receita: true },
+      { k: "address", label: "Endereço", full: true, receita: true },
+      { k: "zip_code", label: "CEP", receita: true },
+      { k: "city", label: "Cidade", receita: true },
+      { k: "state", label: "UF", receita: true },
       { k: "contact_ids", label: "Pessoas vinculadas", type: "multi", options: refOptions("contacts", c), full: true, placeholder: "Selecionar pessoas" },
       { k: "notes", label: "Observações", full: true }];
     case "contacts": return [
@@ -2430,7 +2442,7 @@ const TASK_BULK_FIELDS = () => [
 ];
 const MAIN_BULK_FIELD_KEYS = {
   contacts: ["channel", "job_title", "department", "notes"],
-  companies: ["registration_status", "headquarters", "city", "state", "notes"],
+  companies: ["notes"],
   deals: ["product_id", "lead_source", "amount", "expected_close_date"],
   products: ["category", "status", "price", "price_installment", "duration_days"],
   projects: ["delivery_type", "group_name", "status", "substatus", "start_date", "end_date"]
@@ -7293,11 +7305,15 @@ function openForm(tab, id, opts = {}) {
       const auto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
       val = normalizeTextList([...normalizeTextList(val), ...(f.k === "financial_accounts" ? auto.financial : auto.freight)]);
     }
-    const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
+    const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val) || f.receita);
     let ctrl;
     if (f.type === "multi") {
       const selected = new Set(f.textValues ? normalizeTextList(val) : normalizeIdList(val));
-      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(), Boolean(f.allowCreate));
+      const lockedValues = f.lockedValues ? f.lockedValues(record) : [];
+      lockedValues.forEach((value) => selected.add(value));
+      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(lockedValues), Boolean(f.allowCreate));
+    } else if (f.type === "ie_list") {
+      ctrl = stateRegistrationsEditorHtml(val, record?.state);
     } else if (f.type === "search") {
       ctrl = singleSearchPickerHtml(`form-${f.k}`, f.options || [], val, f.placeholder);
     } else if (f.searchableRef) {
@@ -7318,8 +7334,8 @@ function openForm(tab, id, opts = {}) {
       const t = f.type === "number" ? "number" : f.type === "date" ? "date" : "text";
       const lockPk = id && f.k === pk(tab);
       const input = `<input type="${t}" data-k="${f.k}" value="${esc(val)}"${f.req ? " required" : ""}${(lockPk || isLocked) ? " readonly" : ""}${f.min != null ? ` min="${esc(f.min)}"` : ""}${f.step != null ? ` step="${esc(f.step)}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>`;
-      ctrl = f.lookup === "cnpj" && !lockPk
-        ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">Buscar dados</button></div>`
+      ctrl = f.lookup === "cnpj"
+        ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">${lockPk ? "Atualizar da Receita" : "Buscar dados"}</button></div>`
         : input;
     }
     if (tab === "deals" && f.k === "company_id") {
@@ -7378,14 +7394,16 @@ function openForm(tab, id, opts = {}) {
     input.addEventListener("input", syncValue);
     input.addEventListener("change", syncValue);
   });
-  if (tab === "companies" && !id) {
+  if (tab === "companies") {
     const form = document.querySelector("#modal-root .form");
     const cnpjInput = form?.querySelector('[data-k="tax_id"]');
     const lookupButton = document.getElementById("lookup-cnpj");
-    lookupButton?.addEventListener("click", () => lookupCompanyByCnpj(form, lookupButton));
-    cnpjInput?.addEventListener("blur", () => {
+    lastCompanyLookup = id ? taxIdDigits(id) : "";
+    lookupButton?.addEventListener("click", () => lookupCompanyByCnpj(form, lookupButton, Boolean(id)));
+    if (!id) cnpjInput?.addEventListener("blur", () => {
       if (cnpjInput.value.replace(/\D/g, "").length === 14) lookupCompanyByCnpj(form, lookupButton);
     });
+    wireStateRegistrationsEditor(form);
   }
 
   // Etapa depende do pipeline escolhido — repopula ao trocar.
@@ -7587,21 +7605,108 @@ async function fetchCompanyRegistryData(cnpjValue) {
   const response = await fetch(`https://open.cnpja.com/office/${cnpj}`, { headers: { Accept: "application/json" } });
   if (response.status === 429) throw new Error("Limite de consultas atingido. Aguarde alguns segundos.");
   if (!response.ok) throw new Error(`CNPJ não encontrado (${response.status})`);
-  return companyRegistryPayload(await response.json(), cnpj);
+  const payload = companyRegistryPayload(await response.json(), cnpj);
+  const registrations = await fetchStateRegistrations(cnpj);
+  if (registrations?.length) payload.state_registrations = registrations;
+  return payload;
+}
+
+// Inscrições estaduais pela API pública do CNPJ.ws (cobre parte dos
+// estados; limite de 3 consultas por minuto). Falha não impede o cadastro.
+async function fetchStateRegistrations(cnpj) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`, { headers: { Accept: "application/json" }, signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return (data?.estabelecimento?.inscricoes_estaduais || [])
+      .filter((item) => item?.inscricao_estadual && item.ativo !== false)
+      .map((item) => ({ uf: String(item.estado?.sigla || "").toUpperCase(), ie: String(item.inscricao_estadual).trim() }))
+      .filter((item) => item.uf);
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeStateRegistrations(value) {
+  let list = value;
+  if (typeof list === "string") { try { list = JSON.parse(list); } catch (error) { list = []; } }
+  return (Array.isArray(list) ? list : [])
+    .map((item) => ({ uf: String(item?.uf || "").toUpperCase().trim(), ie: String(item?.ie || "").trim() }))
+    .filter((item) => item.uf || item.ie);
+}
+
+// Mantém a inscrição do estado da empresa na primeira posição.
+function mergeStateRegistrations(current, fetched, companyUf) {
+  const byUf = new Map();
+  normalizeStateRegistrations(current).forEach((item) => { if (item.uf) byUf.set(item.uf, item.ie); });
+  normalizeStateRegistrations(fetched).forEach((item) => { if (item.uf && item.ie) byUf.set(item.uf, item.ie); });
+  const uf = String(companyUf || "").toUpperCase();
+  const first = uf ? [{ uf, ie: byUf.get(uf) || "" }] : [];
+  return [...first, ...[...byUf.entries()].filter(([key]) => key !== uf).map(([key, ie]) => ({ uf: key, ie }))];
+}
+
+function stateRegistrationsEditorHtml(value, companyUf) {
+  const uf = String(companyUf || "").toUpperCase();
+  const list = mergeStateRegistrations(value, [], uf);
+  const rows = uf ? list : [{ uf: "", ie: "" }, ...list];
+  const ufOptions = (selected) => `<option value="">UF</option>${BR_UFS.map((item) => `<option value="${item}"${item === selected ? " selected" : ""}>${item}</option>`).join("")}`;
+  return `<div class="ie-list" id="form-state_registrations" data-company-uf="${esc(uf)}">
+    ${rows.map((item, index) => index === 0
+      ? `<div class="ie-row" data-fixed="true"><span class="ie-uf" title="Estado da empresa">${esc(item.uf || "UF")}</span><input class="ie-value" value="${esc(item.ie)}" placeholder="Inscrição estadual"><span class="ie-spacer"></span></div>`
+      : `<div class="ie-row"><select class="ie-uf-select">${ufOptions(item.uf)}</select><input class="ie-value" value="${esc(item.ie)}" placeholder="Inscrição estadual"><button class="rowbtn ie-remove" type="button" title="Remover">✕</button></div>`).join("")}
+    <button class="btn ie-add" type="button">+ Adicionar UF</button>
+  </div>`;
+}
+
+function stateRegistrationsValue(form) {
+  const root = form?.querySelector("#form-state_registrations");
+  if (!root) return [];
+  const companyUf = String(form.querySelector('[data-k="state"]')?.value || root.dataset.companyUf || "").toUpperCase();
+  const rows = [...root.querySelectorAll(".ie-row")].map((row) => ({
+    uf: row.dataset.fixed === "true" ? companyUf : String(row.querySelector(".ie-uf-select")?.value || ""),
+    ie: String(row.querySelector(".ie-value")?.value || "").trim()
+  })).filter((item) => item.uf && item.ie);
+  return mergeStateRegistrations(rows, [], companyUf).filter((item) => item.ie);
+}
+
+function wireStateRegistrationsEditor(form) {
+  const root = form?.querySelector("#form-state_registrations");
+  if (!root || root.dataset.wired) return;
+  root.dataset.wired = "1";
+  root.addEventListener("click", (event) => {
+    if (event.target.closest(".ie-remove")) { event.target.closest(".ie-row").remove(); return; }
+    if (!event.target.closest(".ie-add")) return;
+    const row = document.createElement("div");
+    row.className = "ie-row";
+    row.innerHTML = `<select class="ie-uf-select"><option value="">UF</option>${BR_UFS.map((item) => `<option value="${item}">${item}</option>`).join("")}</select><input class="ie-value" placeholder="Inscrição estadual"><button class="rowbtn ie-remove" type="button" title="Remover">✕</button>`;
+    root.insertBefore(row, root.querySelector(".ie-add"));
+    row.querySelector("select").focus();
+  });
 }
 
 function fillCompanyForm(form, companyData) {
   Object.entries(companyData).forEach(([key, value]) => {
+    if (key === "state_registrations") return;
     const field = form?.querySelector(`[data-k="${key}"]`);
     if (field && value != null && value !== "") field.value = value;
   });
+  const editor = form?.querySelector("#form-state_registrations");
+  if (editor) {
+    const current = stateRegistrationsValue(form);
+    const merged = mergeStateRegistrations(current, companyData.state_registrations || [], companyData.state || form.querySelector('[data-k="state"]')?.value);
+    editor.outerHTML = stateRegistrationsEditorHtml(merged, companyData.state || form.querySelector('[data-k="state"]')?.value);
+    wireStateRegistrationsEditor(form);
+  }
 }
 
-async function lookupCompanyByCnpj(form, button) {
+async function lookupCompanyByCnpj(form, button, force = false) {
   const input = form?.querySelector('[data-k="tax_id"]');
   const cnpj = input?.value.replace(/\D/g, "") || "";
   if (cnpj.length !== 14) { toast("Informe um CNPJ com 14 dígitos.", true); return; }
-  if (lastCompanyLookup === cnpj && form.querySelector('[data-k="legal_name"]')?.value) return;
+  if (!force && lastCompanyLookup === cnpj && form.querySelector('[data-k="legal_name"]')?.value) return;
   const originalText = button?.textContent;
   if (button) { button.disabled = true; button.textContent = "Buscando..."; }
   try {
@@ -7630,6 +7735,9 @@ function openCompanyDetails(taxId) {
       ${companyDetailValue("Nome empresarial", esc(company.legal_name))}
       ${companyDetailValue("Nome fantasia", esc(company.trade_name))}
       ${companyDetailValue("Situação cadastral", esc(company.registration_status))}
+      ${companyDetailValue("Tipo de contato", esc(normalizeTextList(company.contact_type).join(", ")))}
+      ${companyDetailValue("Inscrições estaduais", esc(normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ")))}
+      ${companyDetailValue("Inscrição municipal", esc(company.municipal_registration))}
       ${companyDetailValue("E-mail", esc(company.email))}
       ${companyDetailValue("Telefone", esc(company.phone))}
       ${companyDetailValue("Abertura", esc(dt(company.founded_at)))}
@@ -7653,6 +7761,7 @@ function openCompanyDetails(taxId) {
     try {
       const enriched = await fetchCompanyRegistryData(company.tax_id);
       delete enriched.tax_id;
+      enriched.state_registrations = mergeStateRegistrations(company.state_registrations, enriched.state_registrations || [], enriched.state || company.state).filter((item) => item.ie);
       const payload = Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== ""));
       const saved = await updateRow("companies", company.tax_id, payload);
       upsertCachedEntity("companies", saved);
@@ -7821,6 +7930,23 @@ async function syncCompanyContactTypes(companyId, contactIds, companyTypes) {
   return updated;
 }
 
+// Empresa com entrega é cliente: garante o tipo Cliente e replica para as
+// pessoas vinculadas.
+async function ensureCompanyClientType(companyId) {
+  const company = (cache?.companies || []).find((item) => taxIdDigits(item.tax_id) === taxIdDigits(companyId));
+  if (!company) return;
+  const types = normalizeTextList(company.contact_type);
+  if (types.includes("Cliente")) return;
+  const next = ["Cliente", ...types.filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type))];
+  try {
+    const saved = await updateRow("companies", company.tax_id, { contact_type: next.join("; ") });
+    company.contact_type = saved?.contact_type ?? next.join("; ");
+    await syncCompanyContactTypes(company.tax_id, company.contact_ids, next);
+  } catch (error) {
+    toast("Erro ao marcar a empresa como Cliente · " + error.message, true);
+  }
+}
+
 function updateCachedContactCompanyLinks({ contactId = null, companyId = null, relatedIds = [] }) {
   if (!cache) return;
   const ids = [...new Set(normalizeIdList(relatedIds))];
@@ -7853,6 +7979,10 @@ async function saveForm(tab, id, fs, opts = {}) {
       body[f.k] = multiPickerValues(`form-${f.k}`);
       continue;
     }
+    if (f.type === "ie_list") {
+      body[f.k] = stateRegistrationsValue(form);
+      continue;
+    }
     const el = form?.querySelector(`[data-k="${f.k}"]`);
     if (!el) continue;
     let v;
@@ -7882,7 +8012,14 @@ async function saveForm(tab, id, fs, opts = {}) {
   }
   if (tab === "companies") {
     delete body.contact_ids;
-    body.contact_type = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type)).join("; ") || null;
+    const types = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type));
+    if (companyHasDelivery(body.tax_id) && !types.includes("Cliente")) types.unshift("Cliente");
+    body.contact_type = types.join("; ") || null;
+    body.municipal_registration = String(body.municipal_registration || "").trim() || null;
+    if (!id && (!body.legal_name || lastCompanyLookup !== taxIdDigits(body.tax_id))) {
+      toast("Clique em Buscar dados: os dados da empresa vêm da Receita.", true);
+      return;
+    }
   }
   if (tab === "projects") {
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
@@ -7976,6 +8113,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       render();
     }
     if (newDelivery) await provisionDeliveryResources(newDelivery);
+    if (tab === "projects" && body.company_id) await ensureCompanyClientType(body.company_id);
     void init();
   } catch (err) {
     if (saveButton) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
@@ -8088,8 +8226,8 @@ const HELP_PAGES = {
   companies: { kicker: "Módulo", title: "Empresas", path: ["Cabeçalho", "Empresas"],
     lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
     sections: [
-      { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b> para preencher razão social, nome fantasia, abertura, situação cadastral, capital social, atividades, endereço e QSA.", "Sócios do QSA que já são pessoas cadastradas são vinculados automaticamente.", "Complete o contato e salve."],
-        cards: [["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
+      { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b>: razão social, nome fantasia, contato, abertura, situação, capital social, atividades, endereço e QSA vêm da Receita e não podem ser editados.", "Confira as inscrições estaduais (a primeira é a do estado da empresa; adicione outras UFs) e a inscrição municipal.", "Escolha o tipo de contato, as pessoas vinculadas e as observações e salve. Para corrigir dados, use <b>Atualizar da Receita</b>."],
+        cards: [["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION
     ] },
   conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],

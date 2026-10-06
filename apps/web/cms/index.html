@@ -1397,6 +1397,13 @@
   .field label{font-size:11px;color:var(--muted);letter-spacing:.3px}
   .field input,.field select,.field textarea{background:var(--panel2);border:1px solid var(--border);color:var(--text);
     padding:8px 10px;border-radius:6px;font-size:13px;width:100%;font-family:inherit}
+  .field input[readonly],.field textarea[readonly]{background:var(--bg);color:var(--muted);cursor:default}
+  .field input[readonly]:focus,.field textarea[readonly]:focus{border-color:var(--border);outline:none}
+  .ie-list{display:grid;gap:6px}
+  .ie-row{display:grid;grid-template-columns:78px minmax(0,1fr) 32px;align-items:center;gap:6px}
+  .ie-uf{display:flex;align-items:center;justify-content:center;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-weight:800;font-size:12px}
+  .ie-row .ie-uf-select{width:100%}
+  .ie-add{justify-self:start;font-size:11.5px}
   .field textarea{resize:vertical;min-height:96px}
   .input-action-row{display:flex;align-items:center;gap:8px}
   .input-action-row input{flex:1 1 auto;min-width:0}
