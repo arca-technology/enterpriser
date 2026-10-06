@@ -2285,6 +2285,341 @@ function secondaryTableSelection(scope) {
   return secondaryTableSelections.get(scope);
 }
 
+function orderLeadingTableCells(row, cells) {
+  const select = cells.find((cell) => cell.classList.contains("select-cell") || cell.classList.contains("select-head"));
+  const expand = cells.find((cell) => cell.classList.contains("expand-cell") || cell.classList.contains("expand-head"));
+  cells.filter((cell) => cell !== select && cell !== expand).forEach((cell) => row.appendChild(cell));
+  if (expand) row.insertBefore(expand, row.firstChild);
+  if (select) row.insertBefore(select, row.firstChild);
+}
+
+const tableExpandMemory = new Map();
+function tableExpandHeadInner(enabled, allExpanded) {
+  const label = !enabled ? "Nada para expandir nesta tabela" : allExpanded ? "Recolher todos" : "Expandir todos";
+  return `<button class="table-expand-btn table-expand-all" type="button" title="${label}" aria-label="${label}"${enabled ? "" : " disabled"}>${enabled && allExpanded ? "▾" : "▸"}</button>`;
+}
+function tableRowExpandInner(expanded, extraClass = "", attrs = "") {
+  const label = expanded ? "Recolher" : "Expandir";
+  return `<button class="table-expand-btn table-row-expand${extraClass ? ` ${extraClass}` : ""}" type="button" title="${label}" aria-label="${label}" aria-expanded="${expanded}"${attrs}>${expanded ? "▾" : "▸"}</button>`;
+}
+
+function wireTableExpandColumn(table, scope) {
+  const headRow = table.tHead?.rows?.[0];
+  if (!headRow || headRow.querySelector(".expand-head")) return;
+  const dataRows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+  const childrenOf = (id) => dataRows.filter((row) => row.dataset.expandParent === id);
+  const parents = dataRows.filter((row) => row.dataset.expandId && childrenOf(row.dataset.expandId).length);
+  if (!tableExpandMemory.has(scope)) tableExpandMemory.set(scope, new Map());
+  const memory = tableExpandMemory.get(scope);
+  const head = document.createElement("th");
+  head.className = "expand-head noclick";
+  const selectHead = headRow.querySelector(":scope > .select-head");
+  headRow.insertBefore(head, selectHead ? selectHead.nextSibling : headRow.firstChild);
+  dataRows.forEach((row) => {
+    const cell = document.createElement("td");
+    cell.className = "expand-cell";
+    const selectCell = row.querySelector(":scope > .select-cell");
+    row.insertBefore(cell, selectCell ? selectCell.nextSibling : row.firstChild);
+  });
+  table.querySelectorAll("tbody tr .empty").forEach((cell) => { cell.colSpan = Number(cell.colSpan || 1) + 1; });
+  const proxyOf = (parent) => parent.querySelector(".registration-task-toggle[data-group]");
+  const isExpanded = (parent) => childrenOf(parent.dataset.expandId).some((row) => !row.hidden);
+  const paint = (parent) => {
+    const button = parent.querySelector(":scope > .expand-cell .table-row-expand");
+    if (!button) return;
+    const expanded = isExpanded(parent);
+    button.textContent = expanded ? "▾" : "▸";
+    button.title = expanded ? "Recolher" : "Expandir";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(expanded));
+  };
+  const paintHead = () => { head.innerHTML = tableExpandHeadInner(parents.length > 0, parents.length > 0 && parents.every(isExpanded)); };
+  const setExpanded = (parent, expanded) => {
+    const proxy = proxyOf(parent);
+    if (proxy) { if (isExpanded(parent) !== expanded) proxy.click(); }
+    else childrenOf(parent.dataset.expandId).forEach((row) => { row.hidden = !expanded; });
+    memory.set(parent.dataset.expandId, expanded);
+    paint(parent);
+  };
+  parents.forEach((parent) => {
+    const id = parent.dataset.expandId;
+    if (!proxyOf(parent) && memory.has(id)) childrenOf(id).forEach((row) => { row.hidden = !memory.get(id); });
+    const cell = parent.querySelector(":scope > .expand-cell");
+    cell.innerHTML = tableRowExpandInner(isExpanded(parent));
+    cell.firstChild.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setExpanded(parent, !isExpanded(parent));
+      paintHead();
+    });
+  });
+  paintHead();
+  head.addEventListener("click", (event) => {
+    if (!event.target.closest(".table-expand-all") || !parents.length) return;
+    event.stopPropagation();
+    const expand = parents.some((parent) => !isExpanded(parent));
+    parents.forEach((parent) => setExpanded(parent, expand));
+    paintHead();
+  });
+}
+
+function renderTableActionsHead(head, count, provider, getIds, clearSelection) {
+  if (!head) return;
+  if (!count) {
+    head.classList.remove("has-bulk-actions");
+    head.textContent = "AÇÕES";
+    return;
+  }
+  const canEdit = Boolean(provider && provider.canEdit !== false && provider.fields().length);
+  const editTitle = canEdit ? `Editar campo de ${count} selecionado(s)` : "Edição em massa indisponível nesta tabela";
+  head.classList.add("has-bulk-actions");
+  head.innerHTML = `<span class="table-actions table-bulk-actions"><button type="button" class="rowbtn table-action-btn action-edit table-bulk-edit${canEdit ? "" : " is-disabled"}" title="${esc(editTitle)}" aria-label="${esc(editTitle)}"${canEdit ? "" : " disabled"}>${TABLE_ACTION_ICONS.edit}</button><button type="button" class="rowbtn table-action-btn table-bulk-clear" title="Limpar seleção (${count})" aria-label="Limpar seleção">${TABLE_BULK_CLEAR_ICON}</button></span>`;
+  head.querySelector(".table-bulk-edit")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openTableBulkEditor(event.currentTarget, provider, getIds());
+  });
+  head.querySelector(".table-bulk-clear")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    clearSelection();
+  });
+}
+
+const TABLE_BULK_CLEAR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+const TASK_BULK_FIELDS = () => [
+  { k: "status", label: "Status", type: "select", options: TASK_STATUS.map((status) => ({ value: status.id, label: status.label })) },
+  { k: "priority", label: "Prioridade", type: "select", options: PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })) },
+  { k: "category", label: "Categoria", type: "text" },
+  { k: "channel", label: "Canal", type: "text" },
+  { k: "module", label: "Módulo", type: "text" },
+  { k: "submodule", label: "Submódulo", type: "text" },
+  { k: "type", label: "Tipo", type: "text" },
+  { k: "planned_start_date", label: "Início previsto", type: "date" },
+  { k: "planned_end_date", label: "Término previsto", type: "date" }
+];
+const MAIN_BULK_FIELD_KEYS = {
+  contacts: ["channel", "job_title", "department", "notes"],
+  companies: ["registration_status", "headquarters", "city", "state", "notes"],
+  deals: ["product_id", "lead_source", "amount", "expected_close_date"],
+  products: ["category", "status", "price", "price_installment", "duration_days"],
+  projects: ["delivery_type", "group_name", "status", "substatus", "start_date", "end_date"]
+};
+
+function bulkSuggestions(rows, key) {
+  return [...new Set((rows || []).map((row) => String(row?.[key] ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+}
+
+function taskBulkProvider(rows, rerender) {
+  return {
+    canEdit: currentUserCan("activities", "edit"),
+    fields: () => TASK_BULK_FIELDS().map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
+    apply: async (ids, patch) => {
+      const dates = "planned_start_date" in patch || "planned_end_date" in patch;
+      const changes = { ...patch };
+      if ("planned_end_date" in changes) changes.due_date = changes.planned_end_date;
+      if (dates) changes.schedule_manual = true;
+      let updated = 0;
+      const projects = new Set();
+      for (const id of ids) {
+        const task = loadProjectTasks().find((item) => item.id === id);
+        if (!task) continue;
+        if (await updateProjectTask(id, changes)) { updated += 1; projects.add(task.project_id); }
+      }
+      if (dates) for (const projectId of projects) await recalculateDependencySchedules(projectId);
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function mainTabBulkProvider(tab) {
+  if (tab === "activities") return taskBulkProvider(() => loadProjectTasks(), () => render());
+  const keys = MAIN_BULK_FIELD_KEYS[tab];
+  if (!keys) return null;
+  return entityBulkProvider(tab, keys, () => render());
+}
+
+function entityBulkProvider(tab, keys, rerender) {
+  return {
+    canEdit: currentUserCan(tab, "edit"),
+    fields: () => {
+      const definitions = fields(tab, cache) || [];
+      return keys.map((key) => definitions.find((field) => field.k === key)).filter(Boolean).map((field) => ({
+        k: field.k, label: field.label, type: ["select", "number", "date", "textarea", "checkbox"].includes(field.type) ? field.type : "text",
+        options: field.options, suggestions: field.type ? undefined : bulkSuggestions(cache?.[tab], field.k)
+      }));
+    },
+    apply: async (ids, patch) => {
+      let updated = 0;
+      for (const id of ids) {
+        const record = (cache?.[tab] || []).find((row) => String(row[pk(tab)]) === String(id));
+        if (!record) continue;
+        const body = { ...patch };
+        if (tab === "projects") {
+          const status = body.status ?? record.status;
+          if (status === "active") body.substatus = null;
+          if (status === "closed") body.substatus = "closed";
+          if (status === "inactive" && !(body.substatus ?? record.substatus)) { toast("Entrega inativa precisa de substatus (Suporte ou Encerrado).", true); continue; }
+        }
+        const saved = await updateRow(tab, record[pk(tab)], body);
+        upsertCachedEntity(tab, saved || { ...record, ...body });
+        updated += 1;
+      }
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function templateBulkProvider(section) {
+  const config = {
+    activities: { table: "productActivities", permission: "activityTemplates", load: loadProductActivities, save: saveProductActivities, cacheKey: "productActivities",
+      fields: [
+        { k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" },
+        { k: "module", label: "Módulo", type: "text" }, { k: "submodule", label: "Submódulo", type: "text" },
+        { k: "type", label: "Tipo", type: "text" },
+        { k: "priority", label: "Prioridade", type: "select", options: PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })) },
+        { k: "recurrence", label: "Recorrência", type: "select", options: RECURRENCE_OPTIONS.map(([value, label]) => ({ value, label })) },
+        { k: "target_days", label: "Prazo (dias)", type: "number" },
+        { k: "start_after_days", label: "Iniciar após dependência (dias)", type: "number" },
+        { k: "consider_business_days", label: "Dias úteis", type: "checkbox" }
+      ],
+      sync: async () => { await syncProductActivities(); refreshActivityCache(); } },
+    objectives: { table: "productObjectives", permission: "objectiveTemplates", load: loadProductObjectives, save: saveProductObjectives, cacheKey: "productObjectives",
+      fields: [{ k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" }, { k: "notes", label: "Observações", type: "textarea" }],
+      sync: async () => { await syncProductObjectives(); await syncProductActivities(); refreshActivityCache(); } },
+    goals: { table: "productGoals", permission: "goalTemplates", load: loadProductGoals, save: saveProductGoals, cacheKey: "productGoals",
+      fields: [{ k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" }, { k: "notes", label: "Observações", type: "textarea" }],
+      sync: async () => { await syncProductGoals(); refreshActivityCache(); } }
+  }[section];
+  if (!config) return null;
+  return {
+    canEdit: currentUserCan(config.permission, "edit"),
+    fields: () => config.fields.map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(config.load(), field.k) } : field),
+    apply: async (ids, patch) => {
+      const rows = config.load();
+      const targets = new Map();
+      ids.forEach((id) => {
+        const item = rows.find((row) => row.id === id);
+        if (!item) return;
+        const linked = section === "activities" ? rows.filter((row) => (row.template_group_id || row.id) === (item.template_group_id || item.id)) : [item];
+        linked.forEach((row) => targets.set(row.id, row));
+      });
+      for (const row of targets.values()) {
+        const changes = { ...patch, updated_at: new Date().toISOString() };
+        const saved = isLive() ? await updateRow(config.table, row.id, changes) : { ...row, ...changes };
+        Object.assign(row, saved);
+      }
+      if (isLive()) cache[config.cacheKey] = rows;
+      else config.save(rows);
+      return ids.filter((id) => rows.some((row) => row.id === id)).length;
+    },
+    done: async () => {
+      renderRegistrationsSection();
+      toast("Sincronizando com as entregas...");
+      try { await config.sync(); } catch (err) { toast("Erro ao sincronizar com as entregas · " + err.message, true); }
+    }
+  };
+}
+
+function deliveryBulkProvider(projectId, section) {
+  const rerender = () => renderProjectBoard(projectId);
+  if (section === "activities") return taskBulkProvider(() => projectTasks(projectId), rerender);
+  const isGoal = section === "goals";
+  if (!["objectives", "goals"].includes(section)) return null;
+  const load = isGoal ? loadDeliveryGoals : loadDeliveryObjectives;
+  return {
+    canEdit: currentUserCan("projects", "edit"),
+    fields: () => [
+      { k: "status", label: "Status", type: "select", options: TASK_STATUS.map((status) => ({ value: status.id, label: status.label })) },
+      { k: "category", label: "Categoria", type: "text", suggestions: bulkSuggestions(load().filter((row) => row.project_id === projectId), "category") },
+      { k: "channel", label: "Canal", type: "text", suggestions: bulkSuggestions(load().filter((row) => row.project_id === projectId), "channel") },
+      { k: "notes", label: "Observações", type: "textarea" }
+    ],
+    apply: async (ids, patch) => {
+      let updated = 0;
+      for (const id of ids) {
+        const ok = isGoal ? await updateDeliveryGoal(id, patch) : await updateDeliveryObjective(id, patch);
+        if (ok) updated += 1;
+      }
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function tableBulkEditProvider(scope) {
+  const [kind, first, second] = String(scope || "").split(":");
+  if (kind === "main") return mainTabBulkProvider(first);
+  if (kind === "registrations") {
+    if (first === "products") return entityBulkProvider("products", MAIN_BULK_FIELD_KEYS.products, () => renderRegistrationsSection());
+    return templateBulkProvider(first);
+  }
+  if (kind === "delivery") return deliveryBulkProvider(first, second);
+  return null;
+}
+
+function bulkValueControlHtml(field) {
+  if (field.type === "select") return `<select id="bulk-edit-value"><option value="">— Limpar —</option>${(field.options || []).map((option) => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join("")}</select>`;
+  if (field.type === "checkbox") return '<select id="bulk-edit-value"><option value="true">Sim</option><option value="false">Não</option></select>';
+  if (field.type === "textarea") return '<textarea id="bulk-edit-value" rows="3" placeholder="Vazio limpa o campo"></textarea>';
+  const type = field.type === "number" ? "number" : field.type === "date" ? "date" : "text";
+  const list = field.suggestions?.length ? `<datalist id="bulk-edit-suggestions">${field.suggestions.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>` : "";
+  return `<input id="bulk-edit-value" type="${type}"${list ? ' list="bulk-edit-suggestions"' : ""} placeholder="Vazio limpa o campo">${list}`;
+}
+
+function openTableBulkEditor(anchor, provider, ids) {
+  document.getElementById("table-bulk-dd")?.remove();
+  if (!provider || !ids.length) return;
+  const fieldsList = provider.fields();
+  if (!fieldsList.length) return;
+  const panel = document.createElement("div");
+  panel.id = "table-bulk-dd";
+  panel.className = "data-dd table-bulk-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Editar em massa</span><span>${ids.length} selecionado(s)</span></div>
+    <div class="table-bulk-body">
+      <label>Campo<select id="bulk-edit-field">${fieldsList.map((field, index) => `<option value="${index}">${esc(field.label)}</option>`).join("")}</select></label>
+      <label>Novo valor<span id="bulk-edit-value-slot"></span></label>
+      <div class="table-bulk-foot"><button class="btn" type="button" id="bulk-edit-cancel">Cancelar</button><button class="btn primary" type="button" id="bulk-edit-apply">Aplicar</button></div>
+    </div>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 280, window.innerWidth - 288))}px`;
+  panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 260)}px`;
+  const fieldSelect = panel.querySelector("#bulk-edit-field");
+  const paintValue = () => {
+    panel.querySelector("#bulk-edit-value-slot").innerHTML = bulkValueControlHtml(fieldsList[Number(fieldSelect.value)]);
+    panel.querySelector("#bulk-edit-value")?.focus({ preventScroll: true });
+  };
+  fieldSelect.addEventListener("change", paintValue);
+  paintValue();
+  const close = () => { panel.remove(); document.removeEventListener("mousedown", outside, true); };
+  const outside = (event) => { if (!panel.contains(event.target) && !anchor.contains(event.target)) close(); };
+  setTimeout(() => document.addEventListener("mousedown", outside, true), 60);
+  panel.querySelector("#bulk-edit-cancel").addEventListener("click", close);
+  panel.querySelector("#bulk-edit-apply").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const field = fieldsList[Number(fieldSelect.value)];
+    const raw = panel.querySelector("#bulk-edit-value")?.value ?? "";
+    let value = String(raw).trim() === "" ? null : raw;
+    if (field.type === "checkbox") value = raw === "true";
+    else if (field.type === "number" && value != null) value = Number(value);
+    else if (typeof value === "string" && field.type !== "textarea") value = value.trim();
+    button.disabled = true;
+    button.textContent = "Aplicando...";
+    try {
+      const updated = await provider.apply(ids, { [field.k]: value });
+      close();
+      toast(`${field.label} atualizado em ${updated} de ${ids.length} registro(s).`, updated < ids.length);
+      await provider.done?.();
+    } catch (err) {
+      toast("Erro na edição em massa · " + err.message, true);
+      button.disabled = false;
+      button.textContent = "Aplicar";
+    }
+  });
+}
+
 function wireSecondaryTableSelection(table, scope) {
   if (!table || table.querySelector("thead .secondary-select-all")) return;
   const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
@@ -2307,6 +2642,9 @@ function wireSecondaryTableSelection(table, scope) {
   table.querySelectorAll("tbody tr .empty").forEach((cell) => {
     cell.colSpan = Number(cell.colSpan || headRow.cells.length - 1) + 1;
   });
+  wireTableExpandColumn(table, scope);
+  const actionsHead = headRow.querySelector(".table-actions-head");
+  const bulkProvider = tableBulkEditProvider(scope);
   const host = table.closest("#registrations-root, #project-board-root, #tools-root, #product-activities-root") || table.parentElement;
   const toolbar = host?.querySelector(".registration-toolbar-left, .project-data-toolbar .registration-toolbar-left, .tools-toolbar .registration-toolbar-left, .modal-toolbar");
   let count = toolbar?.querySelector(".table-selection-count");
@@ -2326,6 +2664,11 @@ function wireSecondaryTableSelection(table, scope) {
       count.textContent = selected.size ? `${selected.size} selecionado(s)` : "";
       count.hidden = !selected.size;
     }
+    renderTableActionsHead(actionsHead, selected.size, bulkProvider, () => [...selected], () => {
+      selected.clear();
+      rows.forEach((row) => { const box = row.querySelector(".secondary-row-select"); if (box) box.checked = false; });
+      refresh();
+    });
   };
   table._refreshSecondarySelection = refresh;
   table.querySelectorAll(".secondary-row-select").forEach((box) => box.addEventListener("change", () => {
@@ -2421,7 +2764,9 @@ function renderTable(c) {
     ? `<th class="select-head noclick"><input type="checkbox" id="select-all-rows"${rows.length && selectedVisible.length === rows.length ? " checked" : ""}></th>`
     : "";
   const actionHead = tableActionsHead();
-  const head = selectHead + cols.map((col) => {
+  const expandableClients = groupByClient ? clientNames : [];
+  const expandHead = `<th class="expand-head noclick">${tableExpandHeadInner(expandableClients.length > 0, expandableClients.length > 0 && expandableClients.every((client) => state.expandedActivityClients.has(client)))}</th>`;
+  const head = selectHead + expandHead + cols.map((col) => {
     const isFiltered = filters[col.k]?.size > 0;
     const arr = isFiltered ? `<span class="arrow">▼</span>` : state.sortK === col.k ? `<span class="arrow">${state.sortDir > 0 ? "▲" : "▼"}</span>` : "";
     const cls = [isFiltered ? "filtered" : "", col.thCls || ""].filter(Boolean).join(" ");
@@ -2434,10 +2779,10 @@ function renderTable(c) {
     const client = String(r.client_name || "Sem cliente");
     const clientExpanded = groupByClient && state.expandedActivityClients.has(client);
     const groupCells = groupByClient ? cols.map((col, index) => index === 0
-      ? `<td data-k="${esc(col.k)}"><button class="client-group-toggle" type="button" data-client="${esc(client)}" title="${clientExpanded ? "Recolher" : "Expandir"} tarefas de ${esc(client)}"><span class="registration-task-toggle">${clientExpanded ? "▾" : "▸"}</span><strong>${esc(client)}</strong><span class="registration-subtask-count">${clientCounts.get(client) || 0}</span></button></td>`
+      ? `<td data-k="${esc(col.k)}"><button class="client-group-toggle" type="button" data-client="${esc(client)}" title="${clientExpanded ? "Recolher" : "Expandir"} tarefas de ${esc(client)}"><strong>${esc(client)}</strong><span class="registration-subtask-count">${clientCounts.get(client) || 0}</span></button></td>`
       : `<td data-k="${esc(col.k)}"></td>`).join("") : "";
     const groupHeader = groupByClient && client !== previousClient
-      ? `<tr class="client-group-row" data-client="${esc(client)}">${selectable ? '<td class="select-cell"></td>' : ""}${groupCells}<td class="act action-col table-actions-cell"></td></tr>`
+      ? `<tr class="client-group-row" data-client="${esc(client)}">${selectable ? '<td class="select-cell"></td>' : ""}<td class="expand-cell">${tableRowExpandInner(clientExpanded, "client-group-expand", ` data-client="${esc(client)}"`)}</td>${groupCells}<td class="act action-col table-actions-cell"></td></tr>`
       : "";
     const taskRowAttrs = groupByClient ? ` class="client-task-row" data-client="${esc(client)}"${clientExpanded ? "" : " hidden"}` : "";
     if (groupByClient) previousClient = client;
@@ -2451,13 +2796,13 @@ function renderTable(c) {
       return `<td class="${cls}" data-k="${esc(col.k)}">${val}</td>`;
     }).join("");
     if (state.tab === "conversations") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
         delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "projects") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega", enabled: currentUserCan("projects", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega", enabled: currentUserCan("projects", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega", enabled: currentUserCan("projects", "delete") }
@@ -2465,26 +2810,26 @@ function renderTable(c) {
     }
     if (state.tab === "activities") {
       const checklist = normalizeChecklist(r.checklist);
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
         edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
     if (state.tab === "products") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto", enabled: currentUserCan("products", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "companies") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "company-details-btn", attrs: { "data-id": rid }, title: "Abrir empresa", enabled: currentUserCan("companies", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar empresa", enabled: currentUserCan("companies", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir empresa", enabled: currentUserCan("companies", "delete") }
       })}</td></tr>`;
     }
-    return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+    return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
     })}</td></tr>`;
@@ -2496,7 +2841,7 @@ function renderTable(c) {
       : `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength}` : "0 registros"}</span>
     <div><button class="btn" id="page-prev"${currentPage <= 1 ? " disabled" : ""}>‹</button><span>Página ${currentPage} de ${totalPages}</span><button class="btn" id="page-next"${currentPage >= totalPages ? " disabled" : ""}>›</button></div>
   </div>` : "";
-  const emptyColspan = cols.length + (selectable ? 1 : 0) + 1;
+  const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
   const tableBody = body || `<tr><td colspan="${emptyColspan}" class="empty">Nenhum registro. Clique em <b>+</b> para criar.</td></tr>`;
   document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
 
@@ -2544,12 +2889,22 @@ function renderTable(c) {
       else selectedSet.delete(box.dataset.id);
       render();
     }));
-  document.querySelectorAll(".client-group-toggle").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll(".client-group-toggle,.client-group-expand").forEach((button) => button.addEventListener("click", () => {
     const client = button.dataset.client;
     if (state.expandedActivityClients.has(client)) state.expandedActivityClients.delete(client);
     else state.expandedActivityClients.add(client);
     render();
   }));
+  document.querySelector("#main .expand-head .table-expand-all")?.addEventListener("click", () => {
+    const expand = clientNames.some((client) => !state.expandedActivityClients.has(client));
+    if (expand) clientNames.forEach((client) => state.expandedActivityClients.add(client));
+    else state.expandedActivityClients.clear();
+    render();
+  });
+  if (selectable) {
+    renderTableActionsHead(document.querySelector("#main .data-table .table-actions-head"), selectedSet.size,
+      state.tab === "conversations" ? null : tableBulkEditProvider(`main:${state.tab}`), () => [...selectedSet], () => { selectedSet.clear(); render(); });
+  }
   document.getElementById("select-all-rows")?.addEventListener("change", (e) => {
     rows.forEach((r) => {
       const id = String(r[rowKey]);
@@ -4567,7 +4922,7 @@ function renderTaskTable(tasks) {
     const parent = taskParent(task, allTasks);
     const subtasks = taskSubtaskProgress(task.id, allTasks);
     const terminal = subtasks.total === 0;
-    return `<tr class="${parent ? "task-subtask-row" : "task-root-row"}">
+    return `<tr class="${parent ? "task-subtask-row" : "task-root-row"}"${parent ? ` data-expand-parent="${esc(parent.id)}"` : ` data-expand-id="${esc(task.id)}"`}>
       <td><span class="task-table-title">${parent ? '<span class="task-subtask-branch">↳</span>' : ""}<span>${esc(activityDisplayName(task))}</span>${parent ? '<small>Subtarefa</small>' : ""}</span></td>
       <td>${badge(task.source_template_id ? "qualification" : "proposal", task.source_template_id ? "Produto" : "Dia a dia")}</td>
       <td>${priorityBadge(task.priority)}</td>
@@ -5471,16 +5826,12 @@ function applyProjectTableColumnPreferences(table) {
   const headers = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.projectColumn).map((cell) => [cell.dataset.projectColumn, cell]));
   const fixedHeaders = [...headRow.cells].filter((cell) => !cell.dataset.projectColumn);
   ordered.forEach((col) => headRow.appendChild(headers[col.k]));
-  const selectionHeader = fixedHeaders.find((cell) => cell.classList.contains("select-head"));
-  if (selectionHeader) headRow.insertBefore(selectionHeader, headRow.firstChild);
-  fixedHeaders.filter((cell) => cell !== selectionHeader).forEach((cell) => headRow.appendChild(cell));
+  orderLeadingTableCells(headRow, fixedHeaders);
   projectTableRows(table).forEach((row) => {
     const cells = Object.fromEntries([...row.cells].filter((cell) => cell.dataset.projectColumn).map((cell) => [cell.dataset.projectColumn, cell]));
     const fixedCells = [...row.cells].filter((cell) => !cell.dataset.projectColumn);
     ordered.forEach((col) => { if (cells[col.k]) row.appendChild(cells[col.k]); });
-    const selectionCell = fixedCells.find((cell) => cell.classList.contains("select-cell"));
-    if (selectionCell) row.insertBefore(selectionCell, row.firstChild);
-    fixedCells.filter((cell) => cell !== selectionCell).forEach((cell) => row.appendChild(cell));
+    orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
     const visible = prefs[col.k] !== false;
@@ -7377,7 +7728,7 @@ function renderPipelineDrawer() {
       renderRegistrationsSection();
     }
   });
-  document.getElementById("pipeline-name")?.focus();
+  document.getElementById("pipeline-name")?.focus({ preventScroll: true });
 }
 function renderPipelinesModal() {
   const el = document.getElementById("pm-body");
@@ -7784,7 +8135,7 @@ function openRegistrationsModal(section = "products") {
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Cadastros</em></span>'
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-registration-tab]").forEach((button) => button.addEventListener("click", () => {
     document.getElementById("registration-filter-dd")?.remove();
@@ -7958,6 +8309,49 @@ function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orde
   </section>`;
 }
 
+const mindMapPendingScroll = new Map();
+function mindMapExpandAllButtonHtml(allExpanded) {
+  const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
+  return `<button class="view registration-mind-expand-all" type="button" title="${label}" aria-label="${label}" data-expanded="${allExpanded}">${allExpanded ? "⊟" : "⊞"}</button>`;
+}
+
+function updateMindMapExpandAllButton(root) {
+  const button = root.querySelector(".registration-mind-expand-all");
+  if (!button) return;
+  const allExpanded = !root.querySelector(".registration-mind-branch.is-collapsed");
+  const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
+  button.textContent = allExpanded ? "⊟" : "⊞";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.dataset.expanded = String(allExpanded);
+}
+
+function centerMindMap(shell) {
+  const scroller = shell?.querySelector(".registration-mindmap-scroll");
+  const rootNode = shell?.querySelector(".registration-mindmap-root");
+  if (!scroller || !rootNode) return;
+  const frame = scroller.getBoundingClientRect();
+  const node = rootNode.getBoundingClientRect();
+  if (shell.classList.contains("is-vertical")) {
+    scroller.scrollTop = 0;
+    scroller.scrollLeft += (node.left + node.width / 2) - (frame.left + scroller.clientWidth / 2);
+  } else {
+    scroller.scrollLeft = 0;
+    scroller.scrollTop += (node.top + node.height / 2) - (frame.top + scroller.clientHeight / 2);
+  }
+}
+
+function setMindMapBranchCollapsed(button, collapsed) {
+  const branch = button.closest(".registration-mind-branch");
+  const children = branch?.querySelector(":scope > .registration-mind-children");
+  if (!children) return;
+  children.hidden = collapsed;
+  branch.classList.toggle("is-collapsed", collapsed);
+  button.querySelector("span").textContent = collapsed ? "▸" : "▾";
+  if (collapsed) registrationMindMapCollapsedBranches.add(button.dataset.branchKey);
+  else registrationMindMapCollapsedBranches.delete(button.dataset.branchKey);
+}
+
 function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = adapter.scope) {
   const hierarchy = registrationTaskHierarchy(items, adapter);
   const orderById = new Map(hierarchy.ordered.map((node, index) => [node.id, index + 1]));
@@ -7974,9 +8368,16 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   const map = branches || `<div class="empty">${query ? "Nenhum item corresponde à busca." : "Nenhum item para exibir."}</div>`;
   const vertical = registrationMindMapOrientation === "vertical";
   const fullscreen = registrationMindMapFullscreen;
+  const previousScroll = document.querySelector(`.registration-mindmap-shell[data-scope="${CSS.escape(scopeKey)}"] .registration-mindmap-scroll`);
+  mindMapPendingScroll.set(scopeKey, previousScroll ? {
+    left: previousScroll.scrollLeft,
+    top: previousScroll.scrollTop,
+    vertical: previousScroll.closest(".registration-mindmap-shell").classList.contains("is-vertical")
+  } : null);
+  const anyCollapsed = branches.includes(" is-collapsed\"");
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
-  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}">
-    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa"><button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
+  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
+    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa">${mindMapExpandAllButtonHtml(!anyCollapsed)}<button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
     <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
     <div class="registration-mindmap-root"><strong>${esc(adapter.rootLabel || "Tarefas")}</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>` };
@@ -7986,7 +8387,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   const state = registrationTableState();
   const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
     <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${map.html}`;
@@ -8158,17 +8559,19 @@ function wireMindMap(root, rerender) {
   });
   wireMindMapPan(root.querySelector(".registration-mindmap-scroll"));
   root.querySelectorAll(".registration-mind-toggle").forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.branchKey;
-    const branch = button.closest(".registration-mind-branch");
-    const children = branch?.querySelector(":scope > .registration-mind-children");
+    const children = button.closest(".registration-mind-branch")?.querySelector(":scope > .registration-mind-children");
     if (!children) return;
-    children.hidden = !children.hidden;
-    branch.classList.toggle("is-collapsed", children.hidden);
-    button.querySelector("span").textContent = children.hidden ? "▸" : "▾";
-    if (children.hidden) registrationMindMapCollapsedBranches.add(key);
-    else registrationMindMapCollapsedBranches.delete(key);
+    setMindMapBranchCollapsed(button, !children.hidden);
+    updateMindMapExpandAllButton(root);
     drawRegistrationMindMapLinks(root);
   }));
+  root.querySelector(".registration-mind-expand-all")?.addEventListener("click", (event) => {
+    const collapse = event.currentTarget.dataset.expanded === "true";
+    root.querySelectorAll(".registration-mind-toggle").forEach((button) => setMindMapBranchCollapsed(button, collapse));
+    updateMindMapExpandAllButton(root);
+    drawRegistrationMindMapLinks(root);
+    centerMindMap(root.querySelector(".registration-mindmap-shell"));
+  });
   const canvas = root.querySelector(".registration-mindmap-canvas");
   canvas?.addEventListener("mouseover", (event) => {
     const id = event.target.closest("[data-node-id]")?.dataset.nodeId;
@@ -8176,7 +8579,18 @@ function wireMindMap(root, rerender) {
       path.classList.toggle("is-active", Boolean(id) && (path.dataset.from === id || path.dataset.to === id)));
   });
   canvas?.addEventListener("mouseleave", () => canvas.querySelectorAll(".registration-mind-links path.is-active").forEach((path) => path.classList.remove("is-active")));
-  requestAnimationFrame(() => drawRegistrationMindMapLinks(root));
+  const shell = root.querySelector(".registration-mindmap-shell");
+  const savedScroll = shell ? mindMapPendingScroll.get(shell.dataset.scope) : null;
+  if (shell) mindMapPendingScroll.delete(shell.dataset.scope);
+  requestAnimationFrame(() => {
+    drawRegistrationMindMapLinks(root);
+    const scroller = shell?.querySelector(".registration-mindmap-scroll");
+    if (!scroller) return;
+    if (savedScroll && savedScroll.vertical === shell.classList.contains("is-vertical")) {
+      scroller.scrollLeft = savedScroll.left;
+      scroller.scrollTop = savedScroll.top;
+    } else centerMindMap(shell);
+  });
   if (registrationMindMapGlobalWired) return;
   registrationMindMapGlobalWired = true;
   window.addEventListener("resize", redrawAllMindMapLinks);
@@ -8354,7 +8768,7 @@ function renderRegistrationsSection() {
       const childRows = children.map((child) => {
         const childDetails = summary(child);
         const checklist = normalizeChecklist(child.item.checklist);
-        return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
+        return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-expand-parent="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
           <td>—</td>
           <td>${esc(childDetails.products)}</td>
           <td>Cadastro</td>
@@ -8385,7 +8799,7 @@ function renderRegistrationsSection() {
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}" data-expand-id="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
@@ -8551,6 +8965,7 @@ function setupRegistrationToolbar(root, table) {
   center.className = "registration-toolbar-center";
   const right = document.createElement("div");
   right.className = "registration-toolbar-right";
+  if (toolbar.closest("#registrations-root")) left.insertAdjacentHTML("beforeend", '<span class="registration-toolbar-title">Cadastros</span>');
   if (count) left.appendChild(count);
   center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
   if (addButton) {
@@ -8599,7 +9014,7 @@ function exportRegistrationCSV(table, visibleOnly) {
   const query = String(tableState.search || "").toLocaleLowerCase("pt-BR");
   const isShown = (element) => element && !element.hidden && getComputedStyle(element).display !== "none";
   const headers = [...table.querySelectorAll("thead th")].map((th, index) => ({ th, index }))
-    .filter(({ th }) => !th.classList.contains("table-actions-head") && !th.classList.contains("select-head")
+    .filter(({ th }) => !th.classList.contains("table-actions-head") && !th.classList.contains("select-head") && !th.classList.contains("expand-head")
       && th.textContent.replace(/[▲▼]/g, "").trim() && (!visibleOnly || isShown(th)));
   const rows = registrationTableRows(table, true).filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
     && Object.entries(tableState.filters || {}).every(([key, selected]) => !selected?.size || selected.has(registrationCell(row, key)?.textContent.trim() || "—")))
@@ -8651,16 +9066,12 @@ function applyRegistrationColumnPreferences(table) {
   const headerByKey = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
   const fixedHeaders = [...headRow.cells].filter((cell) => !cell.dataset.registrationKey);
   ordered.forEach((col) => headRow.appendChild(headerByKey[col.k]));
-  const selectionHeader = fixedHeaders.find((cell) => cell.classList.contains("select-head"));
-  if (selectionHeader) headRow.insertBefore(selectionHeader, headRow.firstChild);
-  fixedHeaders.filter((cell) => cell !== selectionHeader).forEach((cell) => headRow.appendChild(cell));
+  orderLeadingTableCells(headRow, fixedHeaders);
   registrationTableRows(table, true).forEach((row) => {
     const cellByKey = Object.fromEntries([...row.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
     const fixedCells = [...row.cells].filter((cell) => !cell.dataset.registrationKey);
     ordered.forEach((col) => { if (cellByKey[col.k]) row.appendChild(cellByKey[col.k]); });
-    const selectionCell = fixedCells.find((cell) => cell.classList.contains("select-cell"));
-    if (selectionCell) row.insertBefore(selectionCell, row.firstChild);
-    fixedCells.filter((cell) => cell !== selectionCell).forEach((cell) => row.appendChild(cell));
+    orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
     const visible = prefs[col.k] !== false;
