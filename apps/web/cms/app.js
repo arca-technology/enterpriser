@@ -2407,10 +2407,10 @@ function bulkSuggestions(rows, key) {
   return [...new Set((rows || []).map((row) => String(row?.[key] ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
 }
 
-function taskBulkProvider(rows, rerender) {
+function taskBulkProvider(rows, rerender, keys = null) {
   return {
     canEdit: currentUserCan("activities", "edit"),
-    fields: () => TASK_BULK_FIELDS().map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
+    fields: () => TASK_BULK_FIELDS().filter((field) => !keys || keys.includes(field.k)).map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
     apply: async (ids, patch) => {
       const dates = "planned_start_date" in patch || "planned_end_date" in patch;
       const changes = { ...patch };
@@ -2431,7 +2431,7 @@ function taskBulkProvider(rows, rerender) {
 }
 
 function mainTabBulkProvider(tab) {
-  if (tab === "activities") return taskBulkProvider(() => loadProjectTasks(), () => render());
+  if (tab === "activities") return taskBulkProvider(() => loadProjectTasks(), () => render(), ["status", "priority"]);
   const keys = MAIN_BULK_FIELD_KEYS[tab];
   if (!keys) return null;
   return entityBulkProvider(tab, keys, () => render());
@@ -2664,13 +2664,14 @@ function wireSecondaryTableSelection(table, scope) {
       count.textContent = selected.size ? `${selected.size} selecionado(s)` : "";
       count.hidden = !selected.size;
     }
+    table.classList.toggle("has-selection", selected.size > 0);
     renderTableActionsHead(actionsHead, selected.size, bulkProvider, () => [...selected], () => {
       selected.clear();
       rows.forEach((row) => { const box = row.querySelector(".secondary-row-select"); if (box) box.checked = false; });
       refresh();
     });
   };
-  table._refreshSecondarySelection = refresh;
+  table._refreshSecondarySelection = () => { refresh(); };
   table.querySelectorAll(".secondary-row-select").forEach((box) => box.addEventListener("change", () => {
     const row = box.closest("tr");
     if (box.checked) selected.add(row.dataset.selectionId); else selected.delete(row.dataset.selectionId);
@@ -2843,7 +2844,7 @@ function renderTable(c) {
   </div>` : "";
   const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
   const tableBody = body || `<tr><td colspan="${emptyColspan}" class="empty">Nenhum registro. Clique em <b>+</b> para criar.</td></tr>`;
-  document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
+  document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table${selectable && selectedSet.size ? " has-selection" : ""}" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
 
   document.querySelectorAll("thead th[data-k]").forEach((th) =>
     th.addEventListener("click", (e) => {
@@ -5254,7 +5255,7 @@ function projectToolbarHtml(client, product, total) {
   return `<div class="project-head project-data-toolbar">
     <div class="registration-toolbar-left"><div class="project-meta"><span>${esc(client)}</span><span>·</span><span>${esc(product)}</span><span>·</span><span>${total} ${sectionLabel}</span></div></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
       <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização"><span>${esc(activePrimaryLabel.toUpperCase())}</span><span class="chevron">▾</span></button>
       <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix">Matriz</button>
       <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard">Dashboard</button>
@@ -8389,7 +8390,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${map.html}`;
 }
 
@@ -8940,6 +8941,11 @@ function wireRegistrationTable() {
     });
   });
   if (registrationsState.section === "activities") {
+    const taskHeader = headers.find((header) => header.dataset.registrationLabel === "Tarefa");
+    if (taskHeader) {
+      taskHeader.classList.add("registration-task-sticky");
+      registrationTableRows(table, true).forEach((row) => registrationCell(row, taskHeader.dataset.registrationKey)?.classList.add("registration-task-sticky"));
+    }
     const prefs = secondaryColumnPrefs("registrations:activities");
     let changed = false;
     ["c0", "c1"].forEach((key) => {
@@ -8977,8 +8983,8 @@ function setupRegistrationToolbar(root, table) {
   }
   const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
     ? '<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button>'
-    : '<button class="view active" type="button">Tabela</button>';
-  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
+    : '<button class="btn view-menu-trigger active" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button>';
+  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
   right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -10012,7 +10018,7 @@ function openToolsModal(section = "files") {
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Ferramentas</em></span>'
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-tools-tab]").forEach((button) => button.addEventListener("click", () => {
     toolsState.section = button.dataset.toolsTab;
@@ -10071,9 +10077,9 @@ function toolEmailValue(account, key) {
 
 function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlaceholder = "Buscar...") {
   return `<div class="tools-toolbar">
-    <div class="registration-toolbar-left"><span class="muted">${count} item(ns)</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Ferramentas</span><span class="muted">${count} item(ns)</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
   </div>`;
 }
 
@@ -10262,18 +10268,13 @@ function openSocialModal(section = "home") {
   socialState.section = section === "home" || available.includes(section) ? section : "home";
   socialState.search = "";
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Social">
+    <button class="modal-header-tab${socialState.section === "home" ? " active" : ""}" data-social-tab="home" role="tab">Home</button>
     ${Object.entries(SOCIAL_MODULE_LABELS).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<button class="registration-brand social-home-button" id="social-home-button" type="button" title="Ir para a Home Social">ENTERPRISER <b>• CMS</b><em>Social</em></button>'
-  });
-  document.getElementById("social-home-button").addEventListener("click", () => {
-    socialState.section = "home";
-    socialState.search = "";
-    document.querySelectorAll("[data-social-tab]").forEach((tab) => tab.classList.remove("active"));
-    renderSocialSection();
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-social-tab]").forEach((button) => button.addEventListener("click", () => {
     socialState.section = button.dataset.socialTab;
@@ -10301,6 +10302,40 @@ function renderSocialHome(root) {
   }
 }
 
+function openSocialDataMenu(anchor) {
+  document.getElementById("social-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "social-data-dd";
+  panel.className = "data-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Social</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn social-export-visible" type="button">Exportar colunas visíveis</button>
+    <button class="dd-menu-btn social-export-all" type="button">Exportar todas as colunas</button>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  const exportCsv = (visibleOnly) => {
+    panel.remove();
+    const columns = (visibleOnly ? visibleSocialColumns() : SOCIAL_COLUMN_DEFS).map((column) => ({ ...column, csv: (_value, row) => row?.[column.k] ?? "" }));
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    downloadCSV(columns, [], `enterpriser_social_${socialState.section}_${visibleOnly ? "colunas_visiveis" : "todas_colunas"}_${stamp}.csv`);
+    toast("CSV exportado: 0 linha(s).");
+  };
+  panel.querySelector(".social-export-visible").addEventListener("click", () => exportCsv(true));
+  panel.querySelector(".social-export-all").addEventListener("click", () => exportCsv(false));
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
+}
+
 function renderSocialSection() {
   const root = document.getElementById("social-root");
   if (!root) return;
@@ -10308,15 +10343,19 @@ function renderSocialSection() {
   const columns = visibleSocialColumns();
   const tableState = socialTableState();
   root.innerHTML = `<div class="tools-toolbar">
-      <div class="registration-toolbar-left"><span class="muted">0 item(ns)</span></div>
+      <div class="registration-toolbar-left"><span class="registration-toolbar-title">Social</span><span class="muted">0 item(ns)</span></div>
       <div class="registration-toolbar-center"><input class="search registration-toolbar-search social-search" placeholder="Buscar..." value="${esc(socialState.search)}"><button class="btn primary plus" type="button" disabled title="Cadastro será definido">+</button></div>
-      <div class="registration-toolbar-right"><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+      <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn social-data-btn" type="button" title="Dados">⬆⬇</button></div>
     </div>
     <div class="registration-filter-strip tools-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-social-key="${esc(column.k)}" title="Clique para ordenar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody><tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum registro em ${esc(SOCIAL_MODULE_LABELS[socialState.section])}.</td></tr></tbody></table></div>
     <div class="table-pagination tools-pagination"><span>0 registros</span><div><button class="btn" disabled>‹</button><span>Página 1 de 1</span><button class="btn" disabled>›</button></div></div>`;
   root.querySelector(".social-search")?.addEventListener("input", (event) => {
     socialState.search = event.target.value;
+  });
+  root.querySelector(".social-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openSocialDataMenu(event.currentTarget);
   });
   root.querySelector(".social-cols-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();

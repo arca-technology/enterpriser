@@ -44,7 +44,7 @@
     stroke-linecap:round;stroke-linejoin:round}
   .ico.logout:hover{color:var(--red)}
 
-  .subbar{display:grid;grid-template-columns:1fr minmax(260px,500px) 1fr;align-items:center;gap:10px;height:40px;
+  .subbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,500px) minmax(max-content,1fr);align-items:center;gap:10px;height:40px;
     padding:4px 9px;border-bottom:1px solid var(--border2);flex:0 0 40px;box-sizing:border-box}
   .subbar.home-hidden{display:none}
   body.light .subbar{background:#f3f6fa;border-bottom-color:var(--border)}
@@ -52,7 +52,7 @@
   .count{background:var(--panel2); border:1px solid var(--border); color:var(--muted);
     padding:3px 9px; border-radius:20px; font-size:11px}
   .sb-center{position:relative;display:flex;justify-content:center;align-items:center;min-width:0}
-  .sb-right{display:flex; flex-direction:row-reverse; align-items:center; justify-content:flex-start; gap:8px; min-width:0}
+  .sb-right{display:flex; flex-direction:row-reverse; align-items:center; justify-content:flex-start; gap:8px; min-width:0; padding-left:44px}
   .search{background:var(--panel2); border:1px solid var(--border); color:var(--text);
     padding:6px 10px;border-radius:6px;width:431px;max-width:calc(100% - 60px);font-size:12px}
   .sb-center .plus{position:absolute;left:calc(50% + 223.5px)}
@@ -159,6 +159,7 @@
   .table-expand-btn{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:5px;background:var(--panel2);color:var(--text);padding:0;font:inherit;font-size:11px;line-height:1;cursor:pointer}
   .table-expand-btn:hover{border-color:var(--cyan);color:var(--cyan)}
   .table-expand-btn:disabled{opacity:.3;cursor:default;border-color:var(--border);color:var(--muted)}
+  table.has-selection tbody .table-actions .table-action-btn{opacity:.28;pointer-events:none;filter:none}
   .table-actions-head.has-bulk-actions{padding-top:0!important;padding-bottom:0!important}
   .table-actions.table-bulk-actions{grid-template-columns:repeat(2,21px);width:45px;margin:0 auto}
   .table-bulk-actions .table-bulk-edit{color:#3478e5}
@@ -838,10 +839,10 @@
   .registration-filter-badge b{font-size:12px;line-height:1;color:#b9d9ff}
   body.light .registration-filter-badge{border-color:#8bb8ee;background:#e2efff;color:#174f96}
   body.light .registration-filter-badge b{color:#2765ad}
-  .modal-toolbar.registration-toolbar,.tools-toolbar,.project-data-toolbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,500px) minmax(0,1fr);align-items:center;gap:10px;height:40px;box-sizing:border-box;padding:4px 9px;border-bottom:1px solid var(--border2);flex:0 0 40px}
+  .modal-toolbar.registration-toolbar,.tools-toolbar,.project-data-toolbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,500px) minmax(max-content,1fr);align-items:center;gap:10px;height:40px;box-sizing:border-box;padding:4px 9px;border-bottom:1px solid var(--border2);flex:0 0 40px}
   .registration-toolbar-left,.registration-toolbar-center,.registration-toolbar-right{display:flex;align-items:center;gap:8px;min-width:0}
   .registration-toolbar-center{position:relative;justify-content:center}
-  .registration-toolbar-right{justify-content:flex-end}
+  .registration-toolbar-right{justify-content:flex-end;padding-left:44px}
   .registration-toolbar-search{width:431px;max-width:calc(100% - 60px)}
   .registration-toolbar-center .plus{position:absolute;left:calc(50% + 223.5px)}
   .registration-cols-btn,.tools-cols-btn,.project-cols-btn{width:38px;height:30px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 38px}
@@ -859,14 +860,14 @@
   body.light .product-activity-list .pa-delete,body.light .product-activity-list .po-delete,body.light .product-activity-list .pg-delete{color:#b4232f}
   .registration-activities-table .select-head,.registration-activities-table .select-cell{position:sticky;left:0;z-index:4;background:var(--panel)}
   .registration-activities-table .select-head{z-index:7;background:var(--panel2)}
-  .registration-activities-table th[data-registration-key="c0"],.registration-activities-table td[data-registration-key="c0"]{position:sticky;left:72px;z-index:3;min-width:320px;background:var(--panel)}
-  .registration-activities-table thead th[data-registration-key="c0"]{z-index:6;background:var(--panel2)}
+  .registration-activities-table .registration-task-sticky{position:sticky;left:72px;z-index:3;min-width:320px;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
+  .registration-activities-table thead th.registration-task-sticky{z-index:6;background:var(--panel2)}
   .registration-activities-table th:last-child,.registration-activities-table td:last-child{position:sticky;right:0;z-index:3;min-width:82px;background:var(--panel);box-shadow:-8px 0 14px rgba(0,0,0,.12)}
   .registration-activities-table thead th:last-child{z-index:6;background:var(--panel2)}
-  .registration-activities-table tbody tr:nth-child(even) .select-cell,.registration-activities-table tbody tr:nth-child(even) td[data-registration-key="c0"],.registration-activities-table tbody tr:nth-child(even) td:last-child{background:var(--row-alt)}
-  .registration-activities-table tbody tr:hover .select-cell,.registration-activities-table tbody tr:hover td[data-registration-key="c0"],.registration-activities-table tbody tr:hover td:last-child{background:var(--row-hover)}
-  body.light .registration-activities-table .select-head,body.light .registration-activities-table thead th[data-registration-key="c0"],body.light .registration-activities-table thead th:last-child{background:#e5ebf3}
-  @media(max-width:900px){.modal-toolbar.registration-toolbar{grid-template-columns:1fr}.registration-toolbar-center{order:-1}.registration-toolbar-right{justify-content:flex-start}}
+  .registration-activities-table tbody tr:nth-child(even) .select-cell,.registration-activities-table tbody tr:nth-child(even) td.registration-task-sticky,.registration-activities-table tbody tr:nth-child(even) td:last-child{background:var(--row-alt)}
+  .registration-activities-table tbody tr:hover .select-cell,.registration-activities-table tbody tr:hover td.registration-task-sticky,.registration-activities-table tbody tr:hover td:last-child{background:var(--row-hover)}
+  body.light .registration-activities-table .select-head,body.light .registration-activities-table thead th.registration-task-sticky,body.light .registration-activities-table thead th:last-child{background:#e5ebf3}
+  @media(max-width:900px){.modal-toolbar.registration-toolbar{grid-template-columns:1fr}.registration-toolbar-center{order:-1}.registration-toolbar-right{justify-content:flex-start;padding-left:0}}
   .modal.full .modal-foot{flex:0 0 auto}
   .home{padding:18px;display:flex;flex-direction:column;gap:18px;overflow:auto}
   .home-metrics{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}
@@ -896,7 +897,6 @@
   #pipeline-drawer-body{display:flex;flex:1 1 auto;min-height:0;flex-direction:column}
   #pipeline-drawer-body>.form{flex:1 1 auto;min-height:0;overflow:auto;align-content:start}
   .activity-form-drawer.task-form-drawer{width:25vw;min-width:420px;animation:none}
-  #pipeline-drawer-overlay .activity-form-drawer{animation:none}
   .activity-form-drawer .task-form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:11px 12px;padding:14px 16px}
   .activity-form-drawer .task-form-grid>.field{min-width:0}
   .activity-form-drawer .task-form-grid>.task-form-wide{grid-column:1 / -1}
