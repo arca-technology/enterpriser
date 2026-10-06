@@ -5170,6 +5170,7 @@ function renderDeliveryStatusMatrix(rows, kind, tasks = []) {
 }
 
 function deliveryGoalPercent(goal) {
+  if (goal.__percent != null) return goal.__percent;
   const current = Number(goal.current_value || 0);
   const target = Number(goal.target_value || 0);
   if (deliveryGoalReached(goal, current)) return 100;
@@ -5179,6 +5180,7 @@ function deliveryGoalPercent(goal) {
 }
 
 function deliveryObjectivePercent(objective, tasks) {
+  if (objective.__percent != null) return objective.__percent;
   if (objective.status === "done") return 100;
   const linked = tasks.filter((task) => task.objective_id === objective.id);
   return linked.length ? Math.round(linked.filter((task) => task.status === "done").length / linked.length * 100) : 0;
@@ -5211,12 +5213,12 @@ function deliveryOkrBoardHtml(objectives, goals, tasks) {
       <div class="okr-section"><span class="okr-tag">O</span><div class="okr-list">${group.objectives.map((objective) => {
         const percent = deliveryObjectivePercent(objective, tasks);
         const late = objective.due_date && objective.status !== "done" && objective.due_date < today;
-        return `<div class="okr-item"><strong>${esc(objective.name || "Objetivo")}</strong><small>${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+        return `<div class="okr-item"><strong>${esc(objective.name || "Objetivo")}</strong><small>${objective.__subtitle ? esc(objective.__subtitle) : `${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
       }).join("") || '<span class="muted">Sem objetivo nesta Categoria/Canal</span>'}</div></div>
       <div class="okr-section"><span class="okr-tag is-kr">KR</span><div class="okr-list">${group.goals.map((goal) => {
         const percent = deliveryGoalPercent(goal);
         const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
-        return `<div class="okr-item"><strong>${esc(goal.name || "Meta")}</strong><small>${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+        return `<div class="okr-item"><strong>${esc(goal.name || "Meta")}</strong><small>${goal.__subtitle ? `${esc(goal.__subtitle)} · alvo ${esc(target)}` : `${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
       }).join("") || '<span class="muted">Sem metas (resultados-chave) nesta Categoria/Canal</span>'}</div></div>
     </section>`;
   }).join("")}</div>`;
@@ -7016,7 +7018,7 @@ function openForm(tab, id, opts = {}) {
     const stageField = fs.find((f) => f.k === "stage");
     if (stageField) stageField.options = pipelineStageOptions(c, record?.pipeline_id);
   }
-  const inputs = fs.map((f) => {
+  const fieldHtml = (f) => {
     if (f.embedded) return "";
     let val = record ? record[f.k] : f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
@@ -7060,11 +7062,16 @@ function openForm(tab, id, opts = {}) {
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
     return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
-  }).join("");
+  };
+  // Entrega: ERP, canais, frete, empresa e contas financeiras ficam na aba Setup.
+  const setupKeys = new Set(["erp_platform", "marketplace_channels", "store_platforms", "freight_channels", "company_setup", "financial_accounts"]);
+  const inputs = tab === "projects"
+    ? `<div class="form-tab-panel" data-form-tab="general">${fs.filter((f) => !setupKeys.has(f.k)).map(fieldHtml).join("")}</div><div class="form-tab-panel" data-form-tab="setup" hidden><div class="panel-list form-tab-note">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</div>${fs.filter((f) => setupKeys.has(f.k)).map(fieldHtml).join("")}</div>`
+    : fs.map(fieldHtml).join("");
 
   const title = (id ? "Editar " : "Novo ") + SINGULAR[tab];
   const generatedNotice = tab === "projects"
-    ? `<div class="panel-list" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.<br><span class="muted">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</span></div>`
+    ? `<div class="form-tabs" role="tablist"><button class="form-tab active" type="button" role="tab" data-form-tab-btn="general">Dados</button><button class="form-tab" type="button" role="tab" data-form-tab-btn="setup">Setup</button></div><div class="panel-list" data-form-tab-note="general" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.</div>`
     : "";
   const body = `${generatedNotice}<div class="form${tab === "projects" ? " project-form" : ""}">${inputs}</div>
     <div class="modal-foot">
@@ -7086,6 +7093,12 @@ function openForm(tab, id, opts = {}) {
 
   document.getElementById("cancel").addEventListener("click", returnToPrevious);
   document.getElementById("save").addEventListener("click", () => saveForm(tab, id, fs, opts));
+  document.querySelectorAll("#modal-root [data-form-tab-btn]").forEach((button) => button.addEventListener("click", () => {
+    const panelRoot = button.closest(".modal") || document;
+    panelRoot.querySelectorAll("[data-form-tab-btn]").forEach((item) => item.classList.toggle("active", item === button));
+    panelRoot.querySelectorAll(".form-tab-panel").forEach((panel) => { panel.hidden = panel.dataset.formTab !== button.dataset.formTabBtn; });
+    panelRoot.querySelectorAll("[data-form-tab-note]").forEach((note) => { note.hidden = note.dataset.formTabNote !== button.dataset.formTabBtn; });
+  }));
   fs.filter((field) => field.type === "multi").forEach((field) => wireMultiPicker(`form-${field.k}`));
   fs.filter((field) => field.type === "search").forEach((field) => wireSingleSearchPicker(`form-${field.k}`));
   document.querySelectorAll("#modal-root [data-search-ref]").forEach((input) => {
@@ -8582,7 +8595,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
 
@@ -9042,6 +9055,7 @@ function renderRegistrationsSection() {
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
+    if (registrationTableState().view === "dashboard") root.innerHTML = registrationDashboardToolbarHtml(items.length, "meta(s)") + registrationGoalsDashboardHtml("goals", items);
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -9057,6 +9071,7 @@ function renderRegistrationsSection() {
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
+    if (registrationTableState().view === "dashboard") root.innerHTML = registrationDashboardToolbarHtml(items.length, "objetivo(s)") + registrationGoalsDashboardHtml("objectives", items);
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -9101,7 +9116,72 @@ function renderRegistrationsSection() {
     openProductObjectiveDrawer(null, button.dataset.id);
   }));
   if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
+  if (registrationTableState().view === "dashboard") root.querySelector("#registration-view-menu-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegistrationViewMenu();
+  });
+  if (!root.dataset.dashboardWired) {
+    root.dataset.dashboardWired = "1";
+    root.addEventListener("click", (event) => {
+      if (!event.target.closest(".registration-dashboard-btn")) return;
+      registrationTableState().view = "dashboard";
+      renderRegistrationsSection();
+    });
+  }
   wireRegistrationTable();
+}
+
+function registrationDashboardButtonHtml() {
+  const enabled = ["goals", "objectives"].includes(registrationsState.section);
+  const active = enabled && registrationTableState().view === "dashboard";
+  return `<button class="view${enabled ? " registration-dashboard-btn" : ""}${active ? " active" : ""}" type="button" title="Dashboard" aria-label="Dashboard"${enabled ? "" : " disabled"}>${viewButtonInner("dashboard")}</button>`;
+}
+
+// Dashboard de Cadastros: consolida, por modelo, as metas/objetivos de todas as entregas.
+function registrationGoalsDashboardHtml(kind, templates) {
+  const isGoals = kind === "goals";
+  const copies = (isGoals ? loadDeliveryGoals() : loadDeliveryObjectives()).filter((item) => templates.some((template) => template.id === item.source_template_id));
+  const tasks = loadProjectTasks();
+  const today = new Date().toISOString().slice(0, 10);
+  const percentOf = (item) => isGoals ? deliveryGoalPercent(item) : deliveryObjectivePercent(item, tasks);
+  const average = (values) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
+  const reached = copies.filter((item) => isGoals ? deliveryGoalReached(item) : item.status === "done");
+  const overdue = copies.filter((item) => item.due_date && item.status !== "done" && item.due_date < today);
+  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${label}</div><div class="v">${value}</div>${hint ? `<div class="metric-hint">${hint}</div>` : ""}</div>`;
+  const perTemplate = templates.map((template) => {
+    const linked = copies.filter((item) => item.source_template_id === template.id);
+    return { template, linked, percent: average(linked.map(percentOf)), reached: linked.filter((item) => isGoals ? deliveryGoalReached(item) : item.status === "done").length };
+  });
+  const cards = [
+    metric(isGoals ? "Modelos de metas" : "Modelos de objetivos", templates.length),
+    metric("Em entregas", copies.length, "Cópias nas entregas"),
+    metric(isGoals ? "Atingimento médio" : "Progresso médio", `${average(copies.map(percentOf))}%`, isGoals ? "Valor atual x valor-alvo" : "Tarefas concluídas"),
+    metric(isGoals ? "Atingidas" : "Concluídos", reached.length, copies.length ? `${Math.round(reached.length / copies.length * 100)}% das entregas` : ""),
+    metric(isGoals ? "Atrasadas" : "Atrasados", overdue.length)
+  ];
+  const list = perTemplate.length ? `<section class="dashboard-block"><h4>${isGoals ? "KPIs por modelo" : "Objetivos por modelo"}</h4><div class="kpi-list">${perTemplate.map(({ template, linked, percent, reached: done }) => `<div class="kpi-row"><div><strong>${esc(template.name || (isGoals ? "Meta" : "Objetivo"))}</strong><small>${esc(registrationProductName(template.product_id))}${isGoals && template.metric ? ` · ${esc(template.metric)}` : ""}</small></div><span class="kpi-values">${linked.length} <small>entrega(s) · ${done} ${isGoals ? "atingida(s)" : "concluído(s)"}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`).join("")}</div></section>` : "";
+  const goalTemplates = isGoals ? templates : loadProductGoals();
+  const objectiveTemplates = isGoals ? loadProductObjectives() : templates;
+  const allGoals = loadDeliveryGoals();
+  const allObjectives = loadDeliveryObjectives();
+  const virtual = (template, rows, percentFn, subtitle) => {
+    const linked = rows.filter((item) => item.source_template_id === template.id);
+    return { ...template, __percent: average(linked.map(percentFn)), __subtitle: `${registrationProductName(template.product_id)} · ${linked.length} entrega(s)${subtitle ? ` · ${subtitle}` : ""}` };
+  };
+  const okr = deliveryOkrBoardHtml(
+    objectiveTemplates.map((template) => virtual(template, allObjectives, (item) => deliveryObjectivePercent(item, tasks))),
+    goalTemplates.map((template) => virtual(template, allGoals, deliveryGoalPercent, template.metric || "")),
+    tasks
+  );
+  return `<div class="delivery-dashboard"><div class="project-dashboard">${cards.join("")}</div>${list}<section class="dashboard-block"><h4>OKR <small>Consolidado das entregas · Objetivos (O) e Resultados-chave (KR) ligados pela mesma Categoria e Canal</small></h4>${okr}</section></div>`;
+}
+
+function registrationDashboardToolbarHtml(count, label) {
+  return `<div class="modal-toolbar registration-toolbar">
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${count} ${label}</span></div>
+    <div class="registration-toolbar-center"><input class="search registration-toolbar-search" placeholder="Buscar..." disabled><button class="btn primary plus" type="button" disabled>+</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger" id="registration-view-menu-btn" type="button" title="Modo de visualização">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+  </div>`;
 }
 
 function registrationTableState() {
@@ -9203,7 +9283,7 @@ function setupRegistrationToolbar(root, table) {
   const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
     ? `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`
     : `<button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`;
-  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
+  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
   right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -12579,6 +12659,7 @@ const BPMN = { laneHead: 150, levelW: 130, levelH: 40, colW: 250, rowH: 140, lan
 let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
 let processFlowOrientation = (() => { try { return localStorage.getItem("processFlowOrientation") || "vertical"; } catch { return "vertical"; } })();
 let processFlowZoom = 1;
+let processFlowHandMode = false;
 
 function processStepTitle(step, index) {
   if (step.label) return step.label;
@@ -12812,6 +12893,169 @@ function processFlowDetailHtml(process, step, index) {
     ${currentUserCan("processes", "edit") ? '<button class="btn primary bpmn-detail-edit" type="button">Editar processo</button>' : ""}`;
 }
 
+function wrapFlowText(text, maxChars, maxLines) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > maxChars && line) { lines.push(line); line = word; }
+    else line = next;
+  });
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = `${kept[maxLines - 1].slice(0, Math.max(1, maxChars - 1))}…`;
+    return kept;
+  }
+  return lines;
+}
+
+// Monta o fluxo como SVG independente (tema claro) para salvar em PNG/PDF.
+function processFlowSvgMarkup(process, steps) {
+  const layout = processFlowLayout(steps, processFlowLaneBy, processFlowOrientation);
+  const color = { bg: "#ffffff", laneA: "#f7f9fc", laneB: "#eef2f7", head: "#e3e9f2", group: "#d6e2f5", border: "#cfd8e5", text: "#17243b", muted: "#5d6b82", blue: "#2f6bd8", cyan: "#1593b8", orange: "#d79422", red: "#d64545", green: "#2fb36d" };
+  const pad = 24;
+  const titleH = 46;
+  const width = layout.width + pad * 2;
+  const height = layout.height + pad * 2 + titleH;
+  const t = (x, y, value, size, weight = 600, fill = color.text, anchor = "start") => `<text x="${x}" y="${y}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${esc(value)}</text>`;
+  const lines = (x, y, values, size, weight, fill, anchor = "start", lineHeight = size * 1.3) => values.map((value, index) => t(x, y + index * lineHeight, value, size, weight, fill, anchor)).join("");
+  const parts = [];
+  parts.push(`<rect width="${width}" height="${height}" fill="${color.bg}"/>`);
+  parts.push(t(pad, 30, `Fluxo BPMN · ${process.title || "Processo"}`, 16, 800));
+  parts.push(t(width - pad, 30, [process.category, process.system_name].filter(Boolean).join(" · "), 11, 600, color.muted, "end"));
+  parts.push(`<g transform="translate(${pad},${pad + titleH - 10})">`);
+  layout.lanes.forEach((lane, index) => {
+    const start = layout.laneStart.get(lane.key);
+    const span = layout.laneSpan.get(lane.key);
+    parts.push(layout.vertical
+      ? `<rect x="${start}" y="0" width="${span}" height="${layout.height}" fill="${index % 2 ? color.laneB : color.laneA}" stroke="${color.border}"/>`
+      : `<rect x="0" y="${start}" width="${layout.width}" height="${span}" fill="${index % 2 ? color.laneB : color.laneA}" stroke="${color.border}"/>`);
+  });
+  const headCell = (start, span, level, text, fill) => {
+    if (layout.vertical) {
+      const x = start; const y = level * BPMN.levelH; const w = span; const h = BPMN.levelH;
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${color.border}"/>${lines(x + w / 2, y + h / 2 + 4, wrapFlowText(String(text).toLocaleUpperCase("pt-BR"), Math.max(8, Math.floor(w / 7)), 1), 10, 800, color.text, "middle")}`;
+    }
+    const w = layout.levels === 2 ? BPMN.levelW : BPMN.laneHead; const x = level * BPMN.levelW; const y = start; const h = span;
+    const wrapped = wrapFlowText(String(text).toLocaleUpperCase("pt-BR"), Math.floor(w / 7), 4);
+    return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${color.border}"/>${lines(x + w / 2, y + h / 2 - (wrapped.length - 1) * 6.5 + 4, wrapped, 10, 800, color.text, "middle", 13)}`;
+  };
+  if (layout.levels === 2) {
+    const groups = [];
+    layout.lanes.forEach((lane) => {
+      const last = groups[groups.length - 1];
+      if (last && last.group === lane.group) last.span += layout.laneSpan.get(lane.key);
+      else groups.push({ group: lane.group, start: layout.laneStart.get(lane.key), span: layout.laneSpan.get(lane.key) });
+    });
+    groups.forEach((group) => parts.push(headCell(group.start, group.span, 0, group.group, color.group)));
+    layout.lanes.forEach((lane) => parts.push(headCell(layout.laneStart.get(lane.key), layout.laneSpan.get(lane.key), 1, lane.name, color.head)));
+  } else layout.lanes.forEach((lane) => parts.push(headCell(layout.laneStart.get(lane.key), layout.laneSpan.get(lane.key), 0, lane.name, color.head)));
+  parts.push(`<defs><marker id="flow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="${color.cyan}"/></marker></defs>`);
+  layout.graph.edges.forEach((edge) => {
+    const path = processFlowEdgePath(edge, layout);
+    if (!path) return;
+    parts.push(`<path d="${path.d}" fill="none" stroke="${color.cyan}" stroke-width="1.5" marker-end="url(#flow-arrow)"/>`);
+    if (edge.label) parts.push(`<text x="${path.labelAt[0]}" y="${path.labelAt[1]}" font-size="10" font-weight="700" fill="${color.text}" stroke="${color.bg}" stroke-width="3" paint-order="stroke">${esc(edge.label)}</text>`);
+  });
+  layout.graph.nodes.forEach((node) => {
+    const box = layout.boxes.get(node.id);
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const labelX = layout.vertical ? box.x + box.w + 8 : cx;
+    const labelY = layout.vertical ? cy + 4 : box.y + box.h + 14;
+    const anchor = layout.vertical ? "start" : "middle";
+    if (node.kind === "start") {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="${box.w / 2 - 1}" fill="${color.bg}" stroke="${color.green}" stroke-width="2"/>`, t(labelX, labelY, "Início", 10, 700, color.muted, anchor));
+      return;
+    }
+    if (node.kind === "end") {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="${box.w / 2 - 3}" fill="${color.bg}" stroke="${color.red}" stroke-width="5"/>`, t(labelX, labelY, node.implicit ? "Fim" : processStepTitle(node.step, node.index), 10, 700, color.muted, anchor));
+      return;
+    }
+    if (node.kind === "decision") {
+      const r = box.w / 2 - 2;
+      parts.push(`<polygon points="${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}" fill="${color.bg}" stroke="${color.orange}" stroke-width="2"/>`);
+      const wrapped = wrapFlowText(node.step.label || "Decisão", 13, 3);
+      parts.push(lines(cx, cy - (wrapped.length - 1) * 6 + 3, wrapped, 9.5, 700, color.text, "middle", 12));
+      parts.push(`<circle cx="${cx}" cy="${box.y + 4}" r="10" fill="${color.orange}"/>`, t(cx, box.y + 7.5, String(node.index + 1), 9, 800, "#ffffff", "middle"));
+      return;
+    }
+    const step = node.step;
+    parts.push(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="8" fill="${color.bg}" stroke="${color.border}"/>`);
+    parts.push(`<rect x="${box.x}" y="${box.y}" width="3" height="${box.h}" rx="1.5" fill="${color.blue}"/>`);
+    parts.push(`<circle cx="${box.x + 18}" cy="${box.y + 18}" r="10" fill="${color.blue}"/>`, t(box.x + 18, box.y + 21.5, String(node.index + 1), 9, 800, "#ffffff", "middle"));
+    const title = wrapFlowText(processStepTitle(step, node.index), 24, 3);
+    parts.push(lines(box.x + 36, box.y + 22, title, 10.5, 700, color.text, "start", 13.5));
+    const meta = [step.label ? [step.system, step.module].filter(Boolean).join(" · ") : "", step.responsible && processFlowLaneBy !== "responsible" ? step.responsible : ""].filter(Boolean).join(" — ");
+    if (meta) parts.push(t(box.x + 36, box.y + 22 + title.length * 13.5 + 2, meta.length > 34 ? `${meta.slice(0, 33)}…` : meta, 9, 500, color.muted));
+  });
+  parts.push("</g>");
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="Urbanist, Arial, Helvetica, sans-serif">${parts.join("")}</svg>`, width, height };
+}
+
+async function processFlowPngBlob(process, steps, scale = 2) {
+  const { svg, width, height } = processFlowSvgMarkup(process, steps);
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Não foi possível gerar a imagem do fluxo."));
+      img.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const context = canvas.getContext("2d");
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    return { blob, dataUrl: canvas.toDataURL("image/png"), width, height };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function loadJsPdf() {
+  if (window.jspdf?.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    script.onload = () => window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error("PDF indisponível."));
+    script.onerror = () => reject(new Error("Não foi possível carregar o gerador de PDF."));
+    document.head.appendChild(script);
+  });
+}
+
+async function exportProcessFlow(process, steps, format) {
+  if (!steps.length) { toast("Cadastre etapas para exportar o fluxo.", true); return; }
+  const baseName = `fluxo_${String(process.title || "processo").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase() || "processo"}`;
+  try {
+    const image = await processFlowPngBlob(process, steps, format === "pdf" ? 2 : 2);
+    if (format === "png") {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(image.blob);
+      link.download = `${baseName}.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+      toast("PNG do fluxo salvo.");
+      return;
+    }
+    const JsPdf = await loadJsPdf();
+    const orientation = image.width >= image.height ? "landscape" : "portrait";
+    const pdf = new JsPdf({ orientation, unit: "pt", format: [image.width, image.height] });
+    pdf.addImage(image.dataUrl, "PNG", 0, 0, image.width, image.height);
+    pdf.save(`${baseName}.pdf`);
+    toast("PDF do fluxo salvo.");
+  } catch (err) {
+    toast("Erro ao exportar o fluxo · " + err.message, true);
+  }
+}
+
 function openToolProcessFlow(id) {
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process) return;
@@ -12821,16 +13065,23 @@ function openToolProcessFlow(id) {
     <div class="bpmn-toolbar">
       <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
     </div>
-    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span>${laneButtons()}<span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
+    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span>${laneButtons()}<span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-hand${processFlowHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar, inclusive sobre as etapas" aria-label="Mãozinha" aria-pressed="${processFlowHandMode}">✋</button><button class="view bpmn-fullscreen" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button><span class="bpmn-export"><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-lane-btn bpmn-export-pdf" type="button" title="Salvar o fluxo em PDF">PDF</button><button class="view bpmn-lane-btn bpmn-export-png" type="button" title="Salvar o fluxo em PNG">PNG</button></span></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-flow-close">Fechar</button></div>`;
-  const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, { cls: "full process-flow-modal", closeOnOverlay: true });
+  let flowCleanup = null;
+  const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, {
+    cls: "full process-flow-modal",
+    closeOnOverlay: true,
+    onClose: () => { flowCleanup?.(); if (document.fullscreenElement) document.exitFullscreen?.()?.catch(() => {}); }
+  });
   document.getElementById("tool-process-flow-close").addEventListener("click", closeFlow);
   const view = document.querySelector(".process-flow-modal .bpmn-view");
   if (!view) return;
   const scroller = view.querySelector(".bpmn-scroll");
   const detail = view.querySelector(".bpmn-detail");
   const zoomLabel = view.querySelector(".bpmn-zoom-reset");
+  let suppressNodeClick = false;
   const wireNodes = () => scroller.querySelectorAll(".bpmn-node[data-step]").forEach((node) => node.addEventListener("click", () => {
+    if (suppressNodeClick) { suppressNodeClick = false; return; }
     const index = steps.findIndex((step) => step.id === node.dataset.step);
     scroller.querySelectorAll(".bpmn-node.is-selected").forEach((item) => item.classList.remove("is-selected"));
     node.classList.add("is-selected");
@@ -12895,17 +13146,47 @@ function openToolProcessFlow(id) {
   }, { passive: false });
   let drag = null;
   scroller.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || event.pointerType === "touch" || event.target.closest(".bpmn-node[data-step]")) return;
-    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId };
-    scroller.setPointerCapture?.(event.pointerId);
-    scroller.classList.add("is-panning");
+    suppressNodeClick = false;
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (!processFlowHandMode && event.target.closest(".bpmn-node[data-step]")) return;
+    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId, moved: false };
   });
   scroller.addEventListener("pointermove", (event) => {
     if (!drag || event.pointerId !== drag.id) return;
-    scroller.scrollLeft = drag.left - (event.clientX - drag.x);
-    scroller.scrollTop = drag.top - (event.clientY - drag.y);
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) { drag.moved = true; scroller.setPointerCapture?.(drag.id); scroller.classList.add("is-panning"); }
+    scroller.scrollLeft = drag.left - dx;
+    scroller.scrollTop = drag.top - dy;
   });
-  const endDrag = () => { drag = null; scroller.classList.remove("is-panning"); };
+  const endDrag = () => { if (drag?.moved) suppressNodeClick = true; drag = null; scroller.classList.remove("is-panning"); };
+  const modal = view.closest(".process-flow-modal");
+  view.querySelector(".bpmn-hand").addEventListener("click", (event) => {
+    processFlowHandMode = !processFlowHandMode;
+    event.currentTarget.classList.toggle("active", processFlowHandMode);
+    event.currentTarget.setAttribute("aria-pressed", String(processFlowHandMode));
+    view.classList.toggle("is-hand", processFlowHandMode);
+  });
+  view.classList.toggle("is-hand", processFlowHandMode);
+  const setFullscreen = (on, touchBrowser = true) => {
+    modal?.classList.toggle("is-fullscreen", on);
+    const button = view.querySelector(".bpmn-fullscreen");
+    button.textContent = on ? "✕" : "⛶";
+    button.title = on ? "Sair da tela cheia (Esc)" : "Tela cheia";
+    button.classList.toggle("active", on);
+    if (!touchBrowser) return;
+    try {
+      if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.()?.catch(() => {});
+      else if (!on && document.fullscreenElement) document.exitFullscreen?.()?.catch(() => {});
+    } catch {}
+  };
+  view.querySelector(".bpmn-fullscreen").addEventListener("click", () => setFullscreen(!modal?.classList.contains("is-fullscreen")));
+  const onFullscreenChange = () => { if (!document.fullscreenElement && modal?.classList.contains("is-fullscreen")) setFullscreen(false, false); };
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  flowCleanup = () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  view.querySelector(".bpmn-export-png").addEventListener("click", () => exportProcessFlow(process, steps, "png"));
+  view.querySelector(".bpmn-export-pdf").addEventListener("click", () => exportProcessFlow(process, steps, "pdf"));
   scroller.addEventListener("pointerup", endDrag);
   scroller.addEventListener("pointercancel", endDrag);
   let pinch = null;
