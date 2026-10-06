@@ -13,6 +13,9 @@ export function LegacyCrm({ assetVersion }: { assetVersion: string }) {
     window.CRM_CONFIG = legacyConfig;
     window.XLSX = XLSX;
     setConfigReady(true);
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/cms-sw.js", { scope: "/cms" }).catch(() => {});
+    }
   }, []);
 
   return (
