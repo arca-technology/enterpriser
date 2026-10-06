@@ -4795,7 +4795,7 @@ function openProjectBoard(projectId) {
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Entrega · ${esc(project.name || "Sem nome")}</em></span>`
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
     projectBoardState.section = button.dataset.projectSection;
@@ -5252,13 +5252,14 @@ function projectToolbarHtml(client, product, total) {
   const primaryModes = new Set(PROJECT_VIEW_MODES.map((mode) => mode.id));
   const activePrimaryMode = primaryModes.has(projectBoardState.view) ? projectBoardState.view : "table";
   const activePrimaryLabel = PROJECT_VIEW_MODES.find((mode) => mode.id === activePrimaryMode)?.label || "Tabela";
+  const projectName = (cache?.projects || []).find((item) => item.id === projectBoardState.projectId)?.name || "Sem nome";
   return `<div class="project-head project-data-toolbar">
-    <div class="registration-toolbar-left"><div class="project-meta"><span>${esc(client)}</span><span>·</span><span>${esc(product)}</span><span>·</span><span>${total} ${sectionLabel}</span></div></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title" title="${esc(projectName)}">${esc(projectName)}</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
       <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização: ${esc(activePrimaryLabel)}">${viewTriggerInner(activePrimaryMode)}</button>
-      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz">${viewIcon("matrix")}</button>
-      <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard" title="Dashboard" aria-label="Dashboard">${viewIcon("dashboard")}</button>
+      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>
+      <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard" title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button>
       <button class="btn project-data-btn" type="button" title="Dados">⬆⬇</button>
     </div>
   </div>`;
@@ -6054,7 +6055,9 @@ const VIEW_ICON_PATHS = {
   dashboard: '<path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/>'
 };
 const viewIcon = (id) => `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
-const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="chevron">▾</span>`;
+const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", mindmap: "Mapa mental", matrix: "Matriz", dashboard: "Dashboard" };
+const viewButtonInner = (id) => `${viewIcon(id)}<span class="view-label">${VIEW_LABELS[id] || ""}</span>`;
+const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="view-label">${VIEW_LABELS[id] || "Tabela"}</span><span class="chevron">▾</span>`;
 const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa mental", icon: "⌘" }];
 
 function viewModeAvailable(mode, tab = state.tab) {
@@ -6757,6 +6760,7 @@ function render() {
   viewMenuButton.disabled = hasConversationSelection;
   viewMenuButton.classList.toggle("active", !isHome);
   document.getElementById("view-menu-label").innerHTML = viewIcon(activeMode.id);
+  document.getElementById("view-menu-text").textContent = activeMode.label;
   viewMenuButton.title = `Modo de visualização: ${activeMode.label}`;
   document.getElementById("search").disabled = isHome;
   document.getElementById("new").disabled = isHome || !currentUserCan(state.tab, "create");
@@ -8402,7 +8406,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewIcon("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewIcon("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${map.html}`;
 }
 
@@ -9016,7 +9020,7 @@ function setupRegistrationToolbar(root, table) {
   const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
     ? `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`
     : `<button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`;
-  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewIcon("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewIcon("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
+  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
   right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -10111,7 +10115,7 @@ function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlacehold
   return `<div class="tools-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">Ferramentas</span><span class="muted">${count} item(ns)</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewIcon("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewIcon("dashboard")}</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
   </div>`;
 }
 
@@ -10300,7 +10304,6 @@ function openSocialModal(section = "home") {
   socialState.section = section === "home" || available.includes(section) ? section : "home";
   socialState.search = "";
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Social">
-    <button class="modal-header-tab${socialState.section === "home" ? " active" : ""}" data-social-tab="home" role="tab">Home</button>
     ${Object.entries(SOCIAL_MODULE_LABELS).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
@@ -10377,7 +10380,7 @@ function renderSocialSection() {
   root.innerHTML = `<div class="tools-toolbar">
       <div class="registration-toolbar-left"><span class="registration-toolbar-title">Social</span><span class="muted">0 item(ns)</span></div>
       <div class="registration-toolbar-center"><input class="search registration-toolbar-search social-search" placeholder="Buscar..." value="${esc(socialState.search)}"><button class="btn primary plus" type="button" disabled title="Cadastro será definido">+</button></div>
-      <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewIcon("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewIcon("dashboard")}</button><button class="btn social-data-btn" type="button" title="Dados">⬆⬇</button></div>
+      <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn social-data-btn" type="button" title="Dados">⬆⬇</button></div>
     </div>
     <div class="registration-filter-strip tools-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-social-key="${esc(column.k)}" title="Clique para ordenar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody><tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum registro em ${esc(SOCIAL_MODULE_LABELS[socialState.section])}.</td></tr></tbody></table></div>

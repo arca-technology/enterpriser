@@ -119,9 +119,18 @@
   .view-menu-trigger.active{background:var(--blue);border-color:var(--blue);color:#fff}
   .view-menu-trigger.active .chevron{color:#dbe8ff}
   .view-menu-trigger .chevron{font-size:10px;color:var(--muted)}
-  .sb-right button.view,.registration-toolbar-right button.view{display:inline-flex;align-items:center;justify-content:center;width:38px;flex:0 0 38px;padding:0}
-  .sb-right button.view-menu-trigger,.registration-toolbar-right button.view-menu-trigger{width:54px;flex:0 0 54px;gap:3px;padding:0 8px;justify-content:center}
-  .view-menu-icon{display:inline-flex;align-items:center}
+  .sb-right button.view,.registration-toolbar-right button.view{display:inline-flex;align-items:center;justify-content:center;width:112px;flex:0 0 112px;padding:0 9px;white-space:nowrap}
+  .sb-right button.view-menu-trigger,.registration-toolbar-right button.view-menu-trigger{width:112px;flex:0 0 112px;gap:4px;padding:0 9px;letter-spacing:.2px;white-space:nowrap}
+  .sb-right .view-svg,.registration-toolbar-right .view-svg,.view-menu-icon{display:none}
+  .view-menu-icon{align-items:center}
+  @media (max-width:1279px),(pointer:coarse){
+    .sb-right button.view,.registration-toolbar-right button.view{width:38px;flex:0 0 38px;padding:0}
+    .sb-right button.view-menu-trigger,.registration-toolbar-right button.view-menu-trigger{width:54px;flex:0 0 54px;gap:3px;padding:0 8px;justify-content:center}
+    .sb-right .view-label,.registration-toolbar-right .view-label{display:none}
+    .sb-right .view-svg,.registration-toolbar-right .view-svg{display:inline-block}
+    .view-menu-icon{display:inline-flex}
+  }
+  .registration-toolbar-left .registration-toolbar-title{min-width:0;overflow:hidden;text-overflow:ellipsis}
   .view-svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
   .registration-mindmap-scroll{touch-action:pan-x pan-y}
   @media (pointer:coarse){thead th{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}}
@@ -1415,9 +1424,9 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </div>
     <div class="sb-right">
       <button class="btn" id="data-btn" title="Dados">⬆⬇</button>
-      <button class="view" id="v-dashboard" data-view="dashboard" title="Dashboard" aria-label="Dashboard"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/></svg></button>
-      <button class="view" id="v-matrix" data-view="matrix" title="Matriz" aria-label="Matriz"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/></svg></button>
-      <button class="btn view-menu-trigger" id="view-menu-btn" title="Modo de visualização"><span class="view-menu-icon" id="view-menu-label"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8.5h14M3 12.5h14M8 4v12"/></svg></span><span class="chevron">▾</span></button>
+      <button class="view" id="v-dashboard" data-view="dashboard" title="Dashboard" aria-label="Dashboard"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/></svg><span class="view-label">Dashboard</span></button>
+      <button class="view" id="v-matrix" data-view="matrix" title="Matriz" aria-label="Matriz"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/></svg><span class="view-label">Matriz</span></button>
+      <button class="btn view-menu-trigger" id="view-menu-btn" title="Modo de visualização"><span class="view-menu-icon" id="view-menu-label"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8.5h14M3 12.5h14M8 4v12"/></svg></span><span class="view-label" id="view-menu-text">Tabela</span><span class="chevron">▾</span></button>
       <button class="btn" id="cols-btn" title="Selecionar colunas">⊞</button>
       <button class="btn" id="group-client-btn" title="Agrupar tarefas por cliente" aria-label="Agrupar tarefas por cliente" aria-pressed="false" hidden>≡</button>
       <div class="selection-actions" id="selection-actions">
