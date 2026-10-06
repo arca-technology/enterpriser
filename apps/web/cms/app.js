@@ -8928,10 +8928,10 @@ const HELP_PAGES = {
     ] },
   "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
     lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
-    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Consolida todas as entregas: KPIs por modelo e OKR médio."]] }] },
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
     lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
-    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Consolida o progresso de todas as entregas."]] }] },
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
     lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
     sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
@@ -8943,7 +8943,7 @@ const HELP_PAGES = {
     sections: [
       { title: "Cadastrar as etapas", steps: ["Preencha Categoria, Canal, Módulo e Submódulo.", "Adicione as etapas e escolha o elemento: <b>Tarefa</b>, <b>Decisão</b> ou <b>Fim</b>.", "Defina o responsável (cargo, Cliente ou Sistema) e a próxima etapa.", "Nas decisões, rotule as saídas (ex.: Sim → 4, Não → 2)."],
         tips: ["Escolher uma etapa anterior como próxima cria um retrabalho (loop)."] },
-      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "Por Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
+      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "No botão à direita do painel: Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["ⓘ Detalhes", "Ao lado das raias. Ativo, cada etapa mostra no próprio fluxo responsável, sistema, módulo, grupo, tipo e detalhes."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
     ] },
   "tool-documents": { kicker: "Ferramentas", title: "Documentação", path: ["Rodapé", "Ferramentas", "Documentação"],
     lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
@@ -10220,7 +10220,6 @@ function renderRegistrationsSection() {
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
-    if (registrationTableState().view === "dashboard") root.innerHTML = registrationDashboardToolbarHtml(items.length, "meta(s)") + registrationGoalsDashboardHtml("goals", items);
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -10236,7 +10235,6 @@ function renderRegistrationsSection() {
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
     if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
-    if (registrationTableState().view === "dashboard") root.innerHTML = registrationDashboardToolbarHtml(items.length, "objetivo(s)") + registrationGoalsDashboardHtml("objectives", items);
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -10281,72 +10279,13 @@ function renderRegistrationsSection() {
     openProductObjectiveDrawer(null, button.dataset.id);
   }));
   if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
-  if (registrationTableState().view === "dashboard") root.querySelector("#registration-view-menu-btn")?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    openRegistrationViewMenu();
-  });
-  if (!root.dataset.dashboardWired) {
-    root.dataset.dashboardWired = "1";
-    root.addEventListener("click", (event) => {
-      if (!event.target.closest(".registration-dashboard-btn")) return;
-      registrationTableState().view = "dashboard";
-      renderRegistrationsSection();
-    });
-  }
   wireRegistrationTable();
 }
 
+// Dashboard de metas e objetivos fica só dentro da entrega (ícone de olho),
+// onde há dados reais; em Cadastros o botão segue o padrão, desativado.
 function registrationDashboardButtonHtml() {
-  const enabled = ["goals", "objectives"].includes(registrationsState.section);
-  const active = enabled && registrationTableState().view === "dashboard";
-  return `<button class="view${enabled ? " registration-dashboard-btn" : ""}${active ? " active" : ""}" type="button" title="Dashboard" aria-label="Dashboard"${enabled ? "" : " disabled"}>${viewButtonInner("dashboard")}</button>`;
-}
-
-// Dashboard de Cadastros: consolida, por modelo, as metas/objetivos de todas as entregas.
-function registrationGoalsDashboardHtml(kind, templates) {
-  const isGoals = kind === "goals";
-  const copies = (isGoals ? loadDeliveryGoals() : loadDeliveryObjectives()).filter((item) => templates.some((template) => template.id === item.source_template_id));
-  const tasks = loadProjectTasks();
-  const today = new Date().toISOString().slice(0, 10);
-  const percentOf = (item) => isGoals ? deliveryGoalPercent(item) : deliveryObjectivePercent(item, tasks);
-  const average = (values) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
-  const reached = copies.filter((item) => isGoals ? deliveryGoalReached(item) : item.status === "done");
-  const overdue = copies.filter((item) => item.due_date && item.status !== "done" && item.due_date < today);
-  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${label}</div><div class="v">${value}</div>${hint ? `<div class="metric-hint">${hint}</div>` : ""}</div>`;
-  const perTemplate = templates.map((template) => {
-    const linked = copies.filter((item) => item.source_template_id === template.id);
-    return { template, linked, percent: average(linked.map(percentOf)), reached: linked.filter((item) => isGoals ? deliveryGoalReached(item) : item.status === "done").length };
-  });
-  const cards = [
-    metric(isGoals ? "Modelos de metas" : "Modelos de objetivos", templates.length),
-    metric("Em entregas", copies.length, "Cópias nas entregas"),
-    metric(isGoals ? "Atingimento médio" : "Progresso médio", `${average(copies.map(percentOf))}%`, isGoals ? "Valor atual x valor-alvo" : "Tarefas concluídas"),
-    metric(isGoals ? "Atingidas" : "Concluídos", reached.length, copies.length ? `${Math.round(reached.length / copies.length * 100)}% das entregas` : ""),
-    metric(isGoals ? "Atrasadas" : "Atrasados", overdue.length)
-  ];
-  const list = perTemplate.length ? `<section class="dashboard-block"><h4>${isGoals ? "KPIs por modelo" : "Objetivos por modelo"}</h4><div class="kpi-list">${perTemplate.map(({ template, linked, percent, reached: done }) => `<div class="kpi-row"><div><strong>${esc(template.name || (isGoals ? "Meta" : "Objetivo"))}</strong><small>${esc(registrationProductName(template.product_id))}${isGoals && template.metric ? ` · ${esc(template.metric)}` : ""}</small></div><span class="kpi-values">${linked.length} <small>entrega(s) · ${done} ${isGoals ? "atingida(s)" : "concluído(s)"}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`).join("")}</div></section>` : "";
-  const goalTemplates = isGoals ? templates : loadProductGoals();
-  const objectiveTemplates = isGoals ? loadProductObjectives() : templates;
-  const allGoals = loadDeliveryGoals();
-  const allObjectives = loadDeliveryObjectives();
-  const virtual = (template, rows, percentFn, subtitle) => {
-    const linked = rows.filter((item) => item.source_template_id === template.id);
-    return { ...template, __percent: average(linked.map(percentFn)), __subtitle: `${registrationProductName(template.product_id)} · ${linked.length} entrega(s)${subtitle ? ` · ${subtitle}` : ""}` };
-  };
-  const okr = deliveryOkrBoardHtml(
-    objectiveTemplates.map((template) => virtual(template, allObjectives, (item) => deliveryObjectivePercent(item, tasks))),
-    goalTemplates.map((template) => virtual(template, allGoals, deliveryGoalPercent, template.metric || "")),
-    tasks
-  );
-  return `<div class="delivery-dashboard"><div class="project-dashboard">${cards.join("")}</div>${list}<section class="dashboard-block"><h4>OKR <small>Consolidado das entregas · Objetivos (O) e Resultados-chave (KR) ligados pela mesma Categoria e Canal</small></h4>${okr}</section></div>`;
-}
-
-function registrationDashboardToolbarHtml(count, label) {
-  return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${count} ${label}</span></div>
-    <div class="registration-toolbar-center"><input class="search registration-toolbar-search" placeholder="Buscar..." disabled><button class="btn primary plus" type="button" disabled>+</button></div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger" id="registration-view-menu-btn" type="button" title="Modo de visualização">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
-  </div>`;
+  return `<button class="view" type="button" title="Dashboard (disponível dentro da entrega)" aria-label="Dashboard" disabled>${viewButtonInner("dashboard")}</button>`;
 }
 
 function registrationTableState() {
@@ -10354,7 +10293,7 @@ function registrationTableState() {
     registrationsState.tables[registrationsState.section] = { sortKey: null, sortDir: 1, filters: {}, search: "", page: 1, pageSize: 50, view: "table" };
   }
   const state = registrationsState.tables[registrationsState.section];
-  if (!state.view) state.view = "table";
+  if (!state.view || state.view === "dashboard") state.view = "table";
   return state;
 }
 
@@ -13971,6 +13910,10 @@ function openToolProcess(id) {
 const PROCESS_ELEMENTS = { task: "Tarefa", decision: "Decisão", end: "Fim" };
 const PROCESS_LANE_OPTIONS = [["responsible", "Responsável"], ["system", "Sistema"], ["module", "Módulo"]];
 const BPMN = { laneHead: 150, levelW: 130, levelH: 40, colW: 250, rowH: 140, laneW: 236, rankH: 150, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
+const BPMN_COMPACT = { rowH: 140, rankH: 150, taskH: 92 };
+const BPMN_DETAILED = { rowH: 236, rankH: 244, taskH: 188 };
+let processFlowShowDetails = (() => { try { return localStorage.getItem("processFlowShowDetails") === "1"; } catch { return false; } })();
+Object.assign(BPMN, processFlowShowDetails ? BPMN_DETAILED : BPMN_COMPACT);
 let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
 let processFlowOrientation = (() => { try { return localStorage.getItem("processFlowOrientation") || "vertical"; } catch { return "vertical"; } })();
 let processFlowZoom = 1;
@@ -14183,6 +14126,10 @@ function processFlowCanvasHtml(process, steps) {
     }
     if (node.kind === "decision") return `<button class="bpmn-node bpmn-decision" type="button" style="${style}" data-step="${esc(step.id)}" title="${esc(step.label)}"><span class="bpmn-diamond" aria-hidden="true"></span><span class="bpmn-decision-text">${esc(step.label || "Decisão")}</span><span class="bpmn-number">${node.index + 1}</span></button>`;
     const meta = [step.system, step.module].filter(Boolean).join(" · ");
+    if (processFlowShowDetails) {
+      const rows = [["Resp.", step.responsible], ["Sistema", step.system], ["Módulo", [step.module, step.submodule].filter(Boolean).join(" › ")], ["Grupo", step.group], ["Tipo", step.type]].filter(([, value]) => value);
+      return `<button class="bpmn-node bpmn-task is-detailed" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${rows.length ? `<span class="bpmn-task-meta">${rows.map(([label, value]) => `<span><b>${label}</b> ${esc(value)}</span>`).join("")}</span>` : ""}${step.details ? `<span class="bpmn-task-notes">${esc(step.details)}</span>` : ""}${safeHttpUrl(step.url) ? '<span class="bpmn-task-link">🔗 Link de referência</span>' : ""}</button>`;
+    }
     return `<button class="bpmn-node bpmn-task" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${step.label && meta ? `<small>${esc(meta)}</small>` : ""}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
   }).join("");
   return `<div class="bpmn-canvas${layout.vertical ? " is-vertical" : ""}" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${processFlowHeadsHtml(layout)}${bands}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
@@ -14375,12 +14322,12 @@ function openToolProcessFlow(id) {
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process) return;
   const steps = normalizeProcessSteps(process.steps);
-  const laneButtons = () => PROCESS_LANE_OPTIONS.map(([value, label]) => `<button class="view bpmn-lane-btn${processFlowLaneBy === value ? " active" : ""}" type="button" data-lane-by="${value}" title="Raias por ${label}">${label}</button>`).join("");
+  const laneLabel = () => (PROCESS_LANE_OPTIONS.find(([value]) => value === processFlowLaneBy) || PROCESS_LANE_OPTIONS[0])[1];
   const content = `<div class="bpmn-view">
     <div class="bpmn-toolbar">
       <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
     </div>
-    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span>${laneButtons()}<span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-hand${processFlowHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar, inclusive sobre as etapas" aria-label="Mãozinha" aria-pressed="${processFlowHandMode}">✋</button><button class="view bpmn-fullscreen" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button><span class="bpmn-export"><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-lane-btn bpmn-export-pdf" type="button" title="Salvar o fluxo em PDF">PDF</button><button class="view bpmn-lane-btn bpmn-export-png" type="button" title="Salvar o fluxo em PNG">PNG</button></span></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
+    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-hand${processFlowHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar, inclusive sobre as etapas" aria-label="Mãozinha" aria-pressed="${processFlowHandMode}">✋</button><button class="view bpmn-fullscreen" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button><span class="bpmn-floating-sep" aria-hidden="true"></span><span class="bpmn-lane-group"><button class="view bpmn-details-toggle${processFlowShowDetails ? " active" : ""}" type="button" title="Mostrar detalhes nas etapas" aria-label="Mostrar detalhes nas etapas" aria-pressed="${processFlowShowDetails}">ⓘ</button><button class="view bpmn-lane-btn bpmn-lane-menu-btn" type="button" title="Raias do fluxo">${laneLabel()} ▾</button></span><span class="bpmn-export"><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-lane-btn bpmn-export-pdf" type="button" title="Salvar o fluxo em PDF">PDF</button><button class="view bpmn-lane-btn bpmn-export-png" type="button" title="Salvar o fluxo em PNG">PNG</button></span></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-flow-close">Fechar</button></div>`;
   let flowCleanup = null;
   const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, {
@@ -14427,13 +14374,35 @@ function openToolProcessFlow(id) {
     detail.hidden = true;
     redraw();
   }));
-  view.querySelectorAll("[data-lane-by]").forEach((button) => button.addEventListener("click", () => {
-    processFlowLaneBy = button.dataset.laneBy;
-    try { localStorage.setItem("processFlowLaneBy", processFlowLaneBy); } catch {}
-    view.querySelectorAll("[data-lane-by]").forEach((item) => item.classList.toggle("active", item === button));
-    detail.hidden = true;
+  const laneMenuButton = view.querySelector(".bpmn-lane-menu-btn");
+  laneMenuButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const existing = view.querySelector(".bpmn-lane-menu");
+    if (existing) { existing.remove(); return; }
+    const menu = document.createElement("div");
+    menu.className = "bpmn-lane-menu";
+    menu.innerHTML = `<div class="bpmn-lane-menu-head">Raias por</div>${PROCESS_LANE_OPTIONS.map(([value, label]) => `<button type="button" data-lane-by="${value}" class="${processFlowLaneBy === value ? "active" : ""}">${processFlowLaneBy === value ? "✓ " : ""}${label}</button>`).join("")}`;
+    laneMenuButton.parentElement.appendChild(menu);
+    const close = (clickEvent) => { if (!menu.contains(clickEvent.target)) { menu.remove(); document.removeEventListener("mousedown", close, true); } };
+    setTimeout(() => document.addEventListener("mousedown", close, true), 0);
+    menu.querySelectorAll("[data-lane-by]").forEach((button) => button.addEventListener("click", () => {
+      processFlowLaneBy = button.dataset.laneBy;
+      try { localStorage.setItem("processFlowLaneBy", processFlowLaneBy); } catch {}
+      laneMenuButton.textContent = `${laneLabel()} ▾`;
+      menu.remove();
+      document.removeEventListener("mousedown", close, true);
+      detail.hidden = true;
+      redraw();
+    }));
+  });
+  view.querySelector(".bpmn-details-toggle").addEventListener("click", (event) => {
+    processFlowShowDetails = !processFlowShowDetails;
+    try { localStorage.setItem("processFlowShowDetails", processFlowShowDetails ? "1" : "0"); } catch {}
+    Object.assign(BPMN, processFlowShowDetails ? BPMN_DETAILED : BPMN_COMPACT);
+    event.currentTarget.classList.toggle("active", processFlowShowDetails);
+    event.currentTarget.setAttribute("aria-pressed", String(processFlowShowDetails));
     redraw();
-  }));
+  });
   const setZoom = (next, clientX, clientY) => {
     const canvas = scroller.querySelector(".bpmn-canvas");
     if (!canvas) return;
