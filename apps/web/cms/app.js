@@ -10673,7 +10673,16 @@ function normalizeProcessSteps(value) {
     group: String(step?.group || "").trim(),
     type: String(step?.type || "").trim(),
     url: String(step?.url || "").trim(),
-    details: String(step?.details || step?.instruction || "").trim()
+    details: String(step?.details || step?.instruction || "").trim(),
+    element: PROCESS_ELEMENTS[step?.element] ? step.element : "task",
+    label: String(step?.label || "").trim(),
+    responsible: String(step?.responsible || "").trim(),
+    next: String(step?.next || "").trim(),
+    outcomes: (Array.isArray(step?.outcomes) ? step.outcomes : []).map((outcome) => ({
+      id: String(outcome?.id || crypto.randomUUID()),
+      label: String(outcome?.label || "").trim(),
+      target: String(outcome?.target || "").trim()
+    }))
   })) : [];
 }
 
@@ -12427,115 +12436,290 @@ function openToolProcess(id) {
   document.getElementById("tool-process-detail-edit")?.addEventListener("click", () => { closePanel(); openToolProcessForm(id); });
 }
 
+const PROCESS_ELEMENTS = { task: "Tarefa", decision: "Decisão", end: "Fim" };
+const PROCESS_LANE_OPTIONS = [["responsible", "Responsável"], ["system", "Sistema"], ["module", "Módulo"]];
+const BPMN = { laneHead: 150, colW: 250, rowH: 140, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
+let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
+let processFlowZoom = 1;
+
+function processStepTitle(step, index) {
+  if (step.label) return step.label;
+  if (step.element === "end") return "Fim";
+  return [step.system, step.module, step.submodule].filter(Boolean).join(" · ") || `Etapa ${index + 1}`;
+}
+
+function processFlowGraph(steps) {
+  const nodes = [{ id: "__start", kind: "start" }];
+  steps.forEach((step, index) => nodes.push({ id: step.id, kind: step.element || "task", step, index }));
+  const known = new Set(steps.map((step) => step.id));
+  const edges = [];
+  let needsEnd = false;
+  const nextOf = (index) => {
+    if (index + 1 < steps.length) return steps[index + 1].id;
+    needsEnd = true;
+    return "__end";
+  };
+  if (steps.length) edges.push({ from: "__start", to: steps[0].id });
+  else { needsEnd = true; edges.push({ from: "__start", to: "__end" }); }
+  steps.forEach((step, index) => {
+    if (step.element === "end") return;
+    if (step.element === "decision" && step.outcomes?.length) {
+      step.outcomes.forEach((outcome, outcomeIndex) => edges.push({ from: step.id, to: known.has(outcome.target) ? outcome.target : nextOf(index), label: outcome.label, exit: outcomeIndex }));
+      return;
+    }
+    edges.push({ from: step.id, to: known.has(step.next) ? step.next : nextOf(index) });
+  });
+  if (needsEnd) nodes.push({ id: "__end", kind: "end", implicit: true, index: steps.length });
+  return { nodes, edges };
+}
+
+function processFlowLayout(steps, laneBy) {
+  const graph = processFlowGraph(steps);
+  const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
+  const laneValue = (step) => String((laneBy === "system" ? step?.system : laneBy === "module" ? step?.module : step?.responsible) || "").trim();
+  const emptyLane = laneBy === "system" ? "Sem sistema" : laneBy === "module" ? "Sem módulo" : "Sem responsável";
+  const lanes = [];
+  const laneOf = new Map();
+  graph.nodes.forEach((node) => {
+    let source = node.step;
+    if (node.kind === "start") source = steps[0];
+    if (node.implicit) source = steps[steps.length - 1];
+    const name = laneValue(source) || emptyLane;
+    if (!lanes.includes(name)) lanes.push(name);
+    laneOf.set(node.id, name);
+  });
+  const column = new Map();
+  graph.nodes.forEach((node, index) => {
+    if (node.kind === "start") { column.set(node.id, 0); return; }
+    const incoming = graph.edges.filter((edge) => edge.to === node.id && order.get(edge.from) < index && column.has(edge.from));
+    column.set(node.id, incoming.length ? Math.max(...incoming.map((edge) => column.get(edge.from) + 1)) : (column.get(graph.nodes[index - 1].id) || 0) + 1);
+  });
+  const slots = new Map();
+  const slotOf = new Map();
+  graph.nodes.forEach((node) => {
+    const key = `${laneOf.get(node.id)}|${column.get(node.id)}`;
+    const slot = slots.get(key) || 0;
+    slots.set(key, slot + 1);
+    slotOf.set(node.id, slot);
+  });
+  const laneRows = new Map(lanes.map((lane) => [lane, Math.max(1, ...[...slots.entries()].filter(([key]) => key.startsWith(`${lane}|`)).map(([, count]) => count))]));
+  let top = 0;
+  const laneTop = new Map();
+  lanes.forEach((lane) => { laneTop.set(lane, top); top += laneRows.get(lane) * BPMN.rowH; });
+  const size = (node) => node.kind === "task" ? [BPMN.taskW, BPMN.taskH] : node.kind === "decision" ? [BPMN.diamond, BPMN.diamond] : [BPMN.event, BPMN.event];
+  const boxes = new Map(graph.nodes.map((node) => {
+    const [w, h] = size(node);
+    const x = BPMN.laneHead + column.get(node.id) * BPMN.colW + (BPMN.colW - w) / 2;
+    const y = laneTop.get(laneOf.get(node.id)) + slotOf.get(node.id) * BPMN.rowH + (BPMN.rowH - h) / 2;
+    return [node.id, { x, y, w, h, kind: node.kind }];
+  }));
+  const width = BPMN.laneHead + (Math.max(...column.values()) + 1) * BPMN.colW + BPMN.pad;
+  return { graph, lanes, laneTop, laneRows, boxes, column, width, height: top };
+}
+
+function processFlowEdgePath(edge, layout) {
+  const from = layout.boxes.get(edge.from);
+  const to = layout.boxes.get(edge.to);
+  if (!from || !to) return null;
+  const forward = layout.column.get(edge.to) > layout.column.get(edge.from);
+  const exit = edge.exit || 0;
+  let x1 = from.x + from.w;
+  let y1 = from.y + from.h / 2;
+  if (exit === 1) { x1 = from.x + from.w / 2; y1 = from.y + from.h; }
+  if (exit === 2) { x1 = from.x + from.w / 2; y1 = from.y; }
+  const x2 = to.x;
+  const y2 = to.y + to.h / 2;
+  let d;
+  let labelAt;
+  if (forward) {
+    if (exit === 1 || exit === 2) {
+      d = `M${x1},${y1} V${y2} H${x2 - 4}`;
+      labelAt = [x1 + 6, exit === 1 ? y1 + 14 : y1 - 6];
+    } else {
+      const mid = x1 + Math.min(40, (x2 - x1) / 2);
+      d = Math.abs(y1 - y2) < 1 ? `M${x1},${y1} H${x2 - 4}` : `M${x1},${y1} H${mid} V${y2} H${x2 - 4}`;
+      labelAt = [x1 + 6, y1 - 6];
+    }
+  } else {
+    const bottom = Math.max(from.y + from.h, to.y + to.h) + 18 + exit * 8;
+    const sx = exit === 2 ? x1 : from.x + from.w / 2;
+    const sy = exit === 2 ? y1 : from.y + from.h;
+    const tx = to.x + to.w * 0.72;
+    d = exit === 2
+      ? `M${sx},${sy} V${Math.min(from.y, to.y) - 18} H${tx} V${to.y - 4}`
+      : `M${sx},${sy} V${bottom} H${tx} V${to.kind === "decision" ? to.y + to.h * 0.78 + 4 : to.y + to.h + 4}`;
+    labelAt = [sx + 6, exit === 2 ? sy - 6 : sy + 14];
+  }
+  return { d, labelAt };
+}
+
+function processFlowCanvasHtml(process, steps) {
+  const layout = processFlowLayout(steps, processFlowLaneBy);
+  const lanes = layout.lanes.map((lane) => `<div class="bpmn-lane" style="top:${layout.laneTop.get(lane)}px;height:${layout.laneRows.get(lane) * BPMN.rowH}px"><div class="bpmn-lane-head"><span>${esc(lane)}</span></div></div>`).join("");
+  const edges = layout.graph.edges.map((edge) => {
+    const path = processFlowEdgePath(edge, layout);
+    if (!path) return "";
+    return `<path class="bpmn-edge" d="${path.d}" marker-end="url(#bpmn-arrow)"></path>${edge.label ? `<text class="bpmn-edge-label" x="${path.labelAt[0]}" y="${path.labelAt[1]}">${esc(edge.label)}</text>` : ""}`;
+  }).join("");
+  const nodes = layout.graph.nodes.map((node) => {
+    const box = layout.boxes.get(node.id);
+    const style = `left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px`;
+    if (node.kind === "start") return `<div class="bpmn-node bpmn-event bpmn-start" style="${style}" title="Início"></div><span class="bpmn-event-label" style="left:${box.x - 27}px;top:${box.y + box.h + 4}px">Início</span>`;
+    const step = node.step;
+    if (node.kind === "end") {
+      const label = node.implicit ? "Fim" : processStepTitle(step, node.index);
+      return `<button class="bpmn-node bpmn-event bpmn-end" type="button" style="${style}" ${node.implicit ? "disabled" : `data-step="${esc(step.id)}"`} title="${esc(label)}"></button><span class="bpmn-event-label" style="left:${box.x - 27}px;top:${box.y + box.h + 4}px">${esc(label)}</span>`;
+    }
+    if (node.kind === "decision") return `<button class="bpmn-node bpmn-decision" type="button" style="${style}" data-step="${esc(step.id)}" title="${esc(step.label)}"><span class="bpmn-diamond" aria-hidden="true"></span><span class="bpmn-decision-text">${esc(step.label || "Decisão")}</span><span class="bpmn-number">${node.index + 1}</span></button>`;
+    const meta = [step.system, step.module].filter(Boolean).join(" · ");
+    return `<button class="bpmn-node bpmn-task" type="button" style="${style}" data-step="${esc(step.id)}"><span class="bpmn-number">${node.index + 1}</span><strong>${esc(processStepTitle(step, node.index))}</strong>${step.label && meta ? `<small>${esc(meta)}</small>` : ""}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
+  }).join("");
+  return `<div class="bpmn-canvas" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${lanes}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
+}
+
+function processFlowDetailHtml(process, step, index) {
+  if (!step) return "";
+  const reference = safeHttpUrl(step.url);
+  const rows = [
+    ["Elemento", PROCESS_ELEMENTS[step.element] || "Tarefa"], ["Responsável", step.responsible], ["Sistema", step.system],
+    ["Módulo", step.module], ["Submódulo", step.submodule], ["Grupo", step.group], ["Tipo", step.type]
+  ].filter(([, value]) => value);
+  const steps = normalizeProcessSteps(process.steps);
+  const outcomes = (step.outcomes || []).map((outcome) => {
+    const targetIndex = steps.findIndex((item) => item.id === outcome.target);
+    return `<li><b>${esc(outcome.label || "—")}</b> → ${targetIndex >= 0 ? `${targetIndex + 1}. ${esc(processStepTitle(steps[targetIndex], targetIndex))}` : "seguinte da lista"}</li>`;
+  }).join("");
+  return `<header><span class="bpmn-number">${index + 1}</span><strong>${esc(processStepTitle(step, index))}</strong><button class="modal-close-x bpmn-detail-close" type="button" title="Fechar">✕</button></header>
+    <dl>${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
+    ${outcomes ? `<div class="bpmn-detail-block"><span>Saídas</span><ul>${outcomes}</ul></div>` : ""}
+    ${step.details ? `<div class="bpmn-detail-block"><span>Detalhes</span><p>${esc(step.details)}</p></div>` : ""}
+    ${reference ? `<div class="bpmn-detail-block"><span>URL</span><a href="${esc(reference)}" target="_blank" rel="noopener">${esc(step.url)} ↗</a></div>` : ""}
+    ${currentUserCan("processes", "edit") ? '<button class="btn primary bpmn-detail-edit" type="button">Editar processo</button>' : ""}`;
+}
+
 function openToolProcessFlow(id) {
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process) return;
   const steps = normalizeProcessSteps(process.steps);
-  const grouped = new Map();
-  steps.forEach((step, index) => {
-    const path = {
-      module: step.module || "Sem módulo",
-      submodule: step.submodule || "Sem submódulo",
-      group: step.group || "Sem grupo"
-    };
-    const key = JSON.stringify(path);
-    if (!grouped.has(key)) grouped.set(key, { ...path, steps: [] });
-    grouped.get(key).steps.push({ ...step, number: index + 1 });
-  });
-  const lanes = [...grouped.values()];
-  const laneIndexes = new Map(lanes.map((lane, index) => [JSON.stringify({
-    module: lane.module, submodule: lane.submodule, group: lane.group
-  }), index]));
-  const matrixColumns = `96px repeat(${Math.max(steps.length, 1)}, minmax(220px, 1fr)) 96px`;
-  const headers = steps.map((step, index) => `<div class="process-flow-column-head" style="grid-column:${index + 2};grid-row:1">Etapa ${index + 1}</div>`).join("");
-  const nodes = steps.map((step, index) => {
-    const reference = safeHttpUrl(step.url);
-    const key = JSON.stringify({
-      module: step.module || "Sem módulo",
-      submodule: step.submodule || "Sem submódulo",
-      group: step.group || "Sem grupo"
-    });
-    const hierarchy = [
-      ["Módulo", step.module || "Não informado"],
-      ["Submódulo", step.submodule || "Não informado"],
-      ["Grupo", step.group || "Não informado"],
-      ["Tipo", step.type || "Não informado"]
-    ];
-    return `<article class="process-flow-node process-flow-point" data-sequence="${index + 1}" style="grid-column:${index + 2};grid-row:${laneIndexes.get(key) + 2}">
-      <div class="process-flow-node-head"><span class="process-flow-number">${index + 1}</span><strong>${esc(step.system || "Sem sistema")}</strong></div>
-      <div class="process-flow-node-meta">${hierarchy.map(([label, value]) => `<div><span>${label}</span><b>${esc(value)}</b></div>`).join("")}</div>
-      <div class="process-flow-node-details"><span>Detalhes</span><p>${esc(step.details || "Sem detalhes.")}</p></div>
-      <div class="process-flow-node-url"><span>URL</span>${reference ? `<a href="${esc(reference)}" target="_blank" rel="noopener">${esc(step.url)} ↗</a>` : '<b>Não informada</b>'}</div>
-    </article>`;
-  }).join("");
-  const systems = [...new Set(steps.map((step) => step.system).filter(Boolean))];
-  const content = `<div class="process-flow-view">
-    <div class="process-flow-summary">
-      <div><span>Categoria</span><strong>${esc(process.category || "Não informada")}</strong></div>
-      <div><span>Sistemas</span><strong>${esc(systems.join(", ") || "Não informado")}</strong></div>
-      <div><span>Etapas</span><strong>${steps.length}</strong></div>
-      <div><span>Linhas</span><strong>${grouped.size}</strong></div>
+  const laneButtons = () => PROCESS_LANE_OPTIONS.map(([value, label]) => `<button class="view${processFlowLaneBy === value ? " active" : ""}" type="button" data-lane-by="${value}">${label}</button>`).join("");
+  const content = `<div class="bpmn-view">
+    <div class="bpmn-toolbar">
+      <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
+      <div class="bpmn-controls"><span class="muted">Raias por</span><div class="bpmn-lane-switch" role="group" aria-label="Raias por">${laneButtons()}</div>
+        <button class="btn bpmn-zoom-out" type="button" title="Diminuir zoom">−</button><button class="btn bpmn-zoom-reset" type="button" title="Voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="btn bpmn-zoom-in" type="button" title="Aumentar zoom">+</button></div>
     </div>
-    <div class="process-flow-scroll">
-      ${steps.length ? `<div class="process-flow-matrix" style="grid-template-columns:${matrixColumns};grid-template-rows:34px repeat(${Math.max(lanes.length, 1)},minmax(250px,auto))">
-        <div class="process-flow-column-head process-flow-fixed-start" style="grid-column:1;grid-row:1">Início</div>
-        ${headers}
-        <div class="process-flow-column-head process-flow-fixed-end" style="grid-column:${steps.length + 2};grid-row:1">Fim</div>
-        <div class="process-flow-terminal start process-flow-point" data-sequence="0" style="grid-column:1;grid-row:2 / span ${Math.max(lanes.length, 1)}"><span>Início</span></div>
-        ${nodes}
-        <div class="process-flow-terminal end process-flow-point" data-sequence="${steps.length + 1}" style="grid-column:${steps.length + 2};grid-row:2 / span ${Math.max(lanes.length, 1)}"><span>Fim</span></div>
-      </div>` : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}
-    </div>
+    <div class="bpmn-body"><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-flow-close">Fechar</button></div>`;
-  let resizeObserver;
-  const closeFlow = nestedCenterModal(`Fluxo · ${process.title}`, content, {
-    cls: "full process-flow-modal",
-    closeOnOverlay: true,
-    onClose: () => resizeObserver?.disconnect()
-  });
+  const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, { cls: "full process-flow-modal", closeOnOverlay: true });
   document.getElementById("tool-process-flow-close").addEventListener("click", closeFlow);
-  const matrix = document.querySelector(".process-flow-matrix");
-  if (matrix) {
-    requestAnimationFrame(() => drawProcessFlowConnections(matrix));
-    resizeObserver = new ResizeObserver(() => drawProcessFlowConnections(matrix));
-    resizeObserver.observe(matrix);
-    matrix.closest(".process-flow-scroll")?.addEventListener("scroll", () => requestAnimationFrame(() => drawProcessFlowConnections(matrix)), { passive: true });
-  }
+  const view = document.querySelector(".process-flow-modal .bpmn-view");
+  if (!view) return;
+  const scroller = view.querySelector(".bpmn-scroll");
+  const detail = view.querySelector(".bpmn-detail");
+  const zoomLabel = view.querySelector(".bpmn-zoom-reset");
+  const wireNodes = () => scroller.querySelectorAll(".bpmn-node[data-step]").forEach((node) => node.addEventListener("click", () => {
+    const index = steps.findIndex((step) => step.id === node.dataset.step);
+    scroller.querySelectorAll(".bpmn-node.is-selected").forEach((item) => item.classList.remove("is-selected"));
+    node.classList.add("is-selected");
+    detail.innerHTML = processFlowDetailHtml(process, steps[index], index);
+    detail.hidden = false;
+    detail.querySelector(".bpmn-detail-close")?.addEventListener("click", () => { detail.hidden = true; node.classList.remove("is-selected"); });
+    detail.querySelector(".bpmn-detail-edit")?.addEventListener("click", () => { closeFlow(); openToolProcessForm(process.id); });
+  }));
+  const redraw = () => {
+    if (!steps.length) return;
+    scroller.innerHTML = processFlowCanvasHtml(process, steps);
+    wireNodes();
+  };
+  wireNodes();
+  view.querySelectorAll("[data-lane-by]").forEach((button) => button.addEventListener("click", () => {
+    processFlowLaneBy = button.dataset.laneBy;
+    try { localStorage.setItem("processFlowLaneBy", processFlowLaneBy); } catch {}
+    view.querySelectorAll("[data-lane-by]").forEach((item) => item.classList.toggle("active", item === button));
+    detail.hidden = true;
+    redraw();
+  }));
+  const setZoom = (next, clientX, clientY) => {
+    const canvas = scroller.querySelector(".bpmn-canvas");
+    if (!canvas) return;
+    const zoom = Math.min(2, Math.max(0.3, Math.round(next * 100) / 100));
+    const previous = processFlowZoom;
+    if (zoom === previous) return;
+    const rect = scroller.getBoundingClientRect();
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    const contentX = (scroller.scrollLeft + x) / previous;
+    const contentY = (scroller.scrollTop + y) / previous;
+    processFlowZoom = zoom;
+    canvas.style.zoom = zoom;
+    scroller.scrollLeft = contentX * zoom - x;
+    scroller.scrollTop = contentY * zoom - y;
+    zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  };
+  view.querySelector(".bpmn-zoom-in").addEventListener("click", () => setZoom(processFlowZoom * 1.15));
+  view.querySelector(".bpmn-zoom-out").addEventListener("click", () => setZoom(processFlowZoom / 1.15));
+  zoomLabel.addEventListener("click", () => setZoom(1));
+  scroller.addEventListener("wheel", (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    setZoom(processFlowZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX, event.clientY);
+  }, { passive: false });
+  let drag = null;
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.pointerType === "touch" || event.target.closest(".bpmn-node[data-step]")) return;
+    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId };
+    scroller.setPointerCapture?.(event.pointerId);
+    scroller.classList.add("is-panning");
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    scroller.scrollLeft = drag.left - (event.clientX - drag.x);
+    scroller.scrollTop = drag.top - (event.clientY - drag.y);
+  });
+  const endDrag = () => { drag = null; scroller.classList.remove("is-panning"); };
+  scroller.addEventListener("pointerup", endDrag);
+  scroller.addEventListener("pointercancel", endDrag);
+  let pinch = null;
+  const distance = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  scroller.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2) return;
+    pinch = { distance: distance(event.touches) || 1, zoom: processFlowZoom };
+    event.preventDefault();
+  }, { passive: false });
+  scroller.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) return;
+    event.preventDefault();
+    const [a, b] = event.touches;
+    setZoom(pinch.zoom * (distance(event.touches) / pinch.distance), (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+  }, { passive: false });
+  scroller.addEventListener("touchend", (event) => { if (event.touches.length < 2) pinch = null; });
 }
 
-function drawProcessFlowConnections(matrix) {
-  matrix.querySelector(".process-flow-svg")?.remove();
-  const points = [...matrix.querySelectorAll(".process-flow-point")]
-    .sort((a, b) => Number(a.dataset.sequence) - Number(b.dataset.sequence));
-  if (points.length < 2) return;
-  const bounds = matrix.getBoundingClientRect();
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.classList.add("process-flow-svg");
-  svg.setAttribute("width", String(matrix.scrollWidth));
-  svg.setAttribute("height", String(matrix.scrollHeight));
-  svg.setAttribute("viewBox", `0 0 ${matrix.scrollWidth} ${matrix.scrollHeight}`);
-  svg.innerHTML = '<defs><marker id="process-flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z"></path></marker></defs>';
-  points.slice(0, -1).forEach((point, index) => {
-    const next = points[index + 1];
-    const from = point.getBoundingClientRect();
-    const to = next.getBoundingClientRect();
-    const x1 = from.right - bounds.left;
-    const y1 = from.top + from.height / 2 - bounds.top;
-    const x2 = to.left - bounds.left;
-    const y2 = to.top + to.height / 2 - bounds.top;
-    const middle = x1 + Math.max(24, (x2 - x1) / 2);
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} H ${middle} V ${y2} H ${x2}`);
-    path.setAttribute("marker-end", "url(#process-flow-arrow)");
-    svg.appendChild(path);
-  });
-  matrix.prepend(svg);
+function processStepTargetOptions(steps, index, selected, emptyLabel) {
+  return `<option value="">${esc(emptyLabel)}</option>${steps.map((target, targetIndex) => targetIndex === index ? "" :
+    `<option value="${esc(target.id)}"${target.id === selected ? " selected" : ""}>${targetIndex + 1}. ${esc(processStepTitle(target, targetIndex))}</option>`).join("")}`;
 }
 
 function processStepEditorHtml(steps) {
-  return steps.map((step, index) => `<div class="process-step-editor" data-index="${index}">
-    <div class="process-step-number">${index + 1}</div><div class="process-step-fields">
-      <div class="process-step-grid">
+  const responsibleOptions = [...assigneeJobTitleOptions().map((option) => option.value), "Cliente", "Sistema"];
+  const datalist = `<datalist id="process-responsible-options">${responsibleOptions.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>`;
+  return datalist + steps.map((step, index) => {
+    const element = step.element || "task";
+    const elementOptions = Object.entries(PROCESS_ELEMENTS).map(([value, label]) => `<option value="${value}"${value === element ? " selected" : ""}>${label}</option>`).join("");
+    const head = `<div class="process-step-grid process-step-bpmn">
+        <label>Elemento<select class="process-step-input" data-field="element">${elementOptions}</select></label>
+        <label>${element === "decision" ? "Pergunta *" : element === "end" ? "Resultado" : "Nome da etapa"}<input class="process-step-input" data-field="label" value="${esc(step.label)}" placeholder="${element === "decision" ? "Ex.: Pedido aprovado?" : element === "end" ? "Ex.: Pedido faturado" : "Opcional — usa Sistema · Módulo"}"></label>
+        <label>Responsável<input class="process-step-input" data-field="responsible" list="process-responsible-options" value="${esc(step.responsible)}" placeholder="Cargo, Cliente ou Sistema"></label>
+        ${element === "task" ? `<label>Próxima etapa<select class="process-step-input" data-field="next">${processStepTargetOptions(steps, index, step.next, "Seguinte da lista")}</select></label>` : ""}
+      </div>`;
+    const outcomes = element === "decision" ? `<div class="process-step-outcomes"><div class="process-step-outcomes-head"><span>Saídas</span><button class="btn process-outcome-add" type="button">+ Saída</button></div>
+        ${(step.outcomes || []).map((outcome, outcomeIndex) => `<div class="process-outcome-row" data-outcome="${outcomeIndex}">
+          <input class="process-outcome-input" data-field="label" value="${esc(outcome.label)}" placeholder="Ex.: Sim">
+          <select class="process-outcome-input" data-field="target">${processStepTargetOptions(steps, index, outcome.target, "Seguinte da lista")}</select>
+          <button class="tool-icon-btn process-outcome-remove" type="button" title="Remover saída">×</button>
+        </div>`).join("") || '<span class="muted process-outcome-empty">Sem saídas: segue para a próxima etapa da lista.</span>'}
+      </div>` : "";
+    const taskFields = element === "task" ? `<div class="process-step-grid">
         <label>Sistema *<input class="process-step-input" data-field="system" value="${esc(step.system)}" placeholder="Ex.: Bling"></label>
         <label>Módulo *<input class="process-step-input" data-field="module" value="${esc(step.module)}" placeholder="Ex.: Vendas"></label>
         <label>Submódulo<input class="process-step-input" data-field="submodule" value="${esc(step.submodule)}" placeholder="Ex.: Pedidos de venda"></label>
@@ -12543,14 +12727,16 @@ function processStepEditorHtml(steps) {
         <label>Tipo<input class="process-step-input" data-field="type" value="${esc(step.type)}" placeholder="Ex.: Procedimento"></label>
         <label>URL<input class="process-step-input" data-field="url" type="url" value="${esc(step.url)}" placeholder="https://..."></label>
       </div>
-      <label class="process-step-details">Detalhes<textarea class="process-step-input" data-field="details" rows="4" placeholder="Explique como executar esta etapa">${esc(step.details)}</textarea></label>
-    </div>
+      <label class="process-step-details">Detalhes<textarea class="process-step-input" data-field="details" rows="4" placeholder="Explique como executar esta etapa">${esc(step.details)}</textarea></label>` : "";
+    return `<div class="process-step-editor process-step-${element}" data-index="${index}">
+    <div class="process-step-number">${index + 1}</div><div class="process-step-fields">${head}${outcomes}${taskFields}</div>
     <div class="process-step-actions"><button class="tool-icon-btn process-step-up" type="button" title="Subir">↑</button><button class="tool-icon-btn process-step-down" type="button" title="Descer">↓</button><button class="tool-icon-btn process-step-remove" type="button" title="Excluir">×</button></div>
-  </div>`).join("");
+  </div>`;
+  }).join("");
 }
 
 function emptyProcessStep() {
-  return { id: crypto.randomUUID(), system: "", module: "", submodule: "", group: "", type: "", url: "", details: "" };
+  return { id: crypto.randomUUID(), system: "", module: "", submodule: "", group: "", type: "", url: "", details: "", element: "task", label: "", responsible: "", next: "", outcomes: [] };
 }
 
 function openToolProcessForm(id = null) {
@@ -12573,9 +12759,25 @@ function openToolProcessForm(id = null) {
   const stepsRoot = document.getElementById("tool-process-steps");
   const drawSteps = () => {
     stepsRoot.innerHTML = processStepEditorHtml(draftSteps);
-    stepsRoot.querySelectorAll(".process-step-input").forEach((input) => input.addEventListener("input", () => {
+    stepsRoot.querySelectorAll(".process-step-input").forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
       const index = Number(input.closest(".process-step-editor").dataset.index);
       draftSteps[index][input.dataset.field] = input.value;
+      if (input.dataset.field === "element") drawSteps();
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-input").forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
+      const step = draftSteps[Number(input.closest(".process-step-editor").dataset.index)];
+      const outcome = step.outcomes[Number(input.closest(".process-outcome-row").dataset.outcome)];
+      if (outcome) outcome[input.dataset.field] = input.value;
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-add").forEach((button) => button.addEventListener("click", () => {
+      const step = draftSteps[Number(button.closest(".process-step-editor").dataset.index)];
+      step.outcomes = [...(step.outcomes || []), { id: crypto.randomUUID(), label: "", target: "" }];
+      drawSteps();
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-remove").forEach((button) => button.addEventListener("click", () => {
+      const step = draftSteps[Number(button.closest(".process-step-editor").dataset.index)];
+      step.outcomes.splice(Number(button.closest(".process-outcome-row").dataset.outcome), 1);
+      drawSteps();
     }));
     stepsRoot.querySelectorAll(".process-step-remove").forEach((button) => button.addEventListener("click", () => { draftSteps.splice(Number(button.closest(".process-step-editor").dataset.index), 1); drawSteps(); }));
     stepsRoot.querySelectorAll(".process-step-up").forEach((button) => button.addEventListener("click", () => { const index = Number(button.closest(".process-step-editor").dataset.index); if (index > 0) { [draftSteps[index - 1], draftSteps[index]] = [draftSteps[index], draftSteps[index - 1]]; drawSteps(); } }));
@@ -12586,14 +12788,17 @@ function openToolProcessForm(id = null) {
   document.getElementById("tool-process-cancel").addEventListener("click", () => closeToolProcessPanel(closePanel));
   document.getElementById("tool-process-save").addEventListener("click", async () => {
     const title = document.getElementById("tool-process-title").value.trim();
-    const fields = ["system", "module", "submodule", "group", "type", "url", "details"];
+    const fields = ["system", "module", "submodule", "group", "type", "url", "details", "label", "responsible", "next"];
     const steps = draftSteps.map((step) => ({
       id: step.id || crypto.randomUUID(),
-      ...Object.fromEntries(fields.map((field) => [field, String(step[field] || "").trim()]))
-    })).filter((step) => fields.some((field) => step[field]));
+      ...Object.fromEntries(fields.map((field) => [field, String(step[field] || "").trim()])),
+      element: PROCESS_ELEMENTS[step.element] ? step.element : "task",
+      outcomes: step.element === "decision" ? (step.outcomes || []).map((outcome) => ({ id: outcome.id || crypto.randomUUID(), label: String(outcome.label || "").trim(), target: String(outcome.target || "").trim() })).filter((outcome) => outcome.label || outcome.target) : []
+    })).filter((step) => step.element !== "task" || fields.some((field) => step[field]));
     if (!title) { toast("Informe o nome do processo.", true); return; }
     if (!steps.length) { toast("Cadastre ao menos uma etapa.", true); return; }
-    if (steps.some((step) => !step.system || !step.module)) { toast("Informe Sistema e Módulo em todas as etapas.", true); return; }
+    if (steps.some((step) => step.element === "task" && (!step.system || !step.module))) { toast("Informe Sistema e Módulo em todas as tarefas.", true); return; }
+    if (steps.some((step) => step.element === "decision" && !step.label)) { toast("Informe a pergunta de cada decisão.", true); return; }
     if (steps.some((step) => step.url && !safeHttpUrl(step.url))) { toast("Revise as URLs das etapas. Use links começando com http:// ou https://.", true); return; }
     const button = document.getElementById("tool-process-save");
     button.disabled = true; button.textContent = "Salvando...";
