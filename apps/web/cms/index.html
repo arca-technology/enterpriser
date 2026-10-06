@@ -99,6 +99,23 @@
   .dd-item.on .dd-check{background:var(--blue);border-color:var(--blue)}
   .dd-foot{display:flex;gap:6px;padding:7px 8px;border-top:1px solid var(--border2);background:var(--panel2)}
   .dd-foot button{flex:1;font-size:10.5px;padding:6px 8px}
+  .import-preview{display:flex;flex-direction:column;gap:10px;padding:14px 16px;min-height:0}
+  .import-summary{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;font-size:12.5px;color:var(--muted)}
+  .import-summary b{color:var(--text)}
+  .import-summary .ok b{color:var(--green)}
+  .import-summary .upd b{color:var(--cyan)}
+  .import-summary .err b{color:var(--red)}
+  .import-list{max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:7px}
+  .import-row{display:grid;grid-template-columns:76px minmax(0,1fr) minmax(0,1.4fr);gap:10px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border2);font-size:12.5px}
+  .import-row:last-child{border-bottom:0}
+  .import-line{color:var(--muted);font-size:11px}
+  .import-label{overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}
+  .import-status{color:var(--muted)}
+  .import-row.has-error .import-status{color:var(--red)}
+  .import-progress{color:var(--cyan);font-size:12.5px;font-weight:700}
+  .import-credentials{width:calc(100% - 32px);min-height:220px;margin:0 16px;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);padding:10px;font:12px/1.6 ui-monospace,monospace}
+  .registry-badge{display:inline-block;margin-right:6px;padding:1px 6px;border:1px solid rgba(245,166,35,.45);border-radius:4px;background:rgba(245,166,35,.12);color:var(--amber);font-size:10px;font-weight:800;letter-spacing:.3px;text-transform:uppercase;vertical-align:1px}
+  .registry-badge.error{border-color:rgba(239,83,80,.45);background:rgba(239,83,80,.12);color:var(--red)}
   .dd-rule{display:grid;gap:6px;padding:8px 8px 4px;border-bottom:1px solid var(--border2)}
   .dd-rule select,.dd-rule input{width:100%;min-width:0;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:6px 8px;font:inherit;font-size:12px}
   .dd-rule-inputs{display:flex;align-items:center;gap:6px}

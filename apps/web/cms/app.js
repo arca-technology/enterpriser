@@ -1950,7 +1950,7 @@ function columns(tab, c) {
   switch (tab) {
     case "companies": return [
       { k: "tax_id", h: "CNPJ", cls: "muted company-sticky-col company-sticky-col-1", thCls: "company-sticky-col company-sticky-col-1" },
-      { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2" },
+      { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2", fmt: (v, row) => `${companyRegistryBadgeHtml(row)}${esc(v || (row.registry_pending ? "Aguardando Receita" : "—"))}` },
       { k: "trade_name", h: "NOME FANTASIA" },
       { k: "contact_type", h: "TIPO DE CONTATO", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((type) => `<span class="tool-tag">${esc(type)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "email", h: "E-MAIL", cls: "muted" },
@@ -6850,25 +6850,667 @@ function exportTableCSV(activeOnly) {
   toast(`CSV exportado: ${rows.length} linhas.`);
 }
 
+// ---------- Importação por planilha ----------
+// Cada módulo principal importa as próprias colunas (CSV, XLS ou XLSX) e
+// oferece uma planilha modelo com as colunas e os valores aceitos.
+const importNorm = (value) => String(value ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+const importDigits = (value) => String(value ?? "").replace(/\D/g, "");
+const importSplit = (value) => String(value ?? "").split(/[;\n]|,(?!\d)/).map((item) => item.trim()).filter(Boolean);
+
+function importDateValue(value) {
+  // Datas do Excel podem chegar alguns segundos antes da meia-noite; arredonda para o dia.
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return filterIsoDay(new Date(value.getTime() + 12 * 3600000));
+  if (typeof value === "number" && value > 20000 && value < 80000) return new Date(Math.round((value - 25569) * 86400000)).toISOString().slice(0, 10);
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const short = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (short) {
+    const year = short[3].length === 2 ? `20${short[3]}` : short[3];
+    return `${year}-${short[2].padStart(2, "0")}-${short[1].padStart(2, "0")}`;
+  }
+  return filterDayValue(text) || undefined;
+}
+
+function importMatchOption(options, value) {
+  const wanted = importNorm(value);
+  if (!wanted) return null;
+  return options.find((option) => importNorm(option.value) === wanted || importNorm(option.label) === wanted) || undefined;
+}
+
+function importCompanyMatch(value, c = cache) {
+  const digits = importDigits(value);
+  const wanted = importNorm(value);
+  return (c.companies || []).find((company) => (digits.length === 14 && importDigits(company.tax_id) === digits)
+    || importNorm(company.trade_name) === wanted || importNorm(company.legal_name) === wanted);
+}
+
+// Especificação de importação de cada módulo.
+function importSpec(tab, c = cache) {
+  if (String(tab).startsWith("reg:")) return registrationImportSpec(tab.slice(4), c);
+  const opts = (values) => values.map((value) => ({ value, label: value }));
+  if (tab === "contacts") return {
+    title: "Pessoas",
+    columns: [
+      { key: "name", header: "Nome completo", req: true, note: "Texto" },
+      { key: "phone", header: "Telefone/celular", note: "Vários separados por ;" },
+      { key: "email", header: "Email(s)", note: "Vários separados por ;" },
+      { key: "contact_type", header: "Tipo de contato", type: "multi", options: () => opts(CONTACT_TYPE_OPTIONS) },
+      { key: "channel", header: "Canal", type: "select", options: () => opts(CONTACT_CHANNEL_OPTIONS) },
+      { key: "job_title", header: "Cargo" },
+      { key: "department", header: "Departamento" },
+      { key: "company_ids", header: "Empresa(s)", type: "companies", note: "CNPJ ou nome da empresa já cadastrada; vários separados por ;" },
+      { key: "linkedin", header: "LinkedIn" }, { key: "facebook", header: "Facebook" }, { key: "instagram", header: "Instagram" },
+      { key: "reddit", header: "Reddit" }, { key: "whatsapp", header: "WhatsApp" }, { key: "youtube", header: "YouTube" },
+      { key: "groups", header: "Grupos/comunidades", type: "free", note: "Vários separados por ;" },
+      { key: "tags", header: "Tags", type: "free", note: "Vários separados por ;" },
+      { key: "notes", header: "Observações" },
+      { key: "birth_date", header: "Data de nascimento", type: "date" },
+      { key: "cpf", header: "CPF" }
+    ],
+    existing: (body) => {
+      const name = importNorm(body.name);
+      const phone = importDigits(body.phone);
+      const emails = normalizeEmailList(body.email || "").toLowerCase().split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+      return (c.contacts || []).find((contact) => importNorm(contact.name) === name && (
+        (phone && importDigits(contact.phone).includes(phone))
+        || (emails.length && emails.some((email) => normalizeEmailList(contact.email || "").toLowerCase().includes(email)))));
+    },
+    async save(body, existing) {
+      const companyIds = normalizeIdList(body.company_ids);
+      const payload = { ...body };
+      delete payload.company_ids;
+      payload.contact_type = normalizeTextList(payload.contact_type).join("; ") || null;
+      payload.groups = normalizeTextList(payload.groups).join("; ") || null;
+      payload.tags = normalizeTextList(payload.tags);
+      if (payload.phone) payload.phone = normalizePhoneList(payload.phone);
+      if (payload.email) payload.email = normalizeEmailList(payload.email);
+      payload.company_id = companyIds[0] || existing?.company_id || null;
+      const saved = existing ? await updateRow("contacts", existing.id, payload) : await createRow("contacts", payload);
+      if (companyIds.length) await replaceContactCompanyLinks({ contactId: saved.id, relatedIds: [...new Set([...normalizeIdList(existing?.company_ids), ...companyIds])] });
+      return saved;
+    }
+  };
+  if (tab === "companies") return {
+    title: "Empresas",
+    intro: "Informe só o CNPJ e os campos editáveis. A empresa é cadastrada na hora com a tag Desatualizada e os dados da Receita são preenchidos automaticamente em segundo plano.",
+    columns: [
+      { key: "tax_id", header: "CNPJ", req: true, note: "14 dígitos, com ou sem máscara" },
+      { key: "contact_type", header: "Tipo de contato", type: "multi", options: () => opts(COMPANY_CONTACT_TYPE_OPTIONS) },
+      { key: "municipal_registration", header: "Inscrição municipal" },
+      { key: "notes", header: "Observações" }
+    ],
+    validate: (body) => importDigits(body.tax_id).length === 14 ? "" : "CNPJ precisa ter 14 dígitos",
+    existing: (body) => (c.companies || []).find((company) => importDigits(company.tax_id) === importDigits(body.tax_id)),
+    async save(body, existing) {
+      const types = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type));
+      if (companyHasDelivery(body.tax_id) && !types.includes("Cliente")) types.unshift("Cliente");
+      const editable = { contact_type: types.join("; ") || existing?.contact_type || null };
+      if (body.municipal_registration) editable.municipal_registration = body.municipal_registration;
+      if (body.notes) editable.notes = body.notes;
+      let saved;
+      if (existing) saved = await updateRow("companies", existing.tax_id, editable);
+      else {
+        const taxId = importDigits(body.tax_id).replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+        saved = await createRow("companies", { tax_id: taxId, ...editable, registry_pending: true, registry_error: null });
+      }
+      if (types.length) await syncCompanyContactTypes(saved.tax_id, existing?.contact_ids || [], types);
+      return saved;
+    }
+  };
+  if (tab === "deals") return {
+    title: "Negócios",
+    columns: [
+      { key: "title", header: "Título", req: true },
+      { key: "company_id", header: "Empresa", type: "company", note: "CNPJ ou nome; vazio = não possui empresa" },
+      { key: "contact_id", header: "Contato", type: "contact", note: "Nome ou e-mail da pessoa cadastrada" },
+      { key: "product_id", header: "Produto", type: "select", options: () => refOptions("products", c) },
+      { key: "pipeline_id", header: "Pipeline", type: "select", options: () => (c.pipelines || []).map((pipeline) => ({ value: pipeline.id, label: pipeline.name })), note: "Vazio usa o primeiro pipeline" },
+      { key: "stage", header: "Etapa", note: "Etapa do pipeline" },
+      { key: "status", header: "Status", type: "select", options: () => STATUSES.map((status) => ({ value: status, label: STATUS_LABEL[status] })), note: "Vazio = Aberto" },
+      { key: "lead_source", header: "Origem do lead", type: "select", options: () => opts(SOURCES) },
+      { key: "amount", header: "Valor (R$)", type: "number" },
+      { key: "expected_close_date", header: "Previsão", type: "date" }
+    ],
+    validate: (body) => {
+      const pipeline = (c.pipelines || []).find((item) => item.id === body.pipeline_id) || (c.pipelines || [])[0];
+      if (!pipeline) return "Cadastre um pipeline antes de importar";
+      body.pipeline_id = pipeline.id;
+      if (body.stage) {
+        const stage = (pipeline.stages || []).find((item) => importNorm(item) === importNorm(body.stage));
+        if (!stage) return `Etapa "${body.stage}" não existe no pipeline ${pipeline.name}`;
+        body.stage = stage;
+      } else body.stage = (pipeline.stages || [])[0] || null;
+      body.status = body.status || "open";
+      body.no_company = !body.company_id;
+      return "";
+    },
+    async save(body) {
+      const saved = await createRow("deals", body);
+      if (body.status === "won" && body.company_id) await createProjectFromDeal({ id: saved.id, company_id: body.company_id, contact_id: body.contact_id, product_id: body.product_id, title: body.title });
+      return saved;
+    }
+  };
+  if (tab === "projects") return {
+    title: "Entregas",
+    columns: [
+      { key: "company_id", header: "Empresa", type: "company", req: true, note: "CNPJ ou nome da empresa já cadastrada" },
+      { key: "client_name", header: "Cliente", req: true },
+      { key: "product_id", header: "Produto", type: "select", req: true, options: () => refOptions("products", c) },
+      { key: "delivery_type", header: "Tipo", type: "select", options: () => opts(["Projeto", "Imersão", "Treinamento", "Consultoria", "Evento", "Serviço recorrente", "Outro"]) },
+      { key: "group_name", header: "Grupo" },
+      { key: "status", header: "Status", type: "select", options: () => PROJECT_STATUSES.map((status) => ({ value: status, label: PROJECT_STATUS_LABEL[status] })), note: "Vazio = Ativo" },
+      { key: "substatus", header: "Substatus", type: "select", options: () => PROJECT_SUBSTATUS.map((status) => ({ value: status, label: PROJECT_SUBSTATUS_LABEL[status] })) },
+      { key: "start_date", header: "Início", type: "date" },
+      { key: "end_date", header: "Fim", type: "date", note: "Vazio usa a duração do produto" },
+      { key: "erp_platform", header: "ERP", type: "select", options: () => deliveryChannelOptions("erp") },
+      { key: "marketplace_channels", header: "Marketplaces", type: "multi", options: () => deliveryChannelOptions("marketplaces") },
+      { key: "store_platforms", header: "Lojas", type: "multi", options: () => deliveryChannelOptions("stores") },
+      { key: "freight_channels", header: "Frete", type: "multi", options: () => deliveryChannelOptions("freight") },
+      { key: "company_setup", header: "Situação da empresa", type: "select", options: () => opts(DELIVERY_COMPANY_SETUP_OPTIONS) },
+      { key: "financial_accounts", header: "Contas financeiras", type: "multi", options: () => deliveryChannelOptions("financial") }
+    ],
+    validate: (body) => {
+      body.status = body.status || "active";
+      if (body.status === "active") body.substatus = null;
+      if (body.status === "closed") body.substatus = "closed";
+      if (body.status === "inactive" && !body.substatus) return "Entrega inativa precisa de substatus (Suporte ou Encerrado)";
+      body.delivery_type = body.delivery_type || deliveryTypeForProduct(c.productById?.[body.product_id]);
+      body.start_date = body.start_date || filterIsoDay(new Date());
+      const product = c.productById?.[body.product_id];
+      if (!body.end_date && product?.duration_days) body.end_date = addDaysRoundedToMonthEnd(body.start_date, product.duration_days);
+      ["marketplace_channels", "store_platforms", "freight_channels", "financial_accounts"].forEach((key) => { body[key] = normalizeTextList(body[key]); });
+      const auto = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
+      body.freight_channels = normalizeTextList([...body.freight_channels, ...auto.freight]);
+      body.financial_accounts = normalizeTextList([...body.financial_accounts, ...auto.financial]);
+      body.name = deliveryGeneratedName(body.client_name, body.product_id);
+      return "";
+    },
+    async save(body) {
+      const saved = await createRow("projects", { ...body, source: "import" });
+      await provisionDeliveryResources(saved);
+      await ensureCompanyClientType(body.company_id);
+      return saved;
+    }
+  };
+  if (tab === "activities") return {
+    title: "Tarefas",
+    intro: "Cria tarefas do dia a dia em entregas existentes. As tarefas dos produtos continuam vindo do cadastro do produto.",
+    columns: [
+      { key: "project_id", header: "Entrega", type: "project", req: true, note: "Nome exato da entrega (EC365 | Cliente | Produto)" },
+      { key: "title", header: "Tarefa", req: true },
+      { key: "priority", header: "Prioridade", type: "select", options: () => PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Normal" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" }, { key: "type", header: "Tipo" },
+      { key: "information", header: "Informação" },
+      { key: "planned_start_date", header: "Início previsto", type: "date" },
+      { key: "planned_end_date", header: "Término previsto", type: "date" }
+    ],
+    validate: (body) => {
+      if (body.planned_start_date && body.planned_end_date && body.planned_end_date < body.planned_start_date) return "Término previsto antes do início";
+      return "";
+    },
+    async save(body) {
+      const tasks = loadProjectTasks();
+      const now = new Date().toISOString();
+      const draft = {
+        id: crypto.randomUUID(), parent_activity_id: null, ...body,
+        priority: body.priority || "normal", recurrence: "once", consider_business_days: false,
+        dependency_ids: [], assignee_ids: [], assignee_job_titles: [], document_ids: [], custom_table_ids: [], checklist: [],
+        due_date: body.planned_end_date || null, schedule_manual: Boolean(body.planned_start_date), status: "todo",
+        sort_order: Math.max(-1, ...tasks.filter((task) => task.project_id === body.project_id && !task.parent_activity_id).map((task) => Number(task.sort_order || 0))) + 1,
+        created_at: now, updated_at: now
+      };
+      const saved = isLive() ? await createRow("activities", draft) : draft;
+      tasks.push(saved);
+      if (isLive()) cache.activityRecords = tasks; else saveProjectTasks(tasks);
+      return saved;
+    }
+  };
+  return null;
+}
+
+// Importação dos submódulos de Cadastros.
+function importProductIds(value, c = cache) {
+  const ids = [];
+  for (const item of importSplit(value)) {
+    const product = (c.products || []).find((entry) => importNorm(entry.name) === importNorm(item));
+    if (!product) return { error: `Produto "${item}" não encontrado` };
+    ids.push(product.id);
+  }
+  return { value: ids };
+}
+
+function registrationImportSpec(section, c = cache) {
+  const opts = (values) => values.map((value) => ({ value, label: value }));
+  const products = { key: "product_ids", header: "Produto(s)", type: "products", req: true, note: "Nome do produto cadastrado; vários separados por ;" };
+  const initialPipelines = (c.pipelines || []).length;
+  const nextOrder = (rows, productId) => Math.max(-1, ...rows.filter((item) => item.product_id === productId).map((item) => Number(item.sort_order || 0))) + 1;
+  if (section === "products") return {
+    title: "Produtos",
+    columns: [
+      { key: "category", header: "Categoria" },
+      { key: "name", header: "Produto", req: true },
+      { key: "description", header: "Descrição" },
+      { key: "price", header: "Preço à vista (R$)", type: "number" },
+      { key: "price_installment", header: "Preço parcelado (R$)", type: "number" },
+      { key: "sales_page", header: "Página de vendas" },
+      { key: "duration_days", header: "Duração da entrega (dias)", type: "number" },
+      { key: "status", header: "Status", type: "select", options: () => opts(["Ativo", "Pausado", "Inativo"]), note: "Vazio = Ativo" }
+    ],
+    existing: (body) => (c.products || []).find((item) => importNorm(item.name) === importNorm(body.name)),
+    async save(body, existing) {
+      const payload = { ...body, status: body.status || existing?.status || "Ativo" };
+      return existing ? updateRow("products", existing.id, payload) : createRow("products", payload);
+    }
+  };
+  if (section === "pipelines") return {
+    title: "Pipelines",
+    columns: [
+      { key: "name", header: "Nome", req: true },
+      { key: "stages", header: "Etapas", type: "free", req: true, note: "Na ordem, separadas por ;. Ganho e Perdido já existem." }
+    ],
+    existing: (body) => (c.pipelines || []).find((item) => importNorm(item.name) === importNorm(body.name)),
+    validate: (body) => {
+      body.stages = body.stages.filter((stage) => !["ganho", "perdido"].includes(importNorm(stage)));
+      return body.stages.length ? "" : "Informe ao menos uma etapa";
+    },
+    async save(body, existing, context) {
+      context.pipelinesCreated = context.pipelinesCreated || 0;
+      if (!existing && initialPipelines + context.pipelinesCreated >= 5) throw new Error("Limite de cinco pipelines atingido");
+      if (existing) return updateRow("pipelines", existing.id, { stages: body.stages });
+      context.pipelinesCreated += 1;
+      return createRow("pipelines", body);
+    }
+  };
+  if (section === "users") return {
+    title: "Usuários",
+    adminOnly: true,
+    intro: "Usuários novos recebem uma senha gerada; ao final a lista de acessos é exibida para copiar. Permissões seguem o padrão do perfil.",
+    columns: [
+      { key: "full_name", header: "Nome", req: true },
+      { key: "nickname", header: "Apelido" },
+      { key: "email", header: "E-mail", req: true },
+      { key: "phone", header: "Telefone" },
+      { key: "role", header: "Perfil", type: "select", options: () => Object.entries(ROLE_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = Colaborador" },
+      { key: "function_name", header: "Função" },
+      { key: "job_title", header: "Cargo" },
+      { key: "status", header: "Status", type: "select", options: () => [{ value: "active", label: "Ativo" }, { value: "inactive", label: "Inativo" }], note: "Vazio = Ativo" }
+    ],
+    validate: (body) => { body.email = String(body.email || "").trim().toLowerCase(); return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email) ? "" : "E-mail inválido"; },
+    existing: (body) => (c.users || []).find((item) => String(item.email || "").toLowerCase() === body.email),
+    async save(body, existing, context) {
+      const role = body.role || normalizedProfileRole(existing?.role) || "collaborator";
+      const payload = {
+        full_name: body.full_name, nickname: body.nickname || existing?.nickname || null, email: body.email,
+        phone: body.phone || existing?.phone || null, role, company_ids: normalizeTextList(existing?.company_ids),
+        function_name: body.function_name || existing?.function_name || null, job_title: body.job_title || existing?.job_title || null,
+        status: body.status || existing?.status || "active",
+        permissions: role === "admin" ? {} : existing ? normalizeUserPermissions(existing.permissions) : defaultPermissionsForRole(role)
+      };
+      const password = existing?.auth_user_id ? "" : generateStrongPassword();
+      if (isLive()) {
+        const result = await callUserAdmin("save-user", { profile_id: existing?.id || null, ...payload, ...(password ? { password } : {}) });
+        if (password) context.credentials.push({ name: payload.full_name, email: payload.email, password });
+        return fromRemoteRow("users", result.profile);
+      }
+      const saved = existing ? await updateRow("users", existing.id, payload) : await createRow("users", { ...payload, auth_user_id: crypto.randomUUID() });
+      if (password) context.credentials.push({ name: payload.full_name, email: payload.email, password });
+      return saved;
+    }
+  };
+  if (section === "activities") return {
+    title: "Tarefas (modelos)",
+    intro: "Cada linha cria a tarefa em todos os produtos informados. Sem o nome da tarefa, o nome usa a estrutura (exige Categoria, Canal, Módulo e Tipo).",
+    columns: [
+      products,
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" },
+      { key: "activity", header: "Tarefa", note: "Vazio = usar estrutura" },
+      { key: "type", header: "Tipo" },
+      { key: "priority", header: "Prioridade", type: "select", options: () => PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Normal" },
+      { key: "recurrence", header: "Recorrência", type: "select", options: () => RECURRENCE_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Única" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" },
+      { key: "start_after_days", header: "Iniciar após dependência (dias)", type: "number" },
+      { key: "consider_business_days", header: "Dias úteis", type: "select", options: () => [{ value: "sim", label: "Sim" }, { value: "nao", label: "Não" }] },
+      { key: "information", header: "Informação" }
+    ],
+    validate: (body) => !body.activity && !["category", "channel", "module", "type"].every((key) => body[key]) ? "Informe a Tarefa ou Categoria, Canal, Módulo e Tipo" : "",
+    async save(body) {
+      const rows = loadProductActivities();
+      const groupId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, template_group_id: groupId, parent_template_id: null,
+          activity: body.activity || "", category: body.category || "", channel: body.channel || "", module: body.module || "",
+          submodule: body.submodule || "", type: body.type || "", group: "", subgroup: "", sector: "", subsector: "",
+          priority: body.priority || "normal", recurrence: body.recurrence || "once",
+          target_days: body.target_days ?? null, start_after_days: body.start_after_days ?? null,
+          consider_business_days: body.consider_business_days === "sim", information: body.information || "",
+          document_ids: [], custom_table_ids: [], checklist: [], default_owner_id: null, default_assignee_ids: [], default_assignee_job_titles: [],
+          assign_to_client: false, depends_on_template_id: null, dependency_template_ids: [], objective_template_id: null,
+          sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productActivities", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productActivities = rows; else saveProductActivities(rows);
+      return saved;
+    }
+  };
+  if (section === "goals") return {
+    title: "Metas (modelos)",
+    columns: [
+      products,
+      { key: "name", header: "Meta", req: true },
+      { key: "metric", header: "Indicador", req: true },
+      { key: "comparison", header: "Comparação", type: "select", options: () => Object.entries(GOAL_COMPARISON_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = No mínimo" },
+      { key: "target_value", header: "Valor-alvo", type: "number", req: true },
+      { key: "unit", header: "Unidade" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "notes", header: "Observações" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" }
+    ],
+    async save(body) {
+      const rows = loadProductGoals();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, name: body.name, metric: body.metric, comparison: body.comparison || "at_least",
+          target_value: Number(body.target_value), unit: body.unit || "", comments: "", category: body.category || "", channel: body.channel || "",
+          notes: body.notes || "", target_days: body.target_days ?? null, default_owner_id: null, default_assignee_ids: [], assign_to_client: false,
+          dependency_goal_template_ids: [], dependency_activity_template_ids: [], sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productGoals", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productGoals = rows; else saveProductGoals(rows);
+      return saved;
+    }
+  };
+  if (section === "objectives") return {
+    title: "Objetivos (modelos)",
+    columns: [
+      products,
+      { key: "name", header: "Objetivo", req: true },
+      { key: "completion_criteria", header: "Critério de conclusão" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "notes", header: "Observações" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" }
+    ],
+    async save(body) {
+      const rows = loadProductObjectives();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, name: body.name, completion_criteria: body.completion_criteria || "", comments: "",
+          category: body.category || "", channel: body.channel || "", notes: body.notes || "", default_owner_id: null, default_assignee_ids: [],
+          assign_to_client: false, dependency_objective_template_ids: [], dependency_activity_template_ids: [],
+          target_days: body.target_days ?? null, sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productObjectives", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productObjectives = rows; else saveProductObjectives(rows);
+      return saved;
+    }
+  };
+  return null;
+}
+
+// Fila em segundo plano que busca na Receita as empresas importadas só com
+// o CNPJ (CNPJá gratuito: cerca de 5 consultas por minuto).
+const companyRegistryQueue = { running: false };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function runCompanyRegistryQueue() {
+  if (companyRegistryQueue.running || !cache || !currentUserCan("companies", "edit")) return;
+  companyRegistryQueue.running = true;
+  try {
+    for (;;) {
+      const company = (cache?.companies || []).find((item) => item.registry_pending && !item.registry_error);
+      if (!company) break;
+      const now = new Date().toISOString();
+      try {
+        const payload = await fetchCompanyRegistryData(company.tax_id);
+        delete payload.tax_id;
+        const clean = Object.fromEntries(Object.entries(payload).filter(([, value]) => value != null && value !== ""));
+        clean.state_registrations = mergeStateRegistrations(company.state_registrations, payload.state_registrations || [], clean.state || company.state).filter((item) => item.ie);
+        const saved = await updateRow("companies", company.tax_id, { ...clean, registry_pending: false, registry_error: null, registry_checked_at: now });
+        Object.assign(company, saved || clean, { registry_pending: false, registry_error: null });
+        const qsaIds = await companyQsaContactIds(company.tax_id, company.qsa).catch(() => []);
+        if (qsaIds.length) {
+          const linked = [...new Set([...normalizeIdList(company.contact_ids), ...qsaIds])];
+          await replaceContactCompanyLinks({ companyId: company.tax_id, relatedIds: linked });
+          updateCachedContactCompanyLinks({ companyId: company.tax_id, relatedIds: linked });
+          if (normalizeTextList(company.contact_type).length) await syncCompanyContactTypes(company.tax_id, linked, normalizeTextList(company.contact_type));
+        }
+      } catch (error) {
+        if (/Limite/.test(error.message)) { await sleep(60000); continue; }
+        company.registry_error = String(error.message || "Falha na consulta").slice(0, 200);
+        await updateRow("companies", company.tax_id, { registry_error: company.registry_error, registry_checked_at: now }).catch(() => null);
+      }
+      if (state.tab === "companies" && !document.querySelector("#modal-root .overlay")) render();
+      await sleep(13000);
+    }
+  } finally {
+    companyRegistryQueue.running = false;
+  }
+}
+
+const companyRegistryBadgeHtml = (company) => company?.registry_pending
+  ? `<span class="registry-badge${company.registry_error ? " error" : ""}" title="${esc(company.registry_error ? `Consulta falhou: ${company.registry_error}. Use Atualizar da Receita.` : "Importada pelo CNPJ. Os dados da Receita serão preenchidos automaticamente.")}">${company.registry_error ? "Erro na Receita" : "Desatualizada"}</span>`
+  : "";
+
+function importCellValue(column, raw, c = cache) {
+  const text = raw instanceof Date ? "" : String(raw ?? "").trim();
+  if (column.type === "date") {
+    if (raw === "" || raw == null) return { value: null };
+    const value = importDateValue(raw);
+    return value === undefined ? { error: `${column.header}: data inválida "${text}"` } : { value };
+  }
+  if (!text) return { value: column.type === "multi" || column.type === "free" || column.type === "companies" ? [] : null };
+  if (column.type === "number") {
+    const value = typeof raw === "number" ? raw : filterNumberValue(text);
+    return value == null ? { error: `${column.header}: número inválido "${text}"` } : { value };
+  }
+  if (column.type === "select") {
+    const option = importMatchOption(column.options(), text);
+    return option ? { value: option.value } : { error: `${column.header}: "${text}" não é uma opção válida` };
+  }
+  if (column.type === "multi") {
+    const options = column.options();
+    const values = [];
+    for (const item of importSplit(text)) {
+      const option = importMatchOption(options, item);
+      if (!option) return { error: `${column.header}: "${item}" não é uma opção válida` };
+      values.push(option.value);
+    }
+    return { value: values };
+  }
+  if (column.type === "free") return { value: importSplit(text) };
+  if (column.type === "products") return importProductIds(text, c);
+  if (column.type === "companies") {
+    const ids = [];
+    for (const item of importSplit(text)) {
+      const company = importCompanyMatch(item, c);
+      if (!company) return { error: `${column.header}: empresa "${item}" não encontrada` };
+      ids.push(company.tax_id);
+    }
+    return { value: ids };
+  }
+  if (column.type === "company") {
+    const company = importCompanyMatch(text, c);
+    return company ? { value: company.tax_id } : { error: `${column.header}: empresa "${text}" não encontrada` };
+  }
+  if (column.type === "contact") {
+    const wanted = importNorm(text);
+    const contact = (c.contacts || []).find((item) => importNorm(item.name) === wanted || normalizeEmailList(item.email || "").toLowerCase().split(/[;,]/).map((email) => email.trim()).includes(wanted));
+    return contact ? { value: contact.id } : { error: `${column.header}: pessoa "${text}" não encontrada` };
+  }
+  if (column.type === "project") {
+    const wanted = importNorm(text);
+    const project = (c.projects || []).find((item) => importNorm(item.name) === wanted);
+    return project ? { value: project.id } : { error: `${column.header}: entrega "${text}" não encontrada` };
+  }
+  return { value: text };
+}
+
+function downloadImportTemplate(tab) {
+  const spec = importSpec(tab);
+  const XLSXLib = globalThis.XLSX;
+  if (!spec) return;
+  if (!XLSXLib?.utils?.aoa_to_sheet || !XLSXLib.writeFile) { toast("O gerador de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true); return; }
+  const book = XLSXLib.utils.book_new();
+  const model = XLSXLib.utils.aoa_to_sheet([spec.columns.map((column) => column.header)]);
+  model["!cols"] = spec.columns.map((column) => ({ wch: Math.max(14, column.header.length + 4) }));
+  XLSXLib.utils.book_append_sheet(book, model, "Modelo");
+  const describe = (column) => {
+    if (column.options) return `Um destes: ${column.options().map((option) => option.label).join(", ")}${column.type === "multi" ? " (vários separados por ;)" : ""}`;
+    if (column.type === "date") return "Data dd/mm/aaaa";
+    if (column.type === "number") return "Número (ex.: 1500,50)";
+    return column.note || "Texto";
+  };
+  const guide = XLSXLib.utils.aoa_to_sheet([
+    [`Importação de ${spec.title} · ENTERPRISER CMS`],
+    [spec.intro || "Preencha a aba Modelo a partir da linha 2. Não altere os títulos das colunas."],
+    [],
+    ["Coluna", "Obrigatória", "Formato / valores aceitos", "Observação"],
+    ...spec.columns.map((column) => [column.header, column.req ? "Sim" : "Não", describe(column), column.options ? (column.note || "") : (column.note && column.note !== describe(column) ? column.note : "")])
+  ]);
+  guide["!cols"] = [{ wch: 26 }, { wch: 12 }, { wch: 70 }, { wch: 44 }];
+  XLSXLib.utils.book_append_sheet(book, guide, "Instruções");
+  XLSXLib.writeFile(book, `modelo_importacao_${importNorm(spec.title).replace(/\s+/g, "_")}.xlsx`);
+}
+
+async function importModuleSpreadsheet(tab, file) {
+  const spec = importSpec(tab);
+  const XLSXLib = globalThis.XLSX;
+  if (!spec) return;
+  if (!XLSXLib?.read) { toast("O leitor de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true); return; }
+  let matrix;
+  try {
+    const workbook = XLSXLib.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const sheetName = workbook.SheetNames.find((name) => importNorm(name) === "modelo") || workbook.SheetNames[0];
+    matrix = XLSXLib.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: true });
+  } catch (error) {
+    toast("Não foi possível ler a planilha · " + error.message, true);
+    return;
+  }
+  const headerIndex = matrix.findIndex((row) => row.some((cell) => String(cell ?? "").trim()));
+  if (headerIndex < 0) { toast("A planilha está vazia.", true); return; }
+  const headers = matrix[headerIndex].map((cell) => importNorm(cell));
+  const columnIndex = new Map(spec.columns.map((column) => [column.key, headers.findIndex((header) => header === importNorm(column.header) || header === importNorm(column.key))]));
+  const missing = spec.columns.filter((column) => column.req && columnIndex.get(column.key) < 0).map((column) => column.header);
+  if (missing.length) { toast(`Faltam colunas obrigatórias: ${missing.join(", ")}. Use a planilha modelo.`, true); return; }
+  const ignored = matrix[headerIndex].filter((cell, index) => String(cell ?? "").trim() && ![...columnIndex.values()].includes(index));
+  const rows = matrix.slice(headerIndex + 1).map((cells, offset) => ({ line: headerIndex + offset + 2, cells })).filter((row) => row.cells.some((cell) => String(cell ?? "").trim()));
+  if (!rows.length) { toast("Nenhuma linha preenchida na planilha.", true); return; }
+  const prepared = rows.map((row) => {
+    const body = {};
+    const errors = [];
+    spec.columns.forEach((column) => {
+      const index = columnIndex.get(column.key);
+      if (index < 0) return;
+      const result = importCellValue(column, row.cells[index]);
+      if (result.error) errors.push(result.error);
+      else if (result.value != null && !(Array.isArray(result.value) && !result.value.length)) body[column.key] = result.value;
+    });
+    spec.columns.filter((column) => column.req && (body[column.key] == null || body[column.key] === "")).forEach((column) => errors.push(`${column.header} é obrigatório`));
+    if (!errors.length && spec.validate) { const message = spec.validate(body); if (message) errors.push(message); }
+    const existing = !errors.length && spec.existing ? spec.existing(body) : null;
+    return { ...row, body, errors, existing };
+  });
+  openImportPreview(tab, spec, prepared, ignored);
+}
+
+function openImportPreview(tab, spec, prepared, ignored) {
+  const valid = prepared.filter((row) => !row.errors.length);
+  const updates = valid.filter((row) => row.existing).length;
+  const label = (row) => row.body.name || row.body.title || row.body.client_name || row.body.tax_id || "";
+  shell(`Importar ${spec.title}`, `<div class="import-preview">
+      <div class="import-summary">
+        <span><b>${prepared.length}</b> linha(s)</span><span class="ok"><b>${valid.length - updates}</b> nova(s)</span><span class="upd"><b>${updates}</b> atualização(ões)</span><span class="err"><b>${prepared.length - valid.length}</b> com erro</span>
+        ${ignored.length ? `<span class="muted">Colunas ignoradas: ${esc(ignored.join(", "))}</span>` : ""}
+      </div>
+      <div class="import-list">${prepared.map((row) => `<div class="import-row${row.errors.length ? " has-error" : ""}"><span class="import-line">Linha ${row.line}</span><span class="import-label">${esc(label(row))}</span><span class="import-status">${row.errors.length ? esc(row.errors.join(" · ")) : row.existing ? "Atualizar existente" : "Criar"}</span></div>`).join("")}</div>
+      <div class="import-progress" id="import-progress" hidden></div>
+    </div>
+    <div class="modal-foot"><button class="btn" id="import-cancel" type="button">Cancelar</button><button class="btn primary" id="import-confirm" type="button"${valid.length ? "" : " disabled"}>Importar ${valid.length} linha(s)</button></div>`, { cls: "wide" });
+  document.getElementById("import-cancel").addEventListener("click", closeModal);
+  document.getElementById("import-confirm").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const progress = document.getElementById("import-progress");
+    button.disabled = true;
+    document.getElementById("import-cancel").disabled = true;
+    progress.hidden = false;
+    let done = 0;
+    const failures = [];
+    const context = { credentials: [] };
+    for (const row of valid) {
+      progress.textContent = `Importando ${done + 1} de ${valid.length}…`;
+      try { await spec.save(row.body, row.existing, context); done += 1; }
+      catch (error) { failures.push(`Linha ${row.line}: ${error.message}`); }
+    }
+    closeModal();
+    toast(`${done} registro(s) importado(s) em ${spec.title}.${failures.length ? ` ${failures.length} falharam.` : ""}`, Boolean(failures.length));
+    if (failures.length) console.warn("[CMS] Falhas na importação", failures);
+    const reopenRegistrations = String(tab).startsWith("reg:") ? tab.slice(4) : null;
+    await init();
+    if (reopenRegistrations) openRegistrationsModal(reopenRegistrations);
+    if (context.credentials.length) showImportedCredentials(context.credentials);
+  });
+}
+
+function showImportedCredentials(credentials) {
+  const text = credentials.map((item) => `${item.name} · ${item.email} · ${item.password}`).join("\n");
+  const inner = `<div class="panel-list">Guarde e envie estes acessos agora; as senhas não ficam visíveis depois.</div>
+    <textarea class="import-credentials" readonly>${esc(text)}</textarea>
+    <div class="modal-foot"><button class="btn primary" id="import-credentials-copy" type="button">Copiar acessos</button></div>`;
+  if (document.getElementById("registrations-root")) nestedSidePanel("Acessos criados", inner);
+  else sidePanel("Acessos criados", inner, { closeOnOverlay: false });
+  document.getElementById("import-credentials-copy").addEventListener("click", async () => { await copyText(text); toast("Acessos copiados."); });
+}
+
+function openImportMenuItems(panel, tab, spec) {
+  panel.querySelector(".dd-import-template")?.addEventListener("click", () => { panel.remove(); downloadImportTemplate(tab); });
+  panel.querySelector(".dd-import-sheet")?.addEventListener("click", () => {
+    panel.remove();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    input.addEventListener("change", () => { if (input.files?.[0]) importModuleSpreadsheet(tab, input.files[0]); });
+    input.click();
+  });
+}
+const importMenuHtml = (canImport) => canImport ? '<div class="dd-head"><span>Importar</span><span>Planilha</span></div><button class="dd-menu-btn dd-import-sheet" type="button">Planilha (CSV, XLS, XLSX)</button><button class="dd-menu-btn dd-import-template" type="button">Baixar planilha modelo</button>' : "";
+
 function openDataMenu() {
   document.getElementById("data-dd")?.remove();
+  const tab = state.tab;
+  const spec = importSpec(tab);
+  const canImport = Boolean(spec) && currentUserCan(tab, "create");
   const panel = document.createElement("div");
   panel.id = "data-dd";
   panel.className = "data-dd";
   panel.innerHTML = `
-    <div class="dd-head"><span>Dados</span><span>CSV / WhatsApp</span></div>
+    <div class="dd-head"><span>Dados</span><span>${esc(spec?.title || (tab === "conversations" ? "Conversas" : ""))}</span></div>
     <div class="dd-head"><span>Exportar</span><span></span></div>
     <button class="dd-menu-btn" id="csv-active">CSV (Colunas Ativas)</button>
     <button class="dd-menu-btn" id="csv-all">CSV (Todas as Colunas)</button>
-    <div class="dd-head"><span>Importar</span><span></span></div>
-    <button class="dd-menu-btn" id="import-whatsapp">Conversa (.txt/.zip)</button>`;
+    ${canImport || tab === "conversations" ? '<div class="dd-head"><span>Importar</span><span></span></div>' : ""}
+    ${canImport ? '<button class="dd-menu-btn dd-import-sheet" type="button">Planilha (CSV, XLS, XLSX)</button><button class="dd-menu-btn dd-import-template" type="button">Baixar planilha modelo</button>' : ""}
+    ${tab === "conversations" ? '<button class="dd-menu-btn" id="import-whatsapp">Conversa (.txt/.zip)</button>' : ""}`;
   document.body.appendChild(panel);
   panel.querySelector("#csv-active").addEventListener("click", () => { panel.remove(); exportTableCSV(true); });
   panel.querySelector("#csv-all").addEventListener("click", () => { panel.remove(); exportTableCSV(false); });
-  panel.querySelector("#import-whatsapp").addEventListener("click", () => {
+  panel.querySelector("#import-whatsapp")?.addEventListener("click", () => {
     panel.remove();
     document.getElementById("import-file").click();
   });
+  openImportMenuItems(panel, tab, spec);
   setTimeout(() => {
     const outside = (e) => {
       if (!panel.contains(e.target) && e.target.id !== "data-btn") {
@@ -7399,6 +8041,7 @@ function openForm(tab, id, opts = {}) {
     const cnpjInput = form?.querySelector('[data-k="tax_id"]');
     const lookupButton = document.getElementById("lookup-cnpj");
     lastCompanyLookup = id ? taxIdDigits(id) : "";
+    companyLookupFresh = false;
     lookupButton?.addEventListener("click", () => lookupCompanyByCnpj(form, lookupButton, Boolean(id)));
     if (!id) cnpjInput?.addEventListener("blur", () => {
       if (cnpjInput.value.replace(/\D/g, "").length === 14) lookupCompanyByCnpj(form, lookupButton);
@@ -7566,6 +8209,7 @@ function openForm(tab, id, opts = {}) {
 }
 
 let lastCompanyLookup = "";
+let companyLookupFresh = false;
 function companyRegistryPayload(data, fallbackCnpj) {
   const address = data.address || {};
   const activity = data.mainActivity || data.company?.mainActivity;
@@ -7712,6 +8356,7 @@ async function lookupCompanyByCnpj(form, button, force = false) {
   try {
     fillCompanyForm(form, await fetchCompanyRegistryData(cnpj));
     lastCompanyLookup = cnpj;
+    companyLookupFresh = true;
     toast("Dados da empresa preenchidos.");
   } catch (err) {
     lastCompanyLookup = "";
@@ -7734,6 +8379,7 @@ function openCompanyDetails(taxId) {
       ${companyDetailValue("CNPJ", esc(company.tax_id))}
       ${companyDetailValue("Nome empresarial", esc(company.legal_name))}
       ${companyDetailValue("Nome fantasia", esc(company.trade_name))}
+      ${company.registry_pending ? companyDetailValue("Receita", companyRegistryBadgeHtml(company)) : ""}
       ${companyDetailValue("Situação cadastral", esc(company.registration_status))}
       ${companyDetailValue("Tipo de contato", esc(normalizeTextList(company.contact_type).join(", ")))}
       ${companyDetailValue("Inscrições estaduais", esc(normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ")))}
@@ -7762,7 +8408,7 @@ function openCompanyDetails(taxId) {
       const enriched = await fetchCompanyRegistryData(company.tax_id);
       delete enriched.tax_id;
       enriched.state_registrations = mergeStateRegistrations(company.state_registrations, enriched.state_registrations || [], enriched.state || company.state).filter((item) => item.ie);
-      const payload = Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== ""));
+      const payload = { ...Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== "")), registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() };
       const saved = await updateRow("companies", company.tax_id, payload);
       upsertCachedEntity("companies", saved);
       toast("Dados da empresa atualizados.");
@@ -8020,6 +8666,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       toast("Clique em Buscar dados: os dados da empresa vêm da Receita.", true);
       return;
     }
+    if (companyLookupFresh && lastCompanyLookup === taxIdDigits(body.tax_id) && body.legal_name) Object.assign(body, { registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() });
   }
   if (tab === "projects") {
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
@@ -8199,7 +8846,7 @@ function openSettings() {
 // Cada página tem apresentação e seções com passo a passo, recursos e dicas.
 const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
 const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
-const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
+const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
 const HELP_PAGES = {
@@ -8221,13 +8868,13 @@ const HELP_PAGES = {
       { title: "Cadastrar uma pessoa", steps: ["Clique no <b>+</b> da barra.", "Preencha o nome e ao menos um telefone ou e-mail.", "Vincule uma ou mais empresas, o tipo de contato e o canal de origem.", "Complete cargo, departamento, redes sociais, grupos, tags, CPF, nascimento e observações e salve."],
         cards: [["Padronização", "Telefones e e-mails são padronizados ao salvar."], ["Sem duplicados", "Mesmo nome com o mesmo telefone ou e-mail atualiza o contato existente."], ["Colunas fixas", "Nome e telefone ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION,
-      { title: "Importar contatos", cards: [["Google Contatos", "Na extensão Chrome, em Integrações › Google Contatos, conecte a conta, ajuste o mapeamento de campos e importe."], ["Pelas conversas", "Em Conversas, associe a conversa a uma pessoa existente."]] }
+      { title: "Importar contatos", cards: [["Planilha", "Em ⬆⬇ Dados baixe a planilha modelo, preencha e importe. Pessoas com o mesmo nome e telefone ou e-mail são atualizadas; empresas são vinculadas pelo CNPJ ou nome."], ["Google Contatos", "Na extensão Chrome, em Integrações › Google Contatos, conecte a conta, ajuste o mapeamento de campos e importe."], ["Pelas conversas", "Em Conversas, associe a conversa a uma pessoa existente."]] }
     ] },
   companies: { kicker: "Módulo", title: "Empresas", path: ["Cabeçalho", "Empresas"],
     lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
     sections: [
       { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b>: razão social, nome fantasia, contato, abertura, situação, capital social, atividades, endereço e QSA vêm da Receita e não podem ser editados.", "Confira as inscrições estaduais (a primeira é a do estado da empresa; adicione outras UFs) e a inscrição municipal.", "Escolha o tipo de contato, as pessoas vinculadas e as observações e salve. Para corrigir dados, use <b>Atualizar da Receita</b>."],
-        cards: [["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
+        cards: [["Importar planilha", "Em ⬆⬇ Dados baixe o modelo e informe só CNPJ, tipo de contato, inscrição municipal e observações. A empresa entra na hora com a tag <b>Desatualizada</b> e o CMS busca os dados da Receita em segundo plano (cerca de 5 por minuto). Se a consulta falhar aparece <b>Erro na Receita</b>: use Atualizar da Receita."], ["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION
     ] },
   conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
@@ -9853,11 +10500,17 @@ function openRegistrationDataMenu(anchor, table) {
   const panel = document.createElement("div");
   panel.id = "registration-data-dd";
   panel.className = "data-dd";
-  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Cadastros</span></div>
+  const importTab = `reg:${registrationsState.section}`;
+  const spec = importSpec(importTab);
+  const permissionModule = { products: "products", pipelines: "pipelines", users: "users", activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates" }[registrationsState.section];
+  const canImport = Boolean(spec) && (spec.adminOnly ? currentUserIsAdmin() : currentUserCan(permissionModule, "create"));
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>${esc(spec?.title || "Cadastros")}</span></div>
     <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
     <button class="dd-menu-btn registration-export-visible" type="button">Exportar colunas visíveis</button>
-    <button class="dd-menu-btn registration-export-all" type="button">Exportar todas as colunas</button>`;
+    <button class="dd-menu-btn registration-export-all" type="button">Exportar todas as colunas</button>
+    ${importMenuHtml(canImport)}`;
   document.body.appendChild(panel);
+  openImportMenuItems(panel, importTab, spec);
   const rect = anchor.getBoundingClientRect();
   panel.style.right = "auto";
   panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
@@ -15094,6 +15747,7 @@ async function init() {
     render();
     document.getElementById("boot-gate")?.setAttribute("hidden", "");
     startLiveUpdates();
+    if (isLive()) setTimeout(runCompanyRegistryQueue, 3000);
   } catch (err) {
     document.getElementById("main").innerHTML =
       `<div class="empty">Falha ao carregar do Supabase.<br><span class="muted">${esc(err.message)}</span><br><br>` +
