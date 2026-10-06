@@ -43,6 +43,12 @@
   .ico svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.6;
     stroke-linecap:round;stroke-linejoin:round}
   .ico.logout:hover{color:var(--red)}
+  .live-refresh{position:relative}
+  .live-refresh.has-changes{color:var(--cyan);animation:live-refresh-pulse 1.6s ease-in-out infinite}
+  .live-refresh.loading svg{animation:live-refresh-spin .8s linear infinite}
+  .live-refresh-badge{position:absolute;top:2px;right:0;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--red);color:#fff;font-size:9.5px;font-weight:800;line-height:15px;text-align:center;pointer-events:none}
+  @keyframes live-refresh-pulse{0%,100%{box-shadow:0 0 0 0 rgba(34,211,238,.45)}50%{box-shadow:0 0 0 6px rgba(34,211,238,0)}}
+  @keyframes live-refresh-spin{to{transform:rotate(360deg)}}
 
   .subbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,500px) minmax(max-content,1fr);align-items:center;gap:10px;height:40px;
     padding:4px 9px;border-bottom:1px solid var(--border2);flex:0 0 40px;box-sizing:border-box}
@@ -93,6 +99,20 @@
   .dd-item.on .dd-check{background:var(--blue);border-color:var(--blue)}
   .dd-foot{display:flex;gap:6px;padding:7px 8px;border-top:1px solid var(--border2);background:var(--panel2)}
   .dd-foot button{flex:1;font-size:10.5px;padding:6px 8px}
+  .dd-rule{display:grid;gap:6px;padding:8px 8px 4px;border-bottom:1px solid var(--border2)}
+  .dd-rule select,.dd-rule input{width:100%;min-width:0;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:5px;padding:6px 8px;font:inherit;font-size:12px}
+  .dd-rule-inputs{display:flex;align-items:center;gap:6px}
+  .dd-rule-inputs[hidden],.dd-rule-inputs [hidden]{display:none!important}
+  .dd-rule-and{color:var(--muted);font-size:11px}
+  .dd-list.dd-months{max-height:280px;padding:4px 0}
+  .dd-year{padding:6px 10px 8px;border-bottom:1px solid var(--border2)}
+  .dd-year-toggle{margin-bottom:6px;padding:2px 8px;border:1px solid var(--border);border-radius:5px;background:var(--panel2);color:var(--text);font:inherit;font-size:11.5px;font-weight:800;cursor:pointer}
+  .dd-year-toggle.on{background:var(--blue);border-color:var(--blue);color:#fff}
+  .dd-month-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+  .dd-month{height:26px;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--muted);font:inherit;font-size:11px;text-transform:uppercase;cursor:pointer}
+  .dd-month:hover:not(:disabled){color:var(--text);border-color:var(--blue)}
+  .dd-month.on{background:var(--blue);border-color:var(--blue);color:#fff}
+  .dd-month:disabled{opacity:.3;cursor:default}
   .cols-dd{position:fixed;z-index:90;top:0;right:0;bottom:38px;width:300px;max-width:92vw;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--border);box-shadow:-18px 0 36px rgba(0,0,0,.3)}
   .column-manager-head{height:42px;flex:0 0 42px;display:flex;align-items:center;justify-content:space-between;padding:0 9px 0 12px;border-bottom:2px solid var(--cyan);color:#8fc5ff;font-size:11px;font-weight:800;text-transform:uppercase}
   .column-manager-close{width:31px;height:31px;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--panel2);color:var(--muted);font-size:18px;cursor:pointer}
@@ -1532,6 +1552,8 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
       <button class="tab" data-tab="activities">Tarefas</button>
     </nav>
     <div class="actions">
+      <button class="ico live-refresh" data-live-refresh type="button" title="Atualizar dados">
+        <svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"/><path d="M16.2 3.8v3.4h-3.4"/></svg><span class="live-refresh-badge" hidden></span></button>
       <button class="ico" data-action="notifications" title="Notificações">
         <svg viewBox="0 0 20 20"><path d="M10 3a4 4 0 0 0-4 4v3l-1.5 2.2h11L14 10V7a4 4 0 0 0-4-4z"/><path d="M8.4 15.5a1.8 1.8 0 0 0 3.2 0"/></svg></button>
       <button class="ico" data-action="chat" title="Chat">

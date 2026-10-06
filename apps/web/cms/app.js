@@ -137,6 +137,7 @@ async function callUserAdmin(action, payload = {}) {
 async function signOut() {
   const session = readAuthSession();
   try { if (session?.access_token) await authRequest("logout", null, session.access_token); } catch (e) {}
+  stopLiveUpdates();
   storeAuthSession(null);
   currentProfile = null;
   cache = null;
@@ -421,6 +422,10 @@ const REMOTE_TABLE = {
   directMessages: "direct_messages"
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
+// Estado do tempo real (ver seção "Tempo real").
+const LIVE_TABLES = ["activities", "activity_comments", "deliveries", "negotiations", "contacts", "companies", "delivery_objectives", "delivery_goals"];
+const LIVE_TOPIC = "realtime:cms-live";
+const liveState = { socket: null, ref: 0, heartbeat: null, tokenTimer: null, retry: 0, reconnectTimer: null, pending: 0, ownWrites: new Map(), commentsActivityId: null, stopped: false, connectedOnce: false };
 const DATA_PERMISSION_MODULE = {
   users: "users", products: "products", pipelines: "pipelines",
   productActivities: "activityTemplates", productObjectives: "objectiveTemplates", productGoals: "goalTemplates",
@@ -537,6 +542,7 @@ async function api(path, opts = {}) {
   const headers = { apikey: c.anonKey, Authorization: `Bearer ${token || c.anonKey}`, ...(opts.headers || {}) };
   const startedAt = performance.now();
   const [resource, query = ""] = String(path).split("?");
+  noteOwnWrite(resource, query, method);
   const entry = { at: new Date().toISOString(), method, resource, query: query.slice(0, 300), status: 0, ms: 0, error: "" };
   let res;
   try {
@@ -4843,6 +4849,7 @@ function openProjectBoard(projectId) {
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
     headerCenter,
+    headerActions: liveRefreshButtonHtml(),
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
@@ -6014,48 +6021,22 @@ function openProjectColumnFilter(header, key) {
   const rows = projectSectionRows(projectBoardState.projectId);
   const values = [...new Set(rows.map((item) => projectRowValue(item, key, tasks)))]
     .sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" }));
-  const selected = new Set(projectBoardState.filters?.[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "project-filter-dd";
   panel.className = "filter-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 330))}px`;
   panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 360)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(header.dataset.projectLabel)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn project-filter-all">Todos</button><button class="btn danger project-filter-clear">Limpar</button><button class="btn primary project-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query))
-      .map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".project-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${header.dataset.projectLabel || key}`, values, key, current: projectBoardState.filters?.[key],
+    onApply: (rule) => {
+      if (rule) projectBoardState.filters[key] = rule; else delete projectBoardState.filters[key];
+      projectBoardState.page = 1;
+      panel.remove();
+      renderProjectBoard(projectBoardState.projectId);
+    }
   });
-  panel.querySelector(".project-filter-clear").addEventListener("click", () => {
-    delete projectBoardState.filters[key];
-    projectBoardState.page = 1;
-    panel.remove();
-    renderProjectBoard(projectBoardState.projectId);
-  });
-  panel.querySelector(".project-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) projectBoardState.filters[key] = selected;
-    else delete projectBoardState.filters[key];
-    projectBoardState.page = 1;
-    panel.remove();
-    renderProjectBoard(projectBoardState.projectId);
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -6242,7 +6223,7 @@ function renderActiveFilterBadges() {
     const label = col?.h || key;
     const selected = [...values];
     const sample = (cache[state.tab] || []).find((row) => String(row[key] ?? "") === selected[0]) || {};
-    const valueLabel = selected.length === 1
+    const valueLabel = values instanceof FilterRule ? values.label : selected.length === 1
       ? (selected[0] === "" ? "(em branco)" : col ? displayValue(sample, col, cache) : selected[0])
       : `${selected.length} selecionados`;
     return `<button class="filter-badge" data-key="${esc(key)}" title="Remover filtro de ${esc(label)}"><span>${esc(label)}: ${esc(valueLabel)}</span><span class="x">×</span></button>`;
@@ -6263,66 +6244,194 @@ function renderActiveFilterBadges() {
   };
 }
 
+// ---------- Filtros de coluna (lista, número e mês/ano) ----------
+// Todas as tabelas guardam o filtro da coluna como um Set de valores. Os
+// filtros de número (entre, maior, menor...) e de data (mês/ano) usam
+// FilterRule, que responde .size, .has() e iteração como um Set — assim os
+// pontos que aplicam e exibem os filtros continuam funcionando.
+const FILTER_BLANKS = new Set(["", "—", "-", "(em branco)", "(vazio)"]);
+const FILTER_MONTHS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+const FILTER_NUMBER_OPS = [["between", "Entre"], ["gt", "Maior que"], ["gte", "Maior ou igual a"], ["lt", "Menor que"], ["lte", "Menor ou igual a"], ["eq", "Igual a"]];
+
+function filterNumberValue(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (FILTER_BLANKS.has(text)) return null;
+  let clean = text.replace(/[^\d,.\-]/g, "");
+  if (!/\d/.test(clean)) return null;
+  if (clean.includes(",")) clean = clean.replace(/\./g, "").replace(",", ".");
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(clean)) clean = clean.replace(/\./g, "");
+  const number = Number(clean);
+  return Number.isFinite(number) ? number : null;
+}
+
+function filterMonthValue(value) {
+  const text = String(value ?? "").trim();
+  let match = text.match(/^(\d{4})-(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}`;
+  match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (match) return `${match[3]}-${match[2]}`;
+  return "";
+}
+
+const filterMonthLabel = (month) => month ? `${FILTER_MONTHS[Number(month.slice(5, 7)) - 1] || month.slice(5, 7)}/${month.slice(0, 4)}` : "(em branco)";
+const filterNumberLabel = (number) => Number(number).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+
+class FilterRule {
+  constructor(kind, data) { Object.assign(this, data, { kind }); }
+  get size() { return 1; }
+  has(value) {
+    if (this.kind === "month") return this.months.has(filterMonthValue(value));
+    const number = filterNumberValue(value);
+    if (number == null) return false;
+    if (this.op === "between") return number >= Math.min(this.a, this.b) && number <= Math.max(this.a, this.b);
+    if (this.op === "gt") return number > this.a;
+    if (this.op === "gte") return number >= this.a;
+    if (this.op === "lt") return number < this.a;
+    if (this.op === "lte") return number <= this.a;
+    return number === this.a;
+  }
+  get label() {
+    if (this.kind === "month") {
+      const months = [...this.months].sort();
+      return months.length <= 3 ? months.map(filterMonthLabel).join(", ") : `${months.length} meses`;
+    }
+    if (this.op === "between") return `entre ${filterNumberLabel(this.a)} e ${filterNumberLabel(this.b)}`;
+    return `${{ gt: ">", gte: "≥", lt: "<", lte: "≤", eq: "=" }[this.op]} ${filterNumberLabel(this.a)}`;
+  }
+  *[Symbol.iterator]() { yield this.label; }
+}
+
+// Tipo da coluna: pela dica da coluna ou pelos próprios valores. Códigos
+// (CNPJ, CPF, telefone, CEP) continuam como lista.
+function filterColumnKind(values, key = "", hint = "") {
+  if (hint === "number" || hint === "date") return hint;
+  const filled = values.map((value) => String(value ?? "").trim()).filter((value) => !FILTER_BLANKS.has(value));
+  if (!filled.length) return "list";
+  if (filled.every((value) => /^(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})([ T].*)?$/.test(value))) return "date";
+  if (/(tax_?id|cnpj|cpf|phone|tel|zip|cep|code|codigo|document|_id$|^id$)/i.test(key)) return "list";
+  const numeric = filled.every((value) => /^(R\$\s*)?-?(\d{1,3}(\.\d{3})+|\d+)([.,]\d+)?\s*%?$/.test(value) && value.replace(/\D/g, "").length <= 12);
+  return numeric ? "number" : "list";
+}
+
+// Monta o conteúdo do painel de filtro (cabeçalho, corpo e rodapé) e chama
+// onApply com o novo filtro (Set, FilterRule ou null para limpar).
+function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", labelFor = (value) => (value === "" ? "(em branco)" : value), current = null, onApply }) {
+  const kind = filterColumnKind(values, key, hint);
+  const selected = new Set(current instanceof FilterRule ? [] : current || []);
+  const rule = current instanceof FilterRule ? current : null;
+  const months = new Set(rule?.kind === "month" ? rule.months : []);
+  const monthValues = kind === "date" ? [...new Set(values.map(filterMonthValue))].sort().reverse() : [];
+  const years = [...new Set(monthValues.filter(Boolean).map((month) => month.slice(0, 4)))];
+  const head = `<div class="dd-head"><span>${esc(title)}</span><span>${kind === "date" ? `${monthValues.filter(Boolean).length} meses` : values.length}</span></div>`;
+  const numberRule = kind === "number" ? `<div class="dd-rule">
+      <select class="dd-rule-op"><option value="">Condição…</option>${FILTER_NUMBER_OPS.map(([id, label]) => `<option value="${id}"${rule?.op === id ? " selected" : ""}>${label}</option>`).join("")}</select>
+      <div class="dd-rule-inputs"><input class="dd-rule-a" type="number" step="any" placeholder="Valor" value="${rule?.kind === "number" ? esc(String(rule.a)) : ""}"><span class="dd-rule-and">e</span><input class="dd-rule-b" type="number" step="any" placeholder="Valor" value="${rule?.kind === "number" && rule.op === "between" ? esc(String(rule.b)) : ""}"></div>
+    </div>` : "";
+  panel.innerHTML = `${head}${numberRule}${kind === "date" ? "" : '<div class="dd-search"><input placeholder="Buscar..."></div>'}<div class="dd-list${kind === "date" ? " dd-months" : ""}"></div>
+    <div class="dd-foot"><button class="btn dd-all" type="button">Todos</button><button class="btn danger dd-clear" type="button">Limpar</button><button class="btn primary dd-apply" type="button">Aplicar</button></div>`;
+  const list = panel.querySelector(".dd-list");
+  const search = panel.querySelector(".dd-search input");
+  const op = panel.querySelector(".dd-rule-op");
+  const syncRuleInputs = () => {
+    if (!op) return;
+    panel.querySelector(".dd-rule-inputs").hidden = !op.value;
+    panel.querySelector(".dd-rule-and").hidden = op.value !== "between";
+    panel.querySelector(".dd-rule-b").hidden = op.value !== "between";
+  };
+  const drawList = () => {
+    const query = String(search?.value || "").trim().toLocaleLowerCase("pt-BR");
+    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query) || labelFor(value).toLocaleLowerCase("pt-BR").includes(query))
+      .map((value) => `<div class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(labelFor(value))}</span></div>`).join("");
+    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("mousedown", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const value = item.dataset.value;
+      if (selected.has(value)) selected.delete(value); else selected.add(value);
+      drawList();
+    }));
+  };
+  const drawMonths = () => {
+    list.innerHTML = years.map((year) => {
+      const yearMonths = monthValues.filter((month) => month.startsWith(`${year}-`));
+      const allOn = yearMonths.every((month) => months.has(month));
+      return `<div class="dd-year"><button class="dd-year-toggle${allOn ? " on" : ""}" type="button" data-year="${year}">${year}</button><div class="dd-month-grid">${FILTER_MONTHS.map((label, index) => {
+        const month = `${year}-${String(index + 1).padStart(2, "0")}`;
+        const present = yearMonths.includes(month);
+        return `<button class="dd-month${months.has(month) ? " on" : ""}" type="button" data-month="${month}"${present ? "" : " disabled"}>${label}</button>`;
+      }).join("")}</div></div>`;
+    }).join("") + (monthValues.includes("") ? `<div class="dd-item${months.has("") ? " on" : ""}" data-month=""><span class="dd-check">${months.has("") ? "✓" : ""}</span><span>(em branco)</span></div>` : "");
+    list.querySelectorAll("[data-month]").forEach((button) => button.addEventListener("mousedown", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const month = button.dataset.month;
+      if (months.has(month)) months.delete(month); else months.add(month);
+      drawMonths();
+    }));
+    list.querySelectorAll("[data-year]").forEach((button) => button.addEventListener("mousedown", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const yearMonths = monthValues.filter((month) => month.startsWith(`${button.dataset.year}-`));
+      const allOn = yearMonths.every((month) => months.has(month));
+      yearMonths.forEach((month) => allOn ? months.delete(month) : months.add(month));
+      drawMonths();
+    }));
+  };
+  const draw = kind === "date" ? drawMonths : drawList;
+  draw();
+  syncRuleInputs();
+  op?.addEventListener("change", syncRuleInputs);
+  search?.addEventListener("input", drawList);
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); handler(); });
+  on(".dd-all", () => {
+    if (kind === "date") {
+      if (months.size === monthValues.length) months.clear(); else monthValues.forEach((month) => months.add(month));
+    } else if (selected.size === values.length) selected.clear();
+    else values.forEach((value) => selected.add(value));
+    draw();
+  });
+  on(".dd-clear", () => onApply(null));
+  on(".dd-apply", () => {
+    if (kind === "date") {
+      onApply(months.size && months.size < monthValues.length ? new FilterRule("month", { months: new Set(months) }) : null);
+      return;
+    }
+    if (op?.value) {
+      const a = Number(panel.querySelector(".dd-rule-a").value);
+      const b = Number(panel.querySelector(".dd-rule-b").value);
+      const hasA = panel.querySelector(".dd-rule-a").value !== "" && Number.isFinite(a);
+      const hasB = panel.querySelector(".dd-rule-b").value !== "" && Number.isFinite(b);
+      if (!hasA || (op.value === "between" && !hasB)) { toast("Informe o valor da condição.", true); return; }
+      onApply(new FilterRule("number", { op: op.value, a, b: op.value === "between" ? b : null }));
+      return;
+    }
+    onApply(selected.size && selected.size < values.length ? new Set(selected) : null);
+  });
+  (op && rule ? op : search || panel.querySelector(".dd-apply"))?.focus();
+}
+
 function openColumnFilter(th, key) {
   document.getElementById("filter-dd")?.remove();
   const col = columns(state.tab, cache).find((item) => item.k === key);
   const allRows = cache[state.tab] || [];
   const values = [...new Set(allRows.map((r) => String(r[key] ?? "")))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   const filters = tabFilters();
-  let temp = new Set(filters[key] || []);
   const rect = th.getBoundingClientRect();
   const dd = document.createElement("div");
   dd.id = "filter-dd";
   dd.className = "filter-dd";
   dd.style.left = Math.min(rect.left, window.innerWidth - 330) + "px";
   dd.style.top = Math.min(rect.bottom + 4, window.innerHeight - 360) + "px";
-  dd.innerHTML = `
-    <div class="dd-head"><span>▼ ${esc(col?.h || key)}</span><span>${values.length} valores</span></div>
-    <div class="dd-search"><input id="filter-dd-search" placeholder="Buscar..."></div>
-    <div class="dd-list" id="filter-dd-list"></div>
-    <div class="dd-foot">
-      <button class="btn" id="filter-dd-all">Todos</button>
-      <button class="btn primary" id="filter-dd-ok">Aplicar</button>
-      <button class="btn danger" id="filter-dd-clear">Limpar</button>
-    </div>`;
   document.body.appendChild(dd);
-
-  const list = dd.querySelector("#filter-dd-list");
-  const input = dd.querySelector("#filter-dd-search");
   const labelFor = (v) => {
     const sample = allRows.find((r) => String(r[key] ?? "") === v) || {};
     return v === "" ? "(em branco)" : displayValue(sample, col, cache);
   };
-  const draw = () => {
-    const q = input.value.trim().toLowerCase();
-    list.innerHTML = values.filter((v) => !q || v.toLowerCase().includes(q) || labelFor(v).toLowerCase().includes(q))
-      .map((v) => `<div class="dd-item${temp.has(v) ? " on" : ""}" data-v="${esc(v)}">
-        <span class="dd-check">${temp.has(v) ? "✓" : ""}</span><span>${esc(labelFor(v))}</span>
-      </div>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const v = item.dataset.v;
-      if (temp.has(v)) temp.delete(v); else temp.add(v);
-      draw();
-    }));
-  };
-  draw();
-  input.addEventListener("input", draw);
-  dd.querySelector("#filter-dd-all").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    temp = temp.size === values.length ? new Set() : new Set(values);
-    draw();
-  });
-  dd.querySelector("#filter-dd-clear").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    delete filters[key]; if (state.pages[state.tab]) state.pages[state.tab] = 1; closeFloaters(); render();
-  });
-  dd.querySelector("#filter-dd-ok").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    if (temp.size === 0 || temp.size === values.length) delete filters[key];
-    else filters[key] = new Set(temp);
-    if (state.pages[state.tab]) state.pages[state.tab] = 1;
-    closeFloaters(); render();
+  mountColumnFilterPanel(dd, {
+    title: `▼ ${col?.h || key}`, values, key, labelFor, current: filters[key],
+    hint: col?.num ? "number" : col?.fmt === dt ? "date" : "",
+    onApply: (rule) => {
+      if (rule) filters[key] = rule; else delete filters[key];
+      if (state.pages[state.tab]) state.pages[state.tab] = 1;
+      closeFloaters(); render();
+    }
   });
   setTimeout(() => {
     const outside = (e) => {
@@ -6333,7 +6442,6 @@ function openColumnFilter(th, key) {
     };
     document.addEventListener("mousedown", outside);
   }, 80);
-  input.focus();
 }
 
 function openColumnManager() {
@@ -7788,7 +7896,7 @@ function openSettings() {
 // Cada página tem apresentação e seções com passo a passo, recursos e dicas.
 const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
 const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
-const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
+const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por mês/ano. Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
 const HELP_PAGES = {
@@ -7797,7 +7905,7 @@ const HELP_PAGES = {
     sections: [
       { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
         cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
-      { title: "Cabeçalho e rodapé", cards: [["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
+      { title: "Cabeçalho e rodapé", cards: [["↻ Atualizar", "Ao lado do sino. Pisca e mostra quantas alterações outros usuários fizeram; clique para trazer os dados novos sem recarregar a página. Comentários chegam sozinhos no painel aberto."], ["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
       { title: "Tabelas e visualizações", lead: "Todas as tabelas seguem a mesma barra: <b>≡ Agrupar · ⊞ Colunas · Visualização ▾ · Matriz · Dashboard · ⬆⬇ Dados</b>. O que não se aplica fica desativado.",
         cards: [...HELP_TABLE_SECTION.cards, ["▸ Expandir", "A coluna após a seleção abre subtarefas e grupos; o ▸ do cabeçalho expande ou recolhe tudo."], ["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard, conforme o módulo. Em telas menores os botões viram ícones."]] },
       { title: "Tablet e celular", steps: ["Instale o app pela tela inicial para usar em tela cheia.", "Segure o dedo no título da coluna para filtrar.", "Faça pinça para dar zoom no mapa mental e no fluxo BPMN."] },
@@ -8409,6 +8517,7 @@ function openRegistrationsModal(section = "products") {
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
     cls: "full registrations-modal",
     headerCenter,
+    headerActions: liveRefreshButtonHtml(),
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-registration-tab]").forEach((button) => button.addEventListener("click", () => {
@@ -9596,43 +9705,22 @@ function openRegistrationColumnFilter(header, table, key) {
   const tableState = registrationTableState();
   const values = [...new Set(registrationTableRows(table).map((row) => registrationCell(row, key)?.textContent.trim() || "—"))]
     .sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" }));
-  const selected = new Set(tableState.filters[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "registration-filter-dd";
   panel.className = "filter-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 330))}px`;
   panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 360)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(header.dataset.registrationLabel)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn reg-filter-all">Todos</button><button class="btn danger reg-filter-clear">Limpar</button><button class="btn primary reg-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".reg-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear();
-    else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${header.dataset.registrationLabel || key}`, values, key, current: tableState.filters[key],
+    onApply: (rule) => {
+      if (rule) tableState.filters[key] = rule; else delete tableState.filters[key];
+      tableState.page = 1;
+      panel.remove();
+      applyRegistrationTableState(table);
+    }
   });
-  panel.querySelector(".reg-filter-clear").addEventListener("click", () => { selected.clear(); delete tableState.filters[key]; tableState.page = 1; panel.remove(); applyRegistrationTableState(table); });
-  panel.querySelector(".reg-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) tableState.filters[key] = selected;
-    else delete tableState.filters[key];
-    tableState.page = 1;
-    panel.remove();
-    applyRegistrationTableState(table);
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -11590,7 +11678,6 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     const values = [...new Set(activeSheet().rows.map((row) => String(row.cells[column.id] || "")))].sort((a, b) =>
       a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
     );
-    let selected = new Set(view.filters[column.id] || []);
     const rect = header.getBoundingClientRect();
     const panel = document.createElement("div");
     panel.id = "custom-table-filter-dd";
@@ -11598,40 +11685,16 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 300))}px`;
     panel.style.top = `${rect.bottom + 4}px`;
     panel.style.maxHeight = `${Math.max(220, window.innerHeight - rect.bottom - 20)}px`;
-    panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(column.name)}</span><span>${values.length}</span></div>
-      <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-      <div class="dd-foot"><button class="btn custom-table-filter-all">Todos</button><button class="btn danger custom-table-filter-clear">Limpar</button><button class="btn primary custom-table-filter-apply">Aplicar</button></div>`;
     document.body.appendChild(panel);
-    const list = panel.querySelector(".dd-list");
-    const draw = () => {
-      const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-      list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) =>
-        `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value || "(vazio)")}</span></label>`
-      ).join("");
-      list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-        const value = item.dataset.value;
-        if (selected.has(value)) selected.delete(value); else selected.add(value);
-        draw();
-      }));
-    };
-    draw();
-    panel.querySelector("input").addEventListener("input", draw);
-    panel.querySelector(".custom-table-filter-all").addEventListener("click", () => {
-      if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-      draw();
+    mountColumnFilterPanel(panel, {
+      title: `Filtrar · ${column.name}`, values, key: column.name || "", current: view.filters[column.id],
+      labelFor: (value) => value || "(vazio)",
+      onApply: (rule) => {
+        if (rule) view.filters[column.id] = rule; else delete view.filters[column.id];
+        panel.remove();
+        renderGrid();
+      }
     });
-    panel.querySelector(".custom-table-filter-clear").addEventListener("click", () => {
-      delete view.filters[column.id];
-      panel.remove();
-      renderGrid();
-    });
-    panel.querySelector(".custom-table-filter-apply").addEventListener("click", () => {
-      if (selected.size && selected.size < values.length) view.filters[column.id] = selected;
-      else delete view.filters[column.id];
-      panel.remove();
-      renderGrid();
-    });
-    panel.querySelector("input").focus();
     setTimeout(() => {
       const outside = (event) => {
         if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -13556,7 +13619,6 @@ function openToolColumnFilter(header, key, rows, valueFn, section = toolsState.s
     a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
   );
   const tableState = toolTableState(section);
-  let selected = new Set(tableState.filters[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "tool-filter-dd";
@@ -13564,35 +13626,14 @@ function openToolColumnFilter(header, key, rows, valueFn, section = toolsState.s
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 300))}px`;
   panel.style.top = `${rect.bottom + 4}px`;
   panel.style.maxHeight = `${Math.max(220, window.innerHeight - rect.bottom - 20)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(TOOL_COLUMN_DEFS[section].find((col) => col.k === key)?.h || key)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn tool-filter-all">Todos</button><button class="btn danger tool-filter-clear">Limpar</button><button class="btn primary tool-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".tool-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${TOOL_COLUMN_DEFS[section].find((col) => col.k === key)?.h || key}`, values, key, current: tableState.filters[key],
+    onApply: (rule) => {
+      if (rule) tableState.filters[key] = rule; else delete tableState.filters[key];
+      panel.remove(); renderToolsSection();
+    }
   });
-  panel.querySelector(".tool-filter-clear").addEventListener("click", () => {
-    delete tableState.filters[key]; panel.remove(); renderToolsSection();
-  });
-  panel.querySelector(".tool-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) tableState.filters[key] = selected;
-    else delete tableState.filters[key];
-    panel.remove(); renderToolsSection();
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -13910,6 +13951,7 @@ function openTaskComments(activityId) {
       <button class="btn primary" type="submit">Enviar</button>
     </form>
   </div>`;
+  liveState.commentsActivityId = activityId;
   const insideProject = Boolean(document.getElementById("project-board-root"));
   if (insideProject) nestedSidePanel(`Comentários · ${activityDisplayName(task)}`, inner);
   else sidePanel(`Comentários · ${activityDisplayName(task)}`, inner, { closeOnOverlay: true });
@@ -14264,6 +14306,162 @@ function handleAction(action) {
   }
 }
 
+// ---------- Tempo real ----------
+// Modelo misto: comentários chegam direto no painel aberto; as demais
+// mudanças feitas por outros usuários acumulam no botão Atualizar (ao lado do
+// sino e no cabeçalho dos módulos em tela cheia), para a tela não mudar
+// enquanto a pessoa trabalha. Usa o Supabase Realtime (RLS continua valendo).
+
+function noteOwnWrite(resource, query, method) {
+  if (["GET", "HEAD"].includes(method)) return;
+  const now = Date.now();
+  liveState.ownWrites.set(`${resource}:*`, now);
+  for (const match of String(query || "").matchAll(/(?:^|&)(?:id|tax_id)=(?:eq\.|in\.\()([^&)]+)/g)) {
+    decodeURIComponent(match[1]).split(",").forEach((id) => liveState.ownWrites.set(`${resource}:${id.replace(/"/g, "")}`, now));
+  }
+  if (liveState.ownWrites.size > 2000) {
+    for (const [key, at] of liveState.ownWrites) if (now - at > 60000) liveState.ownWrites.delete(key);
+  }
+}
+
+const liveRefreshButtonHtml = () => '<button class="ico live-refresh" data-live-refresh type="button" title="Atualizar dados"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"/><path d="M16.2 3.8v3.4h-3.4"/></svg><span class="live-refresh-badge" hidden></span></button>';
+
+function updateLiveRefreshButtons() {
+  const count = liveState.pending;
+  document.querySelectorAll(".live-refresh").forEach((button) => {
+    button.classList.toggle("has-changes", count > 0);
+    button.title = count ? `${count} alteração(ões) feita(s) por outros usuários · clique para atualizar` : "Atualizar dados";
+    const badge = button.querySelector(".live-refresh-badge");
+    if (badge) { badge.hidden = !count; badge.textContent = count > 99 ? "99+" : String(count); }
+  });
+}
+
+function handleLiveChange(data) {
+  if (!cache || !LIVE_TABLES.includes(data?.table)) return;
+  const record = data.type === "DELETE" ? data.old_record : data.record;
+  const key = record?.id ?? record?.tax_id;
+  const now = Date.now();
+  const ownAt = liveState.ownWrites.get(`${data.table}:${key}`);
+  if (ownAt && now - ownAt < 15000) return;
+  if (data.type === "INSERT" && now - (liveState.ownWrites.get(`${data.table}:*`) || 0) < 3000) return;
+  if (data.table === "activity_comments" && data.type === "INSERT" && record?.id) {
+    if (record.author_id && record.author_id === currentProfile?.id) return;
+    if (!cache.activityComments.some((comment) => comment.id === record.id)) cache.activityComments.push(record);
+    const list = document.getElementById("task-comments-list");
+    const task = (cache.activityRecords || []).find((item) => item.id === record.activity_id);
+    if (list && task && liveState.commentsActivityId === record.activity_id) {
+      const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+      list.innerHTML = taskCommentsListHtml(task);
+      if (atBottom) list.scrollTop = list.scrollHeight;
+    }
+  }
+  liveState.pending += 1;
+  updateLiveRefreshButtons();
+}
+
+function liveSend(event, payload, topic = LIVE_TOPIC) {
+  const socket = liveState.socket;
+  if (!socket || socket.readyState !== 1) return;
+  socket.send(JSON.stringify({ topic, event, payload, ref: String(++liveState.ref), join_ref: topic === LIVE_TOPIC ? "1" : null }));
+}
+
+function clearLiveTimers() {
+  clearInterval(liveState.heartbeat);
+  clearInterval(liveState.tokenTimer);
+  liveState.heartbeat = null;
+  liveState.tokenTimer = null;
+}
+
+async function startLiveUpdates() {
+  if (!isLive() || liveState.socket || typeof WebSocket === "undefined") return;
+  liveState.stopped = false;
+  const c = getCfg();
+  const token = await getAccessToken();
+  if (!token || !c.url || !c.anonKey) return;
+  let socket;
+  try {
+    socket = new WebSocket(`${c.url.replace(/^http/i, "ws")}/realtime/v1/websocket?apikey=${encodeURIComponent(c.anonKey)}&vsn=1.0.0`);
+  } catch (error) {
+    scheduleLiveReconnect();
+    return;
+  }
+  liveState.socket = socket;
+  socket.onopen = () => {
+    if (liveState.connectedOnce && liveState.retry > 0) { liveState.pending += 1; updateLiveRefreshButtons(); }
+    liveState.retry = 0;
+    liveState.connectedOnce = true;
+    liveSend("phx_join", {
+      config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: LIVE_TABLES.map((table) => ({ event: "*", schema: "public", table })) },
+      access_token: token
+    });
+    liveState.heartbeat = setInterval(() => liveSend("heartbeat", {}, "phoenix"), 25000);
+    liveState.tokenTimer = setInterval(async () => {
+      const fresh = await getAccessToken();
+      if (fresh) liveSend("access_token", { access_token: fresh });
+    }, 5 * 60000);
+  };
+  socket.onmessage = (event) => {
+    let message;
+    try { message = JSON.parse(event.data); } catch (error) { return; }
+    if (message.event === "postgres_changes" && message.payload?.data) handleLiveChange(message.payload.data);
+    else if (message.event === "phx_reply" && message.payload?.status === "error") console.warn("[CMS] Tempo real recusado", message.payload.response);
+  };
+  socket.onclose = () => {
+    clearLiveTimers();
+    if (liveState.socket === socket) liveState.socket = null;
+    if (!liveState.stopped) scheduleLiveReconnect();
+  };
+  socket.onerror = () => { try { socket.close(); } catch (error) {} };
+}
+
+function scheduleLiveReconnect() {
+  clearTimeout(liveState.reconnectTimer);
+  const delay = Math.min(30000, 1000 * 2 ** liveState.retry);
+  liveState.retry += 1;
+  liveState.reconnectTimer = setTimeout(() => { if (!liveState.stopped) startLiveUpdates(); }, delay);
+}
+
+function stopLiveUpdates() {
+  liveState.stopped = true;
+  clearTimeout(liveState.reconnectTimer);
+  clearLiveTimers();
+  const socket = liveState.socket;
+  liveState.socket = null;
+  try { socket?.close(); } catch (error) {}
+  liveState.pending = 0;
+  updateLiveRefreshButtons();
+}
+
+async function refreshLiveData() {
+  const buttons = [...document.querySelectorAll(".live-refresh")];
+  if (buttons.some((button) => button.classList.contains("loading"))) return;
+  buttons.forEach((button) => button.classList.add("loading"));
+  try {
+    await loadAll();
+    refreshActivityCache();
+    liveState.pending = 0;
+    render();
+    if (document.getElementById("project-board-root") && projectBoardState.projectId) {
+      if (cache.projectById?.[projectBoardState.projectId]) renderProjectBoard(projectBoardState.projectId);
+      else { closeModal(); toast("Esta entrega foi removida por outro usuário.", true); }
+    }
+    if (document.getElementById("registrations-root")) renderRegistrationsSection();
+    const list = document.getElementById("task-comments-list");
+    const task = (cache.activityRecords || []).find((item) => item.id === liveState.commentsActivityId);
+    if (list && task) list.innerHTML = taskCommentsListHtml(task);
+    toast("Dados atualizados.");
+  } catch (error) {
+    toast("Erro ao atualizar · " + error.message, true);
+  } finally {
+    document.querySelectorAll(".live-refresh").forEach((button) => button.classList.remove("loading"));
+    updateLiveRefreshButtons();
+  }
+}
+
+document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-live-refresh]")) refreshLiveData();
+});
+
 // ---------- Eventos globais ----------
 document.getElementById("login-form")?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -14398,6 +14596,7 @@ async function init() {
     hideLogin();
     render();
     document.getElementById("boot-gate")?.setAttribute("hidden", "");
+    startLiveUpdates();
   } catch (err) {
     document.getElementById("main").innerHTML =
       `<div class="empty">Falha ao carregar do Supabase.<br><span class="muted">${esc(err.message)}</span><br><br>` +
