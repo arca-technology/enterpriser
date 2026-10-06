@@ -8302,8 +8302,12 @@ const HELP_PAGES = {
     lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
     sections: [{ title: "Criar um documento", steps: ["Informe Categoria, Canal, Módulo, Submódulo e Tipo.", "O nome é montado sozinho: <b>CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | TIPO</b>.", "Monte os slides com os blocos.", "Use ≡ para agrupar por Categoria + Canal + Módulo."] }] },
   "tool-tables": { kicker: "Ferramentas", title: "Tabelas", path: ["Rodapé", "Ferramentas", "Tabelas"],
-    lead: "Tabelas personalizadas que podem ser referenciadas nas tarefas.",
-    sections: [{ title: "Importar", steps: ["Clique em <b>⬆⬇ Dados</b>.", "Escolha um CSV, XLS ou XLSX (administradores)."] }] },
+    lead: "Tabelas personalizadas com abas, que podem ser referenciadas nas tarefas.",
+    sections: [
+      { title: "Estrutura e nome", steps: ["Na barra da tabela preencha Categoria, Canal, Módulo, Submódulo e Nome.", "Marque <b>Usar como nome do arquivo</b> para o nome virar CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | NOME.", "Salve."] },
+      { title: "Colunas", cards: [["Menu da coluna", "Clique no <b>⋮</b> ou com o botão direito no título: congelar, ordenar, filtrar, ajustar largura, inserir à esquerda/direita e excluir."], ["Congelar", "Congela da primeira coluna até a escolhida; elas ficam fixas ao rolar para a direita (📌)."], ["Dimensionar", "Arraste a borda direita do título. Duplo clique ajusta ao conteúdo."], ["Excluir", "Pede confirmação no próprio menu e só é definitivo ao salvar a tabela."]] },
+      { title: "Importar", steps: ["Clique em <b>⬆⬇ Dados</b>.", "Escolha um CSV, XLS ou XLSX (administradores)."] }
+    ] },
   social: { kicker: "Rodapé", title: "Social", path: ["Rodapé", "Social"],
     lead: "Abre na Home com os perfis configurados em Integrações: Facebook, Instagram, LinkedIn, Reddit, TikTok Shop e YouTube.",
     sections: [{ title: "Redes", lead: "Cada rede tem sua aba com a tabela do módulo, colunas, filtros e exportação de dados." }] }
@@ -10696,7 +10700,9 @@ const TOOL_COLUMN_DEFS = {
     { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
   ],
   tables: [
-    { k: "name", h: "Nome" }, { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
+    { k: "name", h: "Nome" }, { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" },
+    { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
     { k: "row_count", h: "Linhas" }, { k: "updated_at", h: "Atualizado em" }
   ]
 };
@@ -11764,16 +11770,31 @@ function renderToolDocuments(root) {
   root.querySelector(".tool-filter-clear-all")?.addEventListener("click", () => { tableState.filters = {}; renderToolsSection(); });
 }
 
+const CUSTOM_TABLE_DEFAULT_WIDTH = 190;
+const CUSTOM_TABLE_MIN_WIDTH = 80;
+const CUSTOM_TABLE_MAX_WIDTH = 800;
+const CUSTOM_TABLE_INDEX_WIDTH = 44;
+const customTableColumnWidth = (column) => column?.width || CUSTOM_TABLE_DEFAULT_WIDTH;
+// Nome do arquivo montado pela estrutura: CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | NOME.
+function customTableStructuredName(table) {
+  return [table.category, table.system_name, table.module_name, table.submodule_name, table.base_name]
+    .map((value) => String(value || "").trim()).filter(Boolean).map((value) => value.toLocaleUpperCase("pt-BR")).join(" | ");
+}
+
 function normalizeCustomTableColumns(value) {
   let columns = value;
   if (typeof columns === "string") {
     try { columns = JSON.parse(columns); } catch (e) { columns = []; }
   }
   if (!Array.isArray(columns) || !columns.length) columns = [{ name: "Coluna 1" }];
-  return columns.map((column, index) => ({
-    id: String(column?.id || crypto.randomUUID()),
-    name: String(column?.name || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`
-  }));
+  return columns.map((column, index) => {
+    const width = Number(column?.width);
+    return {
+      id: String(column?.id || crypto.randomUUID()),
+      name: String(column?.name || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`,
+      ...(Number.isFinite(width) && width > 0 ? { width: Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, width))) } : {})
+    };
+  });
 }
 
 function normalizeCustomTableRows(value, columns) {
@@ -11805,7 +11826,8 @@ function normalizeCustomTableSheets(value, fallbackColumns, fallbackRows) {
       id: String(sheet?.id || crypto.randomUUID()),
       name: String(sheet?.name || `Planilha ${index + 1}`).trim() || `Planilha ${index + 1}`,
       columns,
-      rows: normalizeCustomTableRows(sheet?.rows, columns)
+      rows: normalizeCustomTableRows(sheet?.rows, columns),
+      frozen: Math.max(0, Math.min(columns.length, Math.floor(Number(sheet?.frozen) || 0)))
     };
   });
 }
@@ -11813,9 +11835,12 @@ function normalizeCustomTableSheets(value, fallbackColumns, fallbackRows) {
 function normalizeCustomTable(item = {}) {
   const legacyColumns = normalizeCustomTableColumns(item.columns);
   const sheets = normalizeCustomTableSheets(item.sheets, legacyColumns, item.rows);
+  const name = String(item.name || "Nova tabela").trim() || "Nova tabela";
   return {
     ...item,
-    name: String(item.name || "Nova tabela").trim() || "Nova tabela",
+    name,
+    base_name: String(item.base_name || "").trim() || (item.use_structured_name ? "" : name),
+    use_structured_name: Boolean(item.use_structured_name),
     sheets,
     columns: sheets[0].columns,
     rows: sheets[0].rows
@@ -11930,7 +11955,12 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
   const view = { sortKey: null, sortDir: 1, filters: {} };
   const content = `<div class="custom-table-editor${readOnly ? " is-readonly" : ""}">
     <div class="custom-table-editor-toolbar">
-      <input id="custom-table-name" value="${esc(draft.name)}" placeholder="Nome da tabela"${readOnly ? " disabled" : ""}>
+      <div class="custom-table-meta">
+        ${[["category", "Categoria"], ["system_name", "Canal"], ["module_name", "Módulo"], ["submodule_name", "Submódulo"]].map(([key, label]) => `<input class="custom-table-meta-input" data-meta="${key}" value="${esc(draft[key] || "")}" placeholder="${label}" title="${label}" list="custom-table-meta-${key}"${readOnly ? " disabled" : ""}><datalist id="custom-table-meta-${key}">${[...new Set(toolCustomTableRows().map((item) => String(item[key] || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR")).map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>`).join("")}
+        <input id="custom-table-name" class="custom-table-name-input" value="${esc(draft.base_name || draft.name)}" placeholder="Nome" title="Nome"${readOnly ? " disabled" : ""}>
+        <label class="custom-table-structured" title="O nome do arquivo passa a ser Categoria | Canal | Módulo | Submódulo | Nome"><input type="checkbox" id="custom-table-structured"${draft.use_structured_name ? " checked" : ""}${readOnly ? " disabled" : ""}><span>Usar como nome do arquivo</span></label>
+      </div>
+      <span id="custom-table-file-name" class="custom-table-file-name"></span>
       <span id="custom-table-summary" class="muted"></span>
       ${readOnly ? "" : '<button class="btn" id="custom-table-add-column" type="button">+ Coluna</button><button class="btn primary" id="custom-table-add-row" type="button">+ Linha</button>'}
     </div>
@@ -11939,6 +11969,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     <div class="custom-table-sheet-tabs"><div id="custom-table-sheet-list"></div>${readOnly ? "" : '<button class="custom-table-add-sheet" id="custom-table-add-sheet" type="button" title="Adicionar aba">+</button>'}</div>
   </div><div class="modal-foot"><button class="btn" id="custom-table-cancel">${readOnly ? "Fechar" : "Cancelar"}</button>${readOnly ? "" : '<button class="btn primary" id="custom-table-save">Salvar</button>'}</div>`;
   const closePanel = nestedCenterModal(readOnly ? `Tabela · ${draft.name}` : (id ? "Editar tabela" : "Nova tabela"), content, { cls: "full custom-table-editor-modal", closeOnOverlay: true });
+  document.querySelectorAll(".custom-table-meta-input, #custom-table-name, #custom-table-structured").forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => updateFileName()));
 
   const resetSheetView = () => {
     view.sortKey = null;
@@ -12009,6 +12040,144 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     }, 50);
   };
 
+  const updateFileName = () => {
+    const meta = Object.fromEntries([...document.querySelectorAll(".custom-table-meta-input")].map((input) => [input.dataset.meta, input.value]));
+    const base = document.getElementById("custom-table-name")?.value || "";
+    const structured = document.getElementById("custom-table-structured")?.checked;
+    const label = document.getElementById("custom-table-file-name");
+    if (!label) return;
+    const fileName = structured ? customTableStructuredName({ ...meta, base_name: base }) : base.trim();
+    label.textContent = fileName ? `Arquivo: ${fileName}` : "";
+    label.title = fileName;
+  };
+
+  const deleteColumn = (columnId) => {
+    const sheet = activeSheet();
+    if (sheet.columns.length === 1) { toast("A aba precisa ter ao menos uma coluna.", true); return; }
+    const index = sheet.columns.findIndex((column) => column.id === columnId);
+    sheet.columns = sheet.columns.filter((column) => column.id !== columnId);
+    sheet.rows.forEach((row) => delete row.cells[columnId]);
+    if (index >= 0 && index < sheet.frozen) sheet.frozen -= 1;
+    delete view.filters[columnId];
+    if (view.sortKey === columnId) view.sortKey = null;
+    renderGrid();
+  };
+
+  const insertColumn = (columnId, offset) => {
+    const sheet = activeSheet();
+    const index = sheet.columns.findIndex((column) => column.id === columnId);
+    const name = window.prompt("Nome da nova coluna:", `Coluna ${sheet.columns.length + 1}`)?.trim();
+    if (!name) return;
+    const column = { id: crypto.randomUUID(), name };
+    const at = Math.max(0, index + offset);
+    sheet.columns.splice(at, 0, column);
+    sheet.rows.forEach((row) => { row.cells[column.id] = ""; });
+    if (at < sheet.frozen) sheet.frozen += 1;
+    renderGrid();
+  };
+
+  const autoFitColumn = (columnId) => {
+    const sheet = activeSheet();
+    const column = sheet.columns.find((item) => item.id === columnId);
+    if (!column) return;
+    const canvas = autoFitColumn.canvas || (autoFitColumn.canvas = document.createElement("canvas"));
+    const context = canvas.getContext("2d");
+    context.font = "13px system-ui, sans-serif";
+    const widest = Math.max(context.measureText(String(column.name || "").toLocaleUpperCase("pt-BR")).width + 70,
+      ...sheet.rows.map((row) => context.measureText(String(row.cells[columnId] || "")).width + 26));
+    column.width = Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, widest)));
+    renderGrid();
+  };
+
+  const startColumnResize = (event, columnId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sheet = activeSheet();
+    const column = sheet.columns.find((item) => item.id === columnId);
+    const col = document.querySelector(`#custom-table-grid-wrap col[data-col-id="${CSS.escape(columnId)}"]`);
+    const table = document.querySelector("#custom-table-grid-wrap .custom-table-grid");
+    if (!column || !col || !table) return;
+    const startX = event.clientX;
+    const startWidth = customTableColumnWidth(column);
+    const startTable = table.offsetWidth;
+    document.body.classList.add("ct-resizing");
+    const move = (moveEvent) => {
+      if (Math.abs(moveEvent.clientX - startX) < 2) return;
+      const width = Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, startWidth + moveEvent.clientX - startX)));
+      column.width = width;
+      col.style.width = `${width}px`;
+      table.style.width = `${startTable + width - startWidth}px`;
+    };
+    const up = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.body.classList.remove("ct-resizing");
+      if (customTableColumnWidth(column) !== startWidth) renderGrid();
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+  };
+
+  // Menu da coluna (⋮ ou botão direito): congelar, ordenar, filtrar,
+  // dimensionar, inserir e excluir com confirmação.
+  const openColumnMenu = (anchor, column, point = null) => {
+    document.getElementById("custom-table-column-menu")?.remove();
+    const sheet = activeSheet();
+    const index = sheet.columns.findIndex((item) => item.id === column.id);
+    const frozenHere = index < sheet.frozen;
+    const menu = document.createElement("div");
+    menu.id = "custom-table-column-menu";
+    menu.className = "ct-menu";
+    const items = [
+      [frozenHere ? "unfreeze" : "freeze", frozenHere ? "Descongelar colunas" : `Congelar até esta coluna (${index + 1})`],
+      ["sort-asc", "Ordenar A → Z"],
+      ["sort-desc", "Ordenar Z → A"],
+      ["filter", "Filtrar…"],
+      ["fit", "Ajustar largura ao conteúdo"],
+      ["reset-width", "Largura padrão"],
+      ...(readOnly ? [] : [["insert-left", "Inserir coluna à esquerda"], ["insert-right", "Inserir coluna à direita"], ["delete", "Excluir coluna…", "danger"]])
+    ];
+    const drawItems = () => {
+      menu.innerHTML = `<div class="ct-menu-head">${esc(column.name)}</div>${items.map(([action, label, tone]) => `<button type="button" class="ct-menu-item${tone ? ` ${tone}` : ""}" data-action="${action}">${label}</button>`).join("")}`;
+    };
+    const drawConfirm = () => {
+      const filled = sheet.rows.filter((row) => String(row.cells[column.id] || "").trim()).length;
+      menu.innerHTML = `<div class="ct-menu-head">Excluir coluna</div>
+        <p class="ct-menu-confirm">Excluir a coluna <b>${esc(column.name)}</b>?${filled ? ` ${filled} célula(s) preenchida(s) serão apagadas.` : ""} Só é definitivo ao salvar a tabela.</p>
+        <div class="ct-menu-actions"><button type="button" class="btn" data-action="cancel">Cancelar</button><button type="button" class="btn danger" data-action="confirm-delete">Excluir</button></div>`;
+    };
+    drawItems();
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    const place = () => {
+      const box = menu.getBoundingClientRect();
+      const x = point ? point.x : rect.right - box.width;
+      const y = point ? point.y : rect.bottom + 4;
+      menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - box.width - 8))}px`;
+      menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
+    };
+    place();
+    const close = () => { menu.remove(); document.removeEventListener("mousedown", outside, true); };
+    const outside = (event) => { if (!menu.contains(event.target)) close(); };
+    setTimeout(() => document.addEventListener("mousedown", outside, true), 0);
+    menu.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (!action) return;
+      if (action === "delete") { drawConfirm(); place(); return; }
+      if (action === "cancel") { drawItems(); place(); return; }
+      close();
+      if (action === "freeze") { sheet.frozen = index + 1; renderGrid(); }
+      else if (action === "unfreeze") { sheet.frozen = 0; renderGrid(); }
+      else if (action === "sort-asc" || action === "sort-desc") { view.sortKey = column.id; view.sortDir = action === "sort-asc" ? 1 : -1; renderGrid(); }
+      else if (action === "filter") { const header = document.querySelector(`#custom-table-grid-wrap th[data-custom-table-key="${CSS.escape(column.id)}"]`); if (header) openColumnFilter(header, column); }
+      else if (action === "fit") autoFitColumn(column.id);
+      else if (action === "reset-width") { delete column.width; renderGrid(); }
+      else if (action === "insert-left") insertColumn(column.id, 0);
+      else if (action === "insert-right") insertColumn(column.id, 1);
+      else if (action === "confirm-delete") deleteColumn(column.id);
+    });
+  };
+
   const renderGrid = () => {
     const sheet = activeSheet();
     let visibleRows = sheet.rows.filter((row) => sheet.columns.every((column) => {
@@ -12037,13 +12206,20 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       renderGrid();
     };
     const wrap = document.getElementById("custom-table-grid-wrap");
-    wrap.innerHTML = `<table class="custom-table-grid"><thead>
-      <tr><th class="custom-table-index-cell">#</th>${sheet.columns.map((column) => `<th data-custom-table-key="${esc(column.id)}" title="Clique para ordenar. Ctrl+clique para filtrar.">
-        <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
+    const frozenLeft = [];
+    sheet.columns.reduce((left, column, index) => { frozenLeft[index] = left; return left + customTableColumnWidth(column); }, CUSTOM_TABLE_INDEX_WIDTH);
+    const cellAttrs = (index) => index < sheet.frozen
+      ? ` class="ct-frozen${index === sheet.frozen - 1 ? " ct-frozen-edge" : ""}" style="left:${frozenLeft[index]}px"`
+      : "";
+    const tableWidth = CUSTOM_TABLE_INDEX_WIDTH + 34 + sheet.columns.reduce((total, column) => total + customTableColumnWidth(column), 0);
+    wrap.innerHTML = `<table class="custom-table-grid" style="width:${tableWidth}px"><colgroup><col style="width:${CUSTOM_TABLE_INDEX_WIDTH}px">${sheet.columns.map((column) => `<col data-col-id="${esc(column.id)}" style="width:${customTableColumnWidth(column)}px">`).join("")}<col style="width:34px"></colgroup><thead>
+      <tr><th class="custom-table-index-cell">#</th>${sheet.columns.map((column, index) => `<th data-custom-table-key="${esc(column.id)}"${cellAttrs(index)} title="Clique para ordenar. Ctrl+clique para filtrar. Botão direito ou ⋮ para opções.">
+        <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${index < sheet.frozen ? '<span class="ct-pin" title="Coluna congelada">📌</span>' : ""}${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span><button class="tool-icon-btn ct-col-menu-btn" data-column-id="${esc(column.id)}" type="button" title="Opções da coluna">⋮</button></div>
+        <span class="ct-resize" data-column-id="${esc(column.id)}" title="Arraste para dimensionar. Duplo clique ajusta ao conteúdo."></span>
       </th>`).join("")}<th class="custom-table-row-action"></th></tr>
     </thead><tbody>${visibleRows.length ? visibleRows.map((row) => {
       const originalIndex = sheet.rows.findIndex((item) => item.id === row.id);
-      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${sheet.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
+      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${sheet.columns.map((column, index) => `<td${cellAttrs(index)}><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
     }).join("") : `<tr><td colspan="${sheet.columns.length + 2}" class="tool-empty">Nenhuma linha para exibir.</td></tr>`}</tbody></table>`;
     wrap.querySelectorAll("[data-column-name]").forEach((input) => input.addEventListener("input", () => {
       const column = sheet.columns.find((item) => item.id === input.dataset.columnName);
@@ -12062,21 +12238,25 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
         openColumnFilter(header, column);
         return;
       }
+      if (event.target.closest(".ct-resize")) return;
+      if (event.target.closest(".ct-col-menu-btn")) { event.stopPropagation(); openColumnMenu(event.target.closest(".ct-col-menu-btn"), column); return; }
       if (!readOnly && event.target.closest("input,button")) return;
       if (view.sortKey !== columnId) { view.sortKey = columnId; view.sortDir = 1; }
       else if (view.sortDir === 1) view.sortDir = -1;
       else { view.sortKey = null; view.sortDir = 1; }
       renderGrid();
     }));
-    wrap.querySelectorAll(".custom-table-delete-column").forEach((button) => button.addEventListener("click", () => {
-      if (sheet.columns.length === 1) { toast("A aba precisa ter ao menos uma coluna.", true); return; }
-      const columnId = button.dataset.columnId;
-      sheet.columns = sheet.columns.filter((column) => column.id !== columnId);
-      sheet.rows.forEach((row) => delete row.cells[columnId]);
-      delete view.filters[columnId];
-      if (view.sortKey === columnId) view.sortKey = null;
-      renderGrid();
+    wrap.querySelectorAll("th[data-custom-table-key]").forEach((header) => header.addEventListener("contextmenu", (event) => {
+      const column = sheet.columns.find((item) => item.id === header.dataset.customTableKey);
+      if (!column) return;
+      event.preventDefault();
+      openColumnMenu(header, column, { x: event.clientX, y: event.clientY });
     }));
+    wrap.querySelectorAll(".ct-resize").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => startColumnResize(event, handle.dataset.columnId));
+      handle.addEventListener("dblclick", (event) => { event.stopPropagation(); autoFitColumn(handle.dataset.columnId); });
+      handle.addEventListener("click", (event) => event.stopPropagation());
+    });
     wrap.querySelectorAll(".custom-table-delete-row").forEach((button) => button.addEventListener("click", () => {
       sheet.rows = sheet.rows.filter((row) => row.id !== button.dataset.rowId);
       renderGrid();
@@ -12112,7 +12292,10 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     renderGrid();
   });
   document.getElementById("custom-table-save")?.addEventListener("click", async () => {
-    draft.name = document.getElementById("custom-table-name").value.trim();
+    document.querySelectorAll(".custom-table-meta-input").forEach((input) => { draft[input.dataset.meta] = input.value.trim() || null; });
+    draft.base_name = document.getElementById("custom-table-name").value.trim();
+    draft.use_structured_name = Boolean(document.getElementById("custom-table-structured")?.checked);
+    draft.name = draft.use_structured_name ? customTableStructuredName(draft) : draft.base_name;
     draft.sheets.forEach((sheet) => {
       sheet.name = sheet.name.trim();
       sheet.columns.forEach((column) => { column.name = column.name.trim(); });
@@ -12129,7 +12312,11 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     button.disabled = true;
     button.textContent = "Salvando...";
     const firstSheet = draft.sheets[0];
-    const body = { name: draft.name, sheets: draft.sheets, columns: firstSheet.columns, rows: firstSheet.rows, updated_at: new Date().toISOString() };
+    const body = {
+      name: draft.name, base_name: draft.base_name, use_structured_name: draft.use_structured_name,
+      category: draft.category || null, system_name: draft.system_name || null, module_name: draft.module_name || null, submodule_name: draft.submodule_name || null,
+      sheets: draft.sheets, columns: firstSheet.columns, rows: firstSheet.rows, updated_at: new Date().toISOString()
+    };
     try {
       let saved;
       if (isLive()) saved = id ? await updateRow("customTables", id, body) : await createRow("customTables", body);
@@ -12151,6 +12338,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     }
   });
   renderGrid();
+  updateFileName();
 }
 
 async function cloneToolCustomTable(id) {
@@ -12159,14 +12347,20 @@ async function cloneToolCustomTable(id) {
   if (!source) return;
   const sheets = source.sheets.map((sourceSheet) => {
     const idMap = new Map(sourceSheet.columns.map((column) => [column.id, crypto.randomUUID()]));
-    const columns = sourceSheet.columns.map((column) => ({ id: idMap.get(column.id), name: column.name }));
+    const columns = sourceSheet.columns.map((column) => ({ ...column, id: idMap.get(column.id) }));
     const rows = sourceSheet.rows.map((row) => ({
       id: crypto.randomUUID(),
       cells: Object.fromEntries(sourceSheet.columns.map((column) => [idMap.get(column.id), row.cells[column.id] || ""]))
     }));
-    return { id: crypto.randomUUID(), name: sourceSheet.name, columns, rows };
+    return { id: crypto.randomUUID(), name: sourceSheet.name, columns, rows, frozen: sourceSheet.frozen || 0 };
   });
-  const body = { name: `${source.name} - Cópia`, sheets, columns: sheets[0].columns, rows: sheets[0].rows, updated_at: new Date().toISOString() };
+  const baseName = `${source.base_name || source.name} - Cópia`;
+  const meta = { category: source.category || null, system_name: source.system_name || null, module_name: source.module_name || null, submodule_name: source.submodule_name || null };
+  const body = {
+    ...meta, base_name: baseName, use_structured_name: Boolean(source.use_structured_name),
+    name: source.use_structured_name ? customTableStructuredName({ ...meta, base_name: baseName }) : baseName,
+    sheets, columns: sheets[0].columns, rows: sheets[0].rows, updated_at: new Date().toISOString()
+  };
   try {
     let saved;
     if (isLive()) saved = await createRow("customTables", body);
