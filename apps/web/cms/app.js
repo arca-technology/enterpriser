@@ -7758,94 +7758,171 @@ function openSettings() {
 }
 
 // ---------- Ajuda ----------
-function helpContentHtml() {
+// Mesma organização do sistema: os 6 módulos principais no cabeçalho e os
+// submódulos de Cadastros, Ferramentas e Social na barra de ferramentas.
+// Cada página tem apresentação e seções com passo a passo, recursos e dicas.
+const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
+const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
+const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas."]] };
+const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
+  cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
+const HELP_PAGES = {
+  home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
+    lead: "O CMS reúne relacionamento comercial (CRM), gestão das entregas e tarefas (PM), processos (BPM) e ferramentas do escritório. Escolha acima um dos módulos principais ou, na barra, um submódulo de Cadastros, Ferramentas ou Social.",
+    sections: [
+      { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
+        cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
+      { title: "Cabeçalho e rodapé", cards: [["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
+      { title: "Tabelas e visualizações", lead: "Todas as tabelas seguem a mesma barra: <b>≡ Agrupar · ⊞ Colunas · Visualização ▾ · Matriz · Dashboard · ⬆⬇ Dados</b>. O que não se aplica fica desativado.",
+        cards: [...HELP_TABLE_SECTION.cards, ["▸ Expandir", "A coluna após a seleção abre subtarefas e grupos; o ▸ do cabeçalho expande ou recolhe tudo."], ["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard, conforme o módulo. Em telas menores os botões viram ícones."]] },
+      { title: "Tablet e celular", steps: ["Instale o app pela tela inicial para usar em tela cheia.", "Segure o dedo no título da coluna para filtrar.", "Faça pinça para dar zoom no mapa mental e no fluxo BPMN."] },
+      { title: "Administração", cards: [["LOG", "Somente administradores, no rodapé. Chamadas ao banco desta sessão (método, recurso, status, tempo e erro) e erros de todos os usuários, com busca e filtro \"Só erros\"."], ["Atualizações", "Resumo das novidades da versão, no rodapé."]],
+        tips: ["Se algo não aparecer depois de uma atualização, recarregue a página (Ctrl+Shift+R) ou feche e abra o app instalado."] }
+    ] },
+  contacts: { kicker: "Módulo", title: "Pessoas", path: ["Cabeçalho", "Pessoas"],
+    lead: "Cadastro único dos contatos — clientes, leads, fornecedores e parceiros — vinculados a uma ou mais empresas.",
+    sections: [
+      { title: "Cadastrar uma pessoa", steps: ["Clique no <b>+</b> da barra.", "Preencha o nome e ao menos um telefone ou e-mail.", "Vincule uma ou mais empresas, o tipo de contato e o canal de origem.", "Complete cargo, departamento, redes sociais, grupos, tags, CPF, nascimento e observações e salve."],
+        cards: [["Padronização", "Telefones e e-mails são padronizados ao salvar."], ["Sem duplicados", "Mesmo nome com o mesmo telefone ou e-mail atualiza o contato existente."], ["Colunas fixas", "Nome e telefone ficam fixos ao rolar a tabela."]] },
+      HELP_TABLE_SECTION,
+      { title: "Importar contatos", cards: [["Google Contatos", "Na extensão Chrome, em Integrações › Google Contatos, conecte a conta, ajuste o mapeamento de campos e importe."], ["Pelas conversas", "Em Conversas, associe a conversa a uma pessoa existente."]] }
+    ] },
+  companies: { kicker: "Módulo", title: "Empresas", path: ["Cabeçalho", "Empresas"],
+    lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
+    sections: [
+      { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b> para preencher razão social, nome fantasia, abertura, situação cadastral, capital social, atividades, endereço e QSA.", "Sócios do QSA que já são pessoas cadastradas são vinculados automaticamente.", "Complete o contato e salve."],
+        cards: [["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
+      HELP_TABLE_SECTION
+    ] },
+  conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
+    lead: "Histórico das conversas de WhatsApp e Reddit Chat, importado ou capturado pela extensão, ligado às pessoas e aos negócios.",
+    sections: [
+      { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b>.", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha importar.", "Selecione o arquivo .txt ou .zip.", "Associe a conversa a uma pessoa."] },
+      { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Criar negociação", "Abre negócios a partir das conversas selecionadas."]] },
+      { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
+    ] },
+  deals: { kicker: "Módulo", title: "Negócios", path: ["Cabeçalho", "Negócios"],
+    lead: "Oportunidades comerciais em pipelines com etapas, valor e previsão de fechamento.",
+    sections: [
+      { title: "Cadastrar um negócio", steps: ["Clique no <b>+</b>.", "Escolha a empresa (ou \"Não possui empresa\") e o contato.", "Escolha produto, pipeline, etapa e origem do lead.", "Informe valor e previsão de fechamento e salve."] },
+      { title: "Quadro do pipeline", steps: ["Escolha <b>Quadro</b> na visualização.", "Arraste os cartões entre as etapas.", "Solte em <b>Ganho</b> ou <b>Perdido</b> para fechar."] },
+      { title: "Ganho vira entrega", lead: "Quando o negócio é ganho, o CMS cria automaticamente a <b>Entrega</b> do cliente com o produto vendido, já com as tarefas, objetivos e metas do produto.",
+        tips: ["Pipelines e etapas são configurados em Cadastros › Pipeline."] }
+    ] },
+  projects: { kicker: "Módulo", title: "Entregas", path: ["Cabeçalho", "Entregas", "👁 abrir"],
+    lead: "A entrega é o projeto ou serviço pós-venda do cliente, no padrão <b>EC365 | Cliente | Produto</b>. Abra pelo ícone de olho para trabalhar nas abas Tarefas, Objetivos, Metas e Dados.",
+    sections: [
+      { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
+      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Cada canal ativado libera as tarefas daquele Canal e não pode ser desativado depois de salvo.",
+        cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
+      { title: "Aba Tarefas", lead: "Tarefas do produto e do dia a dia com subtarefas, checklist, responsáveis (colaboradores e Cliente), dependências, referências a documentos e tabelas, comentários e status.",
+        cards: [["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard."], ["Prazos", "Cada tarefa tem duração e <b>Iniciar após dependência (dias)</b>. Quando a anterior termina, as dependentes são recalculadas pela data real ou prevista, com dias úteis e recorrência."]],
+        tips: ["Datas editadas à mão não são recalculadas, e dependências circulares são bloqueadas."] },
+      { title: "Abas Objetivos e Metas", cards: [["Objetivos", "Critério de conclusão, Categoria, Canal, responsável, prazo e dependências. O progresso vem das tarefas vinculadas."], ["Metas", "Indicador, comparação (no mínimo, no máximo, exato), valor atual, alvo, Categoria, Canal e prazo. Atualize o valor atual direto na tabela."], ["Dashboard", "Atingimento médio, atingidas, atrasadas e bloqueadas, lista de KPIs e quadro OKR."], ["OKR", "Objetivos (O) e metas (KR) com a mesma Categoria e Canal formam um cartão com o progresso geral."]] },
+      { title: "Aba Dados", lead: "Faturamento mensal do negócio por canal durante a entrega e o histórico das entregas de continuidade." }
+    ] },
+  activities: { kicker: "Módulo", title: "Tarefas", path: ["Cabeçalho", "Tarefas"],
+    lead: "Todas as tarefas de todas as entregas em um só lugar, com cliente, entrega, origem, prioridade, estrutura, datas, status, prazo e comentários.",
+    sections: [
+      { title: "Acompanhar", steps: ["Filtre por cliente, status, prioridade ou responsável.", "Altere o status direto na linha.", "Clique no lápis para abrir a tarefa no formulário da entrega."] },
+      { title: "Agrupar e editar em massa", cards: [["≡ Agrupar por cliente", "Um grupo por cliente com a contagem; use ▸ para abrir um ou todos."], ["Edição em massa", "Neste módulo altera <b>Status</b> e <b>Prioridade</b>. Marque as tarefas, clique em ✎ em AÇÕES e escolha o valor."]] }
+    ] },
+  "reg-products": { kicker: "Cadastros", title: "Produtos", path: ["Rodapé", "Cadastros", "Produtos"],
+    lead: "Categoria, nome, descrição, preços, página de vendas, duração e status. O produto carrega a estrutura que a entrega herda na venda.",
+    sections: [{ title: "Montar um produto", steps: ["Clique no <b>+</b> e preencha os dados e a duração.", "Clique no olho para abrir a estrutura do produto.", "Vincule tarefas, objetivos e metas.", "Ao ganhar um negócio com o produto, a entrega nasce com essa estrutura."] }] },
+  "reg-pipelines": { kicker: "Cadastros", title: "Pipeline", path: ["Rodapé", "Cadastros", "Pipeline"],
+    lead: "Até cinco fluxos comerciais, cada um com suas etapas. Ganho e Perdido existem sempre.",
+    sections: [{ title: "Criar um pipeline", steps: ["Clique no <b>+</b>.", "Dê o nome e adicione as etapas na ordem.", "Salve e use o pipeline nos negócios."] }] },
+  "reg-users": { kicker: "Cadastros", title: "Usuários", path: ["Rodapé", "Cadastros", "Usuários"],
+    lead: "Nome, apelido, e-mail, telefone, perfil, função, cargo, status, acesso ao login e permissões.",
+    sections: [{ title: "Cadastrar e liberar acesso", steps: ["Clique no <b>+</b> e preencha os dados.", "Escolha o perfil: Administrador, Colaborador, Desenvolvedor, Cliente ou Fornecedor.", "Libere o acesso ao login.", "Marque por módulo: ver, criar, editar, clonar, excluir e operar."] }] },
+  "reg-activities": { kicker: "Cadastros", title: "Tarefas", path: ["Rodapé", "Cadastros", "Tarefas"],
+    lead: "Modelos de tarefa. A mesma tarefa pode valer para vários produtos e, ao salvar, as entregas desses produtos são sincronizadas.",
+    sections: [
+      { title: "Cadastrar um modelo", steps: ["Escolha os produtos.", "Monte o nome com <b>Usar estrutura</b>: Categoria | Canal | Módulo | Submódulo | Tarefa | Tipo.", "Defina prioridade, recorrência, dias úteis, prazo e iniciar após dependência.", "Adicione checklist, objetivo, responsáveis padrão, dependências e subtarefas."],
+        tips: ["Usar estrutura exige Categoria, Canal, Módulo e Tipo. A coluna Tarefa fica fixa ao rolar."] },
+      HELP_MIND_MAP_SECTION
+    ] },
+  "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
+    lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Consolida todas as entregas: KPIs por modelo e OKR médio."]] }] },
+  "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
+    lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Consolida o progresso de todas as entregas."]] }] },
+  "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
+    lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
+    sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
+  "tool-emails": { kicker: "Ferramentas", title: "Emails", path: ["Rodapé", "Ferramentas", "Emails"],
+    lead: "Contas criadas automaticamente para as entregas no domínio <b>@ecommerce365.com.br</b>.",
+    sections: [{ title: "Usar", cards: [["Senha", "Pode ser revelada ou copiada. Fica criptografada no banco."], ["Busca", "Filtre por entrega, cliente ou endereço."]] }] },
+  "tool-processes": { kicker: "Ferramentas", title: "Processos", path: ["Rodapé", "Ferramentas", "Processos"],
+    lead: "Biblioteca de procedimentos com Categoria, Canal, Módulo, Submódulo, tags e etapas, desenhada como fluxo BPMN.",
+    sections: [
+      { title: "Cadastrar as etapas", steps: ["Preencha Categoria, Canal, Módulo e Submódulo.", "Adicione as etapas e escolha o elemento: <b>Tarefa</b>, <b>Decisão</b> ou <b>Fim</b>.", "Defina o responsável (cargo, Cliente ou Sistema) e a próxima etapa.", "Nas decisões, rotule as saídas (ex.: Sim → 4, Não → 2)."],
+        tips: ["Escolher uma etapa anterior como próxima cria um retrabalho (loop)."] },
+      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "Por Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
+    ] },
+  "tool-documents": { kicker: "Ferramentas", title: "Documentação", path: ["Rodapé", "Ferramentas", "Documentação"],
+    lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
+    sections: [{ title: "Criar um documento", steps: ["Informe Categoria, Canal, Módulo, Submódulo e Tipo.", "O nome é montado sozinho: <b>CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | TIPO</b>.", "Monte os slides com os blocos.", "Use ≡ para agrupar por Categoria + Canal + Módulo."] }] },
+  "tool-tables": { kicker: "Ferramentas", title: "Tabelas", path: ["Rodapé", "Ferramentas", "Tabelas"],
+    lead: "Tabelas personalizadas que podem ser referenciadas nas tarefas.",
+    sections: [{ title: "Importar", steps: ["Clique em <b>⬆⬇ Dados</b>.", "Escolha um CSV, XLS ou XLSX (administradores)."] }] },
+  social: { kicker: "Rodapé", title: "Social", path: ["Rodapé", "Social"],
+    lead: "Abre na Home com os perfis configurados em Integrações: Facebook, Instagram, LinkedIn, Reddit, TikTok Shop e YouTube.",
+    sections: [{ title: "Redes", lead: "Cada rede tem sua aba com a tabela do módulo, colunas, filtros e exportação de dados." }] }
+};
+const HELP_PAGE_BY_MAIN = { contacts: "contacts", companies: "companies", conversations: "conversations", deals: "deals", projects: "projects", activities: "activities" };
+let helpPageId = "home";
+
+function helpSectionHtml(section) {
   const platformText = IS_EXTENSION_CONTEXT
-    ? "Você está usando a extensão Chrome, que acrescenta captura de WhatsApp Web e Reddit Chat e importação do Google Contatos."
-    : "Você está usando a versão web. Captura automática de WhatsApp Web e Reddit Chat e importação do Google Contatos permanecem exclusivas da extensão Chrome.";
-  return `<div class="help-content">
-    <div class="help-intro"><strong>ENTERPRISER • CMS</strong><span>Manual das funções disponíveis</span></div>
-    <p>O CMS reúne relacionamento comercial, vendas e execução das entregas. ${platformText}</p>
-    <nav class="help-index" aria-label="Índice da ajuda">
-      <a href="#help-start">Acesso e navegação</a><a href="#help-modules">Módulos</a><a href="#help-tables">Tabelas e filtros</a>
-      <a href="#help-sales">Vendas</a><a href="#help-catalog">Cadastros</a><a href="#help-deliveries">Entregas</a>
-      <a href="#help-conversations">Conversas</a><a href="#help-tools">Ferramentas</a><a href="#help-admin">Administração</a>
-    </nav>
-
-    <section class="help-section" id="help-start"><h4>Acesso e navegação</h4>
-      <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CMS. O tema claro ou escuro fica salvo neste navegador.</p></div>
-      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, chat interno, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
-      <p class="help-note">Notificações ainda não possuem automação ativa. O LOG aparece apenas para administradores.</p>
-    </section>
-
-    <section class="help-section" id="help-modules"><h4>Módulos principais</h4><ul>
-      <li><b>Home:</b> totais de pessoas, empresas, negócios, produtos e entregas, além de tarefas pendentes, atrasadas e próximas.</li>
-      <li><b>Pessoas:</b> contatos, telefones, e-mails, múltiplas empresas vinculadas, cargo, canal, CPF, nascimento, redes sociais e grupos.</li>
-      <li><b>Empresas:</b> CNPJ, razão social, nome fantasia, múltiplas pessoas vinculadas, endereço, situação cadastral, atividades e observações. A consulta pelo CNPJ preenche dados públicos disponíveis.</li>
-      <li><b>Conversas:</b> histórico importado ou capturado, associação a pessoas e conversão individual ou em lote para negócio.</li>
-      <li><b>Negócios:</b> empresa, contato, produto, responsável, pipeline, etapa, origem, valor, previsão e situação aberto, ganho ou perdido.</li>
-      <li><b>Entregas:</b> projetos e serviços pós-venda com cliente, produto, período, status, tarefas, objetivos e metas.</li>
-      <li><b>Tarefas:</b> visão consolidada de todas as entregas com origem, prioridade, dependências, checklist, objetivo, responsáveis, datas, status, prazo calculado e comentários por usuário.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-tables"><h4>Tabelas, busca e filtros</h4><ul>
-      <li>A busca central filtra imediatamente os registros da tela atual.</li>
-      <li>Clique no título de uma coluna para ordenar; use <b>Ctrl+clique</b> no título para escolher valores de filtro.</li>
-      <li>Filtros ativos aparecem na faixa acima da tabela, na ordem das colunas. Clique no × de uma badge para removê-la ou use <b>Limpar tudo</b>.</li>
-      <li>O botão <b>⊞</b> permite mostrar, ocultar e arrastar colunas. A preferência fica salva neste navegador.</li>
-      <li>O botão <b>⬆⬇</b> exporta CSV usando colunas visíveis ou todas as colunas e abre a importação de conversas quando disponível.</li>
-      <li>As tabelas longas têm paginação e rolagem horizontal. Em módulos compatíveis, o menu de visualização oferece Tabela, Quadro, Calendário ou Gantt.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-sales"><h4>Negócios e pipelines</h4>
-      <p>Cadastre até cinco pipelines, cada um com nome e etapas próprias, em <b>Cadastros → Pipeline</b>. No Quadro de Negócios, arraste cartões entre etapas, Ganho e Perdido.</p>
-      <p><b>Negócio ganho:</b> ao marcar um negócio como ganho, o CMS cria a Entrega vinculada ao cliente e ao produto. O nome, período e tipo são formados a partir dos dados comerciais e do produto.</p>
-      <p><b>Automação do produto:</b> tarefas, objetivos e metas configurados no produto são copiados para a nova entrega, preservando responsáveis, recorrências, checklists e dependências.</p>
-    </section>
-
-    <section class="help-section" id="help-catalog"><h4>Cadastros</h4><ul>
-      <li><b>Produtos:</b> categoria, descrição, preços, página de vendas, duração e status. O ícone de configuração abre Tarefas, Objetivos e Metas do produto.</li>
-      <li><b>Tarefas do produto:</b> grupo, setor, canal, tipo, prioridade, informação, recorrência, checklist, objetivo, responsáveis e dependências. É possível ordenar, clonar e reaproveitar tarefas prontas.</li>
-      <li><b>Objetivos:</b> critério de conclusão, prazo sugerido, responsável e dependência de outros objetivos e/ou tarefas.</li>
-      <li><b>Metas:</b> indicador, comparação, valor-alvo, unidade, prazo, responsável e dependência de outras metas e/ou tarefas.</li>
-      <li><b>Pipeline:</b> criação e edição dos fluxos comerciais e suas etapas.</li>
-      <li><b>Usuários:</b> nome, e-mail, telefone, perfil, função, cargo, status e acesso ao login.</li>
-    </ul><p class="help-note">Dependências cíclicas são bloqueadas. Uma tarefa, objetivo ou meta dependente só avança quando os itens anteriores forem concluídos.</p></section>
-
-    <section class="help-section" id="help-deliveries"><h4>Detalhes da entrega</h4>
-      <p>Abra uma entrega para acessar as abas <b>Tarefas</b>, <b>Objetivos</b> e <b>Metas</b>. Todas possuem busca, seleção de colunas e os modos Tabela, Matriz e Dashboard.</p><ul>
-      <li><b>Tarefas:</b> crie tarefas do dia a dia, altere status e datas, acompanhe checklists, comentários, responsáveis e bloqueios. Clique em Comentários para registrar várias mensagens identificadas pelo usuário.</li>
-      <li><b>Objetivos:</b> acompanhe progresso calculado pelas tarefas vinculadas, responsável, prazo, dependências e status.</li>
-      <li><b>Metas:</b> atualize valor atual, indicador, valor-alvo, prazo, dependências e status. Metas atingidas podem ser concluídas.</li>
-      <li><b>Matriz:</b> distribui itens por Em aberto, Em andamento, Atendido e Cancelado. <b>Dashboard:</b> resume andamento, atendidos, atrasados e bloqueados.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-conversations"><h4>Conversas e integrações</h4>
-      <p>Na web, importe arquivos <b>.txt</b> ou <b>.zip</b> exportados do WhatsApp. Abra o histórico dentro do CMS, associe a uma pessoa ou selecione várias conversas para criar uma negociação em lote.</p>
-      <p>Na extensão Chrome, WhatsApp Web e Reddit Chat podem alimentar a fila automaticamente. Google Contatos permite selecionar pessoas, criar ou atualizar contatos e criar empresas identificadas pelos dados do Google.</p>
-      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento. O Chat do cabeçalho permite conversas internas entre usuários ativos do CMS.</p>
-    </section>
-
-    <section class="help-section" id="help-tools"><h4>Ferramentas</h4><ul>
-      <li><b>Arquivos:</b> catálogo por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data. A busca principal localiza empresas por nome ou CNPJ.</li>
-      <li><b>E-mails:</b> ao criar uma entrega, o CMS cria automaticamente na HostGator uma conta formada pela raiz do CNPJ em <b>@ecommerce365.com.br</b>. A senha pode ser revelada ou copiada nesta tela.</li>
-      <li><b>Processos:</b> biblioteca de treinamento organizada por nome, categoria e tags. Cada etapa registra sistema, módulo, submódulo, grupo, tipo, URL e detalhes. O botão de fluxo agrupa as etapas visualmente por módulo, submódulo e grupo.</li>
-      <li><b>Documentação:</b> apresentações textuais em slides, com título, páginas, negrito, itálico, cores e alinhamento. Os slides podem ser separados em grupos recolhíveis e os grupos podem ser reordenados por arraste ou pelas setas.</li>
-      <li>Busca, classificação, filtros e seleção de colunas funcionam nas tabelas de Arquivos, E-mails, Processos e Documentação.</li>
-    </ul><p class="help-note"><b>Segurança:</b> as credenciais de e-mail são compartilhadas entre os usuários ativos do CMS e a senha permanece criptografada no Supabase. Arquivos, processos e documentos podem ser consultados por usuários ativos e alterados apenas por administradores.</p></section>
-
-    <section class="help-section" id="help-admin"><h4>Administração e suporte</h4><ul>
-      <li><b>LOG:</b> administradores consultam as alterações recentes registradas nas principais entidades.</li>
-      <li><b>Usuários:</b> o administrador cria ou atualiza acessos, define perfil e pode inativar colaboradores.</li>
-      <li><b>Configurações:</b> guarda identificação usada em conversas e a conexão Supabase. URL e chave vazias ativam os dados de demonstração.</li>
-      <li><b>Atualizações:</b> mostra um resumo da versão instalada.</li>
-      <li><b>Sair:</b> encerra a sessão local do usuário.</li>
-    </ul><p class="help-note">Na versão web não existe tela obrigatória de aceite. O consentimento permanece na extensão por causa das funções de captura automática.</p></section>
-  </div>`;
+    ? "Você está na extensão Chrome, com captura de WhatsApp Web e Reddit Chat e importação do Google Contatos."
+    : "Você está na versão web. A captura de WhatsApp Web e Reddit Chat e a importação do Google Contatos são exclusivas da extensão Chrome.";
+  return `<section class="help-block">
+    <h4>${esc(section.title)}</h4>${section.lead ? `<p class="help-block-lead">${section.lead}</p>` : ""}
+    ${section.steps?.length ? `<ol class="help-steps">${section.steps.map((step) => `<li>${step}</li>`).join("")}</ol>` : ""}
+    ${section.cards?.length ? `<div class="help-cards">${section.cards.map(([title, text]) => `<div class="help-card"><b>${title}</b><p>${text === "PLATFORM_TEXT" ? platformText : text}</p></div>`).join("")}</div>` : ""}
+    ${section.tips?.length ? `<div class="help-tips">${section.tips.map((tip) => `<p><span>Dica</span>${tip}</p>`).join("")}</div>` : ""}
+  </section>`;
 }
-function openHelpModal() {
-  shell("Ajuda · Como usar o ENTERPRISER • CMS", `${helpContentHtml()}
-    <div class="modal-foot"><button class="btn" id="cancel">Fechar</button></div>`, { cls: "full" });
-  document.getElementById("cancel").addEventListener("click", closeModal);
+
+function renderHelpSection() {
+  const root = document.getElementById("help-root");
+  if (!root) return;
+  const page = HELP_PAGES[helpPageId] || HELP_PAGES.home;
+  document.querySelectorAll("[data-help-page]").forEach((button) => button.classList.toggle("active", button.dataset.helpPage === helpPageId));
+  root.querySelector(".help-body").innerHTML = `<article class="help-page">
+    <div class="help-hero">
+      <div><span class="help-kicker">${esc(page.kicker)}</span><h2>${esc(page.title)}</h2><p>${page.lead}</p></div>
+      <div class="help-path"><span>Onde encontrar</span><div>${page.path.map((item) => `<b>${esc(item)}</b>`).join("<i>›</i>")}</div></div>
+    </div>
+    ${page.sections.map(helpSectionHtml).join("")}
+  </article>`;
+  root.querySelector(".help-body").scrollTop = 0;
+}
+
+function openHelpModal(pageId = HELP_PAGE_BY_MAIN[state.tab] || "home") {
+  helpPageId = HELP_PAGES[pageId] ? pageId : "home";
+  const headerCenter = `<div class="modal-header-tabs help-header-tabs" role="tablist" aria-label="Módulos">
+    ${HELP_HEADER_SLOTS.map(([id, label]) => `<button class="modal-header-tab" data-help-page="${id}" role="tab">${label}</button>`).join("")}
+  </div>`;
+  shell("Ajuda", `<div id="help-root" class="help-root">
+      <div class="help-toolbar">
+        <button class="registration-toolbar-title help-home-btn" data-help-page="home" type="button" title="Visão geral da ajuda">Ajuda</button>
+        <div class="help-subtabs" role="tablist" aria-label="Submódulos">${HELP_TOOLBAR_SLOTS.map(([id, label]) => `<button class="help-subtab" data-help-page="${id}" role="tab">${label}</button>`).join("")}</div>
+      </div>
+      <div class="help-body"></div>
+    </div>`, {
+    cls: "full registrations-modal",
+    headerCenter,
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
+  });
+  document.querySelectorAll("[data-help-page]").forEach((button) => button.addEventListener("click", () => {
+    helpPageId = button.dataset.helpPage;
+    renderHelpSection();
+  }));
+  renderHelpSection();
 }
 
 // ---------- Pipelines (fluxos de negociação) ----------
