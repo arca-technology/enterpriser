@@ -7677,7 +7677,11 @@ async function zipTextFromBuffer(buffer) {
 
 async function textFromImportFile(file) {
   const buffer = await readFileAsArrayBuffer(file);
-  if (file.name.toLowerCase().endsWith(".zip")) return zipTextFromBuffer(buffer);
+  // O compartilhamento do Android pode mandar o ZIP sem a extensão no nome:
+  // reconhece pelo conteúdo (assinatura "PK").
+  const head = new Uint8Array(buffer.slice(0, 4));
+  const isZip = head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+  if (isZip || file.name.toLowerCase().endsWith(".zip")) return zipTextFromBuffer(buffer);
   return new TextDecoder("utf-8").decode(buffer);
 }
 
@@ -7758,6 +7762,7 @@ async function importWhatsAppFile(file) {
     const text = await textFromImportFile(file);
     const parsed = parseWhatsAppText(text, file.name);
     delete parsed.raw;
+    if (!parsed.messages?.length) throw new Error("nenhuma mensagem encontrada no arquivo. Use Exportar conversa do WhatsApp (.txt ou .zip).");
     parsed.owner_id = currentProfile?.id || null;
     parsed.conversation_key = conversationKey(parsed);
     const conversations = loadConversations();
