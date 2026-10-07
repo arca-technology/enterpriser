@@ -2163,11 +2163,11 @@ function columns(tab, c) {
       { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
+      { k: "owner_id", h: "RESPONSÁVEL", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
       { k: "contact", h: "CONTATO", fmt: (_v, row) => contactForConversation(row) || "—" },
       { k: "username", h: "USUÁRIO", fmt: (v, row) => v ? (row.source === "Reddit" ? `u/${v}` : v) : "—" },
       { k: "profile_url", h: "URL PERFIL", fmt: (v) => safeHttpUrl(v) ? `<a href="${esc(safeHttpUrl(v))}" target="_blank" rel="noopener">Perfil</a>` : "—", csv: (v) => v || "" },
       { k: "source", h: "CANAL" },
-      { k: "owner_id", h: "IMPORTADA POR", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
       { k: "first_at", h: "PRIMEIRO CONTATO" },
       { k: "last_at", h: "ÚLTIMO CONTATO" },
       { k: "imported_at", h: "DATA REGISTRO" },
@@ -2855,10 +2855,15 @@ function orderedColumns(tab, c) {
   const cols = columns(tab, c);
   const savedOrder = Array.isArray(prefs.__order) ? prefs.__order : [];
   const byKey = Object.fromEntries(cols.map((col) => [col.k, col]));
-  return [
-    ...savedOrder.map((key) => byKey[key]).filter(Boolean),
-    ...cols.filter((col) => !savedOrder.includes(col.k))
-  ];
+  const ordered = savedOrder.map((key) => byKey[key]).filter(Boolean);
+  // Coluna nova (fora da ordem salva) entra logo após a coluna que a
+  // antecede no padrão, em vez de ir para o fim da tabela.
+  cols.forEach((col, index) => {
+    if (savedOrder.includes(col.k)) return;
+    const previous = cols.slice(0, index).reverse().find((item) => ordered.includes(item));
+    ordered.splice(previous ? ordered.indexOf(previous) + 1 : 0, 0, col);
+  });
+  return ordered;
 }
 function visibleColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
@@ -7817,7 +7822,7 @@ function openConversationPopup(id) {
       </div>`;
     }).join("")
     : `<div class="panel-list">${esc(row.raw || row.summary || "Sem conteúdo.")}</div>`;
-  const ownerLine = owner ? `<div class="panel-list chat-owner">Importada por <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
+  const ownerLine = owner ? `<div class="panel-list chat-owner">Responsável <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
   sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>`);
 }
 
@@ -9096,7 +9101,7 @@ const HELP_PAGES = {
     sections: [
       { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b> (sem mídia).", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha <b>Conversa (.txt/.zip)</b>.", "Selecione o arquivo .txt ou .zip.", "O CMS liga a conversa à pessoa com o mesmo nome ou telefone; se não achar, associe manualmente."] },
       { title: "Pelo celular (Android)", steps: ["Instale o app ENTERPRISER pelo Chrome (Adicionar à tela inicial).", "No WhatsApp, abra a conversa e use <b>Mais › Exportar conversa › Sem mídia</b>.", "Na lista de compartilhamento escolha <b>ENTERPRISER</b>.", "O CMS abre e importa a conversa direto no módulo Conversas."], lead: "No iPhone o compartilhamento direto não é suportado pelo sistema: salve o .zip em Arquivos e importe pelo menu Dados." },
-      { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Importada por", "Cada usuário tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
+      { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Responsável", "É o usuário que subiu a conversa; cada um tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
       { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Editar e criar negociação", "No lápis da conversa (ou em Criar negociação, com várias selecionadas) escolha a pessoa, a empresa ou Sem empresa e o produto ou Sem produto. O negócio leva o nome do produto."]] },
       { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
     ] },
