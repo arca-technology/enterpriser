@@ -431,7 +431,7 @@ const REMOTE_TABLE = {
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
 // Estado do tempo real (ver seção "Tempo real").
-const LIVE_TABLES = ["activities", "activity_comments", "deliveries", "negotiations", "contacts", "companies", "delivery_objectives", "delivery_goals"];
+const LIVE_TABLES = ["activities", "activity_comments", "deliveries", "negotiations", "contacts", "companies", "delivery_objectives", "delivery_goals", "conversations"];
 const LIVE_TOPIC = "realtime:cms-live";
 const liveState = { socket: null, ref: 0, heartbeat: null, tokenTimer: null, retry: 0, reconnectTimer: null, pending: 0, ownWrites: new Map(), commentsActivityId: null, stopped: false, connectedOnce: false };
 const DATA_PERMISSION_MODULE = {
@@ -797,7 +797,10 @@ async function provisionDeliveryResources(project) {
 
 // ---------- Cache ----------
 let cache = null;
+// Conversas: no banco (tabela conversations, por usuário) quando conectado;
+// no navegador só no modo de demonstração.
 function loadConversations() {
+  if (isLive() && cache?.conversations) return cache.conversations;
   try {
     const rows = JSON.parse(localStorage.getItem("crm_conversations") || "null");
     if (Array.isArray(rows)) return rows;
@@ -812,8 +815,106 @@ function loadConversations() {
   return [];
 }
 function saveConversations(rows) {
-  localStorage.setItem("crm_conversations", JSON.stringify(rows));
   if (cache) cache.conversations = rows;
+  if (isLive()) { scheduleConversationSync(); return; }
+  localStorage.setItem("crm_conversations", JSON.stringify(rows));
+}
+
+const CONVERSATION_COLUMNS = ["id", "owner_id", "source", "origin", "conversation_key", "contact_name", "contact", "username", "profile_url", "chat_url", "phone", "email", "contact_id", "amount", "title", "summary", "message_count", "first_at", "last_at", "imported_at", "status", "messages"];
+const conversationSync = { snapshot: new Map(), timer: null, running: false, again: false };
+const conversationNorm = (value) => String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+function conversationKey(row) {
+  if (row.conversation_key) return row.conversation_key;
+  if (row.external_room_id) return `room:${row.external_room_id}`;
+  const digits = String(row.phone || "").replace(/\D/g, "");
+  return digits.length >= 10 ? `phone:${digits.slice(-11)}` : `name:${conversationNorm(row.contact_name)}`;
+}
+function conversationRemoteBody(row) {
+  const body = {};
+  CONVERSATION_COLUMNS.forEach((key) => { if (row[key] !== undefined) body[key] = row[key]; });
+  body.conversation_key = conversationKey(row);
+  body.message_count = Number(row.message_count || (row.messages || []).length || 0);
+  body.messages = Array.isArray(row.messages) ? row.messages : [];
+  body.amount = row.amount == null || row.amount === "" ? null : Number(row.amount);
+  body.contact_id = row.contact_id || null;
+  body.extra = Object.fromEntries(Object.entries(row).filter(([key]) => !CONVERSATION_COLUMNS.includes(key) && !["extra", "raw", "created_at", "updated_at"].includes(key)));
+  return body;
+}
+function conversationFromRemote(row) {
+  return { ...(row.extra || {}), ...Object.fromEntries(CONVERSATION_COLUMNS.map((key) => [key, row[key]])), created_at: row.created_at, updated_at: row.updated_at };
+}
+function rememberConversationSnapshot(rows) {
+  conversationSync.snapshot = new Map(rows.map((row) => [row.id, JSON.stringify(conversationRemoteBody(row))]));
+}
+function scheduleConversationSync() {
+  clearTimeout(conversationSync.timer);
+  conversationSync.timer = setTimeout(syncConversationsToDb, 500);
+}
+// Grava no banco só o que mudou: novas conversas (do usuário atual),
+// alterações e exclusões.
+async function syncConversationsToDb() {
+  if (!isLive() || !cache) return;
+  if (conversationSync.running) { conversationSync.again = true; return; }
+  conversationSync.running = true;
+  try {
+    const rows = cache.conversations || [];
+    const ids = new Set();
+    const created = [];
+    const updated = [];
+    rows.forEach((row) => {
+      if (!row.owner_id) row.owner_id = currentProfile?.id || null;
+      ids.add(row.id);
+      const body = conversationRemoteBody(row);
+      const hash = JSON.stringify(body);
+      const previous = conversationSync.snapshot.get(row.id);
+      if (previous === hash) return;
+      (previous === undefined ? created : updated).push({ body, hash });
+    });
+    const removed = [...conversationSync.snapshot.keys()].filter((id) => !ids.has(id));
+    const now = new Date().toISOString();
+    if (created.length) {
+      await api("conversations", { method: "POST", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(created.map(({ body }) => ({ ...body, updated_at: now }))) });
+      created.forEach(({ body, hash }) => conversationSync.snapshot.set(body.id, hash));
+    }
+    for (const { body, hash } of updated) {
+      const { id, owner_id: ownerId, ...changes } = body;
+      await api(`conversations?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ ...changes, updated_at: now }) });
+      conversationSync.snapshot.set(id, hash);
+    }
+    if (removed.length) {
+      await api(`conversations?id=in.(${removed.map(encodeURIComponent).join(",")})`, { method: "DELETE" });
+      removed.forEach((id) => conversationSync.snapshot.delete(id));
+    }
+  } catch (error) {
+    toast("Erro ao salvar conversas no banco · " + error.message, true);
+  } finally {
+    conversationSync.running = false;
+    if (conversationSync.again) { conversationSync.again = false; scheduleConversationSync(); }
+  }
+}
+
+// Envia para o banco, uma única vez por navegador, as conversas que estavam
+// salvas só neste aparelho.
+async function migrateLocalConversations() {
+  if (!isLive() || !currentProfile?.id || !cache) return;
+  const flag = `crm_conversations_migrated:${currentProfile.id}`;
+  try { if (localStorage.getItem(flag)) return; } catch (error) { return; }
+  let local = [];
+  try { local = JSON.parse(localStorage.getItem("crm_conversations") || "[]"); } catch (error) { local = []; }
+  const known = new Set((cache.conversations || []).map((row) => row.id));
+  const pending = (Array.isArray(local) ? local : []).filter((row) => row?.id && !known.has(row.id)).map((row) => {
+    const { raw, ...rest } = row;
+    return { ...rest, owner_id: currentProfile.id, id: /^[0-9a-f-]{36}$/i.test(row.id) ? row.id : crypto.randomUUID() };
+  });
+  if (pending.length) {
+    cache.conversations = [...pending, ...(cache.conversations || [])];
+    await syncConversationsToDb();
+    toast(`${pending.length} conversa(s) deste aparelho enviada(s) para o banco.`);
+  }
+  try {
+    localStorage.setItem("crm_conversations_backup", JSON.stringify(local));
+    localStorage.setItem(flag, new Date().toISOString());
+  } catch (error) {}
 }
 function loadProjectTasks() {
   if (isLive() && cache?.activityRecords) return cache.activityRecords;
@@ -1684,7 +1785,10 @@ async function loadAll() {
     company.contact_ids = [...new Set(contactIdsByCompany.get(company.tax_id) || [])];
     company.state_registration_text = normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ");
   });
-  const conversations = loadConversations();
+  const conversations = isLive()
+    ? (await fetchTable("conversations").catch(() => [])).map(conversationFromRemote)
+    : loadConversations();
+  if (isLive()) rememberConversationSnapshot(conversations);
   const projectById = byId(projects);
   cache = { users, companies, contacts, products, deals, projects, pipelines, conversations,
     activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [], activityComments,
@@ -2062,6 +2166,7 @@ function columns(tab, c) {
       { k: "username", h: "USUÁRIO", fmt: (v, row) => v ? (row.source === "Reddit" ? `u/${v}` : v) : "—" },
       { k: "profile_url", h: "URL PERFIL", fmt: (v) => safeHttpUrl(v) ? `<a href="${esc(safeHttpUrl(v))}" target="_blank" rel="noopener">Perfil</a>` : "—", csv: (v) => v || "" },
       { k: "source", h: "CANAL" },
+      { k: "owner_id", h: "IMPORTADA POR", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
       { k: "first_at", h: "PRIMEIRO CONTATO" },
       { k: "last_at", h: "ÚLTIMO CONTATO" },
       { k: "imported_at", h: "DATA REGISTRO" },
@@ -7577,12 +7682,12 @@ async function textFromImportFile(file) {
 }
 
 function parseWhatsAppText(text, filename) {
-  const cleanName = filename.replace(/\.(txt|zip)$/i, "").replace(/^Conversa do WhatsApp com\s+/i, "").trim();
+  const cleanName = filename.replace(/\.(txt|zip)$/i, "").replace(/^(Conversa do WhatsApp com|WhatsApp Chat with|WhatsApp Chat -)\s+/i, "").trim();
   const fileLower = filename.toLowerCase();
   const source = fileLower.includes("reddit") ? "Reddit" : fileLower.includes("instagram") ? "Instagram" : "WhatsApp";
-  const lines = text.replace(/\r/g, "").split("\n");
+  const lines = text.replace(/\r/g, "").replace(/[\u200e\u200f\u202a-\u202e]/g, "").split("\n");
   const messages = [];
-  const re = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2})\s+-\s+(?:(.*?):\s)?([\s\S]*)$/;
+  const re = /^\[?(\d{1,2}\/\d{1,2}\/\d{2,4}),?\s+(\d{1,2}:\d{2})(?::\d{2})?\]?\s+(?:-\s+)?(?:(.*?):\s)?([\s\S]*)$/;
   for (const line of lines) {
     const m = line.match(re);
     if (m) {
@@ -7599,7 +7704,12 @@ function parseWhatsAppText(text, filename) {
   const contactName = cleanName || Object.keys(authorCount).sort((a, b) => authorCount[b] - authorCount[a])[0] || "Contato importado";
   const fullText = messages.map((m) => m.text).join("\n");
   const email = fullText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
-  const phone = fullText.match(/(?:\+?\d{1,3}\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/)?.[0] || "";
+  // A exportação do WhatsApp não traz o número de quem exportou nem do
+  // contato salvo; o número só aparece quando o contato não está salvo (no
+  // nome do arquivo ou como remetente).
+  const looksLikePhone = (value) => /^\+?[\d\s().-]{10,}$/.test(String(value || "").trim());
+  const phoneAuthor = Object.keys(authorCount).find(looksLikePhone);
+  const phone = looksLikePhone(cleanName) ? cleanName : phoneAuthor || "";
   const amountRaw = fullText.match(/(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}/)?.[0] || "";
   const amount = amountRaw ? Number(amountRaw.replace(/[^\d,]/g, "").replace(",", ".")) : null;
   const relevant = messages.filter((m) => m.author && !/^<M[íi]dia oculta>|Mensagem apagada$/i.test(m.text)).slice(-8);
@@ -7628,19 +7738,41 @@ function parseWhatsAppText(text, filename) {
   };
 }
 
+// Liga a conversa a uma pessoa do CMS pelo telefone (quando a exportação
+// traz o número) ou pelo nome do contato.
+function matchConversationContact(row) {
+  const contacts = cache?.contacts || [];
+  const digits = String(row.phone || "").replace(/\D/g, "").slice(-11);
+  if (digits.length >= 10) {
+    const tail = digits.slice(-10);
+    const byPhone = contacts.find((contact) => [contact.phone, contact.whatsapp].some((value) => String(value || "").split(/[;,]/).some((item) => item.replace(/\D/g, "").endsWith(tail))));
+    if (byPhone) return byPhone.id;
+  }
+  const name = conversationNorm(row.contact_name);
+  const byName = contacts.filter((contact) => conversationNorm(contact.name) === name);
+  return byName.length === 1 ? byName[0].id : null;
+}
+
 async function importWhatsAppFile(file) {
   try {
     const text = await textFromImportFile(file);
-    const row = parseWhatsAppText(text, file.name);
+    const parsed = parseWhatsAppText(text, file.name);
+    delete parsed.raw;
+    parsed.owner_id = currentProfile?.id || null;
+    parsed.conversation_key = conversationKey(parsed);
     const conversations = loadConversations();
-    conversations.unshift(row);
+    const existing = conversations.find((item) => item.owner_id === parsed.owner_id && item.source === parsed.source && conversationKey(item) === parsed.conversation_key);
+    const row = existing ? Object.assign(existing, { ...parsed, id: existing.id, contact_id: existing.contact_id || null, status: existing.status === "converted" ? "converted" : parsed.status }) : parsed;
+    if (!row.contact_id) row.contact_id = matchConversationContact(row);
+    if (!existing) conversations.unshift(row);
     saveConversations(conversations);
     state.tab = "conversations";
     state.view = "table";
     state.q = "";
     document.getElementById("search").value = "";
     render();
-    toast(`Conversa importada: ${row.contact_name}.`);
+    const linked = row.contact_id ? cache.contactById?.[row.contact_id]?.name : "";
+    toast(`${existing ? "Conversa atualizada" : "Conversa importada"}: ${row.contact_name}.${linked ? ` Vinculada a ${linked}.` : " Associe a uma pessoa para vincular ao CMS."}`);
   } catch (err) {
     toast("Erro ao importar · " + err.message, true);
   }
@@ -7660,17 +7792,20 @@ function openConversationPopup(id) {
   const messages = row.messages || [];
   // "Minhas" mensagens são reconhecidas pelo nome cadastrado em
   // Configurações → Meus dados (sem isso configurado, nada é destacado).
-  const myName = String(getCfg().myName || "").trim().toLowerCase();
+  const owner = cache?.users?.find((user) => user.id === row.owner_id);
+  const myNames = [getCfg().myName, owner?.full_name, owner?.nickname].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
   const body = messages.length
     ? messages.map((m) => {
-      const mine = myName && String(m.author || "").toLowerCase().includes(myName);
+      const author = String(m.author || "").toLowerCase();
+      const mine = myNames.some((name) => author === name || author.includes(name));
       return `<div class="chat-msg${mine ? " mine" : ""}">
         <div class="meta">${esc(m.author || "Sistema")} · ${esc(m.at || "")}</div>
         <div class="txt">${esc(m.text || "")}</div>
       </div>`;
     }).join("")
     : `<div class="panel-list">${esc(row.raw || row.summary || "Sem conteúdo.")}</div>`;
-  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `<div class="chat-log">${body}</div>`);
+  const ownerLine = owner ? `<div class="panel-list chat-owner">Importada por <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
+  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>`);
 }
 
 function openAssociateContactModal(ids = [...state.selectedConversations]) {
@@ -8880,7 +9015,9 @@ const HELP_PAGES = {
   conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
     lead: "Histórico das conversas de WhatsApp e Reddit Chat, importado ou capturado pela extensão, ligado às pessoas e aos negócios.",
     sections: [
-      { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b>.", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha importar.", "Selecione o arquivo .txt ou .zip.", "Associe a conversa a uma pessoa."] },
+      { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b> (sem mídia).", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha <b>Conversa (.txt/.zip)</b>.", "Selecione o arquivo .txt ou .zip.", "O CMS liga a conversa à pessoa com o mesmo nome ou telefone; se não achar, associe manualmente."] },
+      { title: "Pelo celular (Android)", steps: ["Instale o app ENTERPRISER pelo Chrome (Adicionar à tela inicial).", "No WhatsApp, abra a conversa e use <b>Mais › Exportar conversa › Sem mídia</b>.", "Na lista de compartilhamento escolha <b>ENTERPRISER</b>.", "O CMS abre e importa a conversa direto no módulo Conversas."], lead: "No iPhone o compartilhamento direto não é suportado pelo sistema: salve o .zip em Arquivos e importe pelo menu Dados." },
+      { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Importada por", "Cada usuário tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
       { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Criar negociação", "Abre negócios a partir das conversas selecionadas."]] },
       { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
     ] },
@@ -15689,6 +15826,31 @@ if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged)
   });
 }
 
+// Conversas recebidas pelo "Compartilhar" do Android (WhatsApp → Exportar
+// conversa → ENTERPRISER). O service worker guarda os arquivos e abre
+// /cms?share-target=1; aqui eles são importados no módulo Conversas.
+async function importSharedFiles() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("share-target")) return;
+  params.delete("share-target");
+  history.replaceState(null, "", location.pathname + (params.toString() ? `?${params}` : "") + location.hash);
+  if (!("caches" in window)) return;
+  try {
+    const store = await caches.open("enterpriser-share");
+    const requests = await store.keys();
+    if (!requests.length) { toast("Nenhum arquivo recebido do compartilhamento.", true); return; }
+    for (const request of requests) {
+      const response = await store.match(request);
+      const name = decodeURIComponent(response?.headers.get("X-File-Name") || "conversa.zip");
+      const blob = await response.blob();
+      await store.delete(request);
+      await importWhatsAppFile(new File([blob], name, { type: blob.type }));
+    }
+  } catch (error) {
+    toast("Erro ao receber conversa compartilhada · " + error.message, true);
+  }
+}
+
 async function init() {
   setConn();
   try {
@@ -15710,12 +15872,14 @@ async function init() {
         refreshActivityCache();
       }
     }
+    await migrateLocalConversations();
     syncRedditQueue();
     syncWhatsAppQueue();
     hideLogin();
     render();
     document.getElementById("boot-gate")?.setAttribute("hidden", "");
     startLiveUpdates();
+    await importSharedFiles();
     if (isLive()) setTimeout(runCompanyRegistryQueue, 3000);
   } catch (err) {
     document.getElementById("main").innerHTML =
