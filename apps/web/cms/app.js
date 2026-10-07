@@ -2103,8 +2103,9 @@ function columns(tab, c) {
       { k: "duration_days", h: "DURAÇÃO (DIAS)", num: true, cls: "muted" },
       { k: "status", h: "STATUS", fmt: (v) => badge(v === "Ativo" ? "open" : v === "Pausado" ? "lead" : "lost", v) }];
     case "deals": return [
-      { k: "title", h: "Negócio" },
+      { k: "title", h: "Negócio", fmt: (v, row) => esc(c.productById[row.product_id]?.name || v || "—") },
       { k: "company_id", h: "Empresa", fmt: (v, row) => row.no_company ? '<span class="muted">Não possui empresa</span>' : c.companyById[v]?.legal_name || c.companyById[v]?.name || "—" },
+      { k: "contact_id", h: "Pessoa", fmt: (v) => esc(c.contactById[v]?.name || "—") },
       { k: "pipeline_id", h: "Pipeline", fmt: (v) => c.pipelineById?.[v]?.name || "—", cls: "muted" },
       { k: "stage", h: "Etapa", fmt: (v) => v ? badge("lead", v) : "—" },
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
@@ -2957,6 +2958,7 @@ function renderTable(c) {
     if (state.tab === "conversations") {
       return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
+        edit: { className: "edit-conversation", attrs: { "data-id": rid }, title: "Editar conversa · pessoa e negociação", enabled: currentUserCan("conversations", "edit") },
         delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
@@ -3018,6 +3020,8 @@ function renderTable(c) {
     b.addEventListener("click", () => confirmDelete(state.tab, b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.convert").forEach((b) =>
     b.addEventListener("click", () => convertImportToDeal(b.dataset.id)));
+  document.querySelectorAll("#main .rowbtn.edit-conversation").forEach((b) =>
+    b.addEventListener("click", () => openConversationEditModal([b.dataset.id])));
   document.querySelectorAll("#main .rowbtn.del-import").forEach((b) =>
     b.addEventListener("click", () => deleteImport(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.open-chat").forEach((b) =>
@@ -7802,7 +7806,11 @@ function openConversationPopup(id) {
   const body = messages.length
     ? messages.map((m) => {
       const author = String(m.author || "").toLowerCase();
-      const mine = myNames.some((name) => author === name || author.includes(name));
+      const authorWords = author.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/).filter(Boolean);
+      const mine = myNames.some((name) => {
+        const nameWords = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/);
+        return author === name || author.includes(name) || (authorWords.length > 1 && authorWords.every((word) => nameWords.includes(word)));
+      });
       return `<div class="chat-msg${mine ? " mine" : ""}">
         <div class="meta">${esc(m.author || "Sistema")} · ${esc(m.at || "")}</div>
         <div class="txt">${esc(m.text || "")}</div>
@@ -7838,7 +7846,71 @@ function openAssociateContactModal(ids = [...state.selectedConversations]) {
   });
 }
 
-async function convertImportToDeal(id) {
+// Editar conversa: pessoa vinculada e, opcionalmente, criar a negociação
+// escolhendo empresa (ou sem empresa) e produto (ou sem produto).
+function openConversationEditModal(ids, { createDeal = false } = {}) {
+  const rows = ids.map(findConversation).filter(Boolean);
+  if (!rows.length) { toast("Selecione uma conversa.", true); return; }
+  const single = rows.length === 1 ? rows[0] : null;
+  const currentContactId = single?.contact_id || "";
+  const people = [...cache.contacts].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
+  const personOptions = `<option value="">${single ? "— Sem pessoa (cria ao gerar a negociação) —" : "— Manter a pessoa de cada conversa —"}</option>` +
+    people.map((person) => `<option value="${esc(person.id)}"${person.id === currentContactId ? " selected" : ""}>${esc(person.name)}</option>`).join("");
+  const firstCompanyOf = (contactId) => {
+    const contact = cache.contactById?.[contactId];
+    return contact ? normalizeIdList(contact.company_ids, contact.company_id)[0] || "" : "";
+  };
+  const products = (cache.products || []).filter((product) => product.status !== "Inativo");
+  const converted = rows.filter((row) => row.status === "converted").length;
+  shell(single ? `Editar conversa · ${single.contact_name || "Contato"}` : "Editar conversas", `<div class="form">
+      <div class="field full"><label>Pessoa</label><select id="conv-edit-person">${personOptions}</select></div>
+      <div class="field check full conv-check"><input type="checkbox" id="conv-edit-deal"${createDeal ? " checked" : ""}><label for="conv-edit-deal">Criar negociação</label></div>
+      <div class="field full conv-deal-field"><label>Empresa</label>${singleSearchPickerHtml("conv-edit-company", companyRefOptions(cache), firstCompanyOf(currentContactId), "Buscar por nome ou CNPJ")}</div>
+      <div class="field check full conv-check conv-deal-field"><input type="checkbox" id="conv-edit-no-company"><label for="conv-edit-no-company">Sem empresa</label></div>
+      <div class="field full conv-deal-field"><label>Produto</label><select id="conv-edit-product"><option value="">Sem produto</option>${products.map((product) => `<option value="${esc(product.id)}">${esc(product.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="panel-list" style="padding-top:0">${rows.length > 1 ? `${rows.length} conversa(s) selecionada(s). ` : ""}${converted ? `${converted} já gerou(aram) negociação. ` : ""}<span class="conv-deal-field">O negócio leva o nome do produto; sem produto, o canal e o nome do contato.</span></div>
+    <div class="modal-foot"><button class="btn" id="cancel">Cancelar</button>
+      <button class="btn primary" id="save">Salvar</button></div>`);
+  wireSingleSearchPicker("conv-edit-company");
+  const companyRoot = document.getElementById("conv-edit-company");
+  const dealBox = document.getElementById("conv-edit-deal");
+  const noCompany = document.getElementById("conv-edit-no-company");
+  const sync = () => {
+    document.querySelectorAll(".conv-deal-field").forEach((el) => { el.hidden = !dealBox.checked; });
+    companyRoot.querySelector(".single-search-input").disabled = noCompany.checked;
+  };
+  dealBox.addEventListener("change", sync);
+  noCompany.addEventListener("change", sync);
+  document.getElementById("conv-edit-person").addEventListener("change", (event) => {
+    const companyId = firstCompanyOf(event.target.value);
+    const option = companyRoot.querySelector(`.single-search-option[data-value="${CSS.escape(companyId)}"]`);
+    if (!companyId || !option) return;
+    companyRoot.querySelector(".single-search-input").value = option.dataset.label;
+    companyRoot.querySelector('input[type="hidden"]').value = companyId;
+  });
+  sync();
+  document.getElementById("cancel").addEventListener("click", closeModal);
+  document.getElementById("save").addEventListener("click", async (event) => {
+    const personId = document.getElementById("conv-edit-person").value;
+    const companyId = companyRoot.querySelector('input[type="hidden"]').value;
+    if (dealBox.checked && !noCompany.checked && !companyId) { toast("Escolha a empresa ou marque Sem empresa.", true); return; }
+    event.currentTarget.disabled = true;
+    const conversations = loadConversations();
+    if (personId || single) conversations.forEach((row) => { if (ids.includes(row.id)) row.contact_id = personId || null; });
+    saveConversations(conversations);
+    if (!dealBox.checked) {
+      closeModal();
+      render();
+      toast(rows.length > 1 ? "Conversas atualizadas." : "Conversa atualizada.");
+      return;
+    }
+    const options = { companyId: noCompany.checked ? null : companyId, noCompany: noCompany.checked, productId: document.getElementById("conv-edit-product").value || null };
+    for (const row of rows) await convertImportToDeal(row.id, options);
+  });
+}
+
+async function convertImportToDeal(id, options = null) {
   const conversations = loadConversations();
   const row = conversations.find((item) => item.id === id);
   if (!row) return;
@@ -7863,11 +7935,13 @@ async function convertImportToDeal(id) {
       });
     }
     const firstPipeline = (cache.pipelines || [])[0];
+    const product = options?.productId ? cache.productById?.[options.productId] : null;
     await createRow("deals", {
-      title: row.title || `WhatsApp - ${row.contact_name}`,
+      title: product?.name || row.title || `${row.source || "WhatsApp"} - ${contact.name || row.contact_name}`,
       contact_id: contact.id,
-      company_id: normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
-      product_id: null,
+      company_id: options ? options.companyId || null : normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
+      no_company: Boolean(options?.noCompany),
+      product_id: product?.id || null,
       owner_id: null,
       pipeline_id: firstPipeline?.id || null,
       stage: firstPipeline?.stages?.[0] || null,
@@ -7893,7 +7967,7 @@ async function convertImportToDeal(id) {
 async function createDealFromSelectedConversations() {
   const rows = selectedConversationRows();
   if (!rows.length) { toast("Selecione uma conversa.", true); return; }
-  for (const row of rows) await convertImportToDeal(row.id);
+  openConversationEditModal(rows.map((row) => row.id), { createDeal: true });
 }
 
 function render() {
@@ -9023,7 +9097,7 @@ const HELP_PAGES = {
       { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b> (sem mídia).", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha <b>Conversa (.txt/.zip)</b>.", "Selecione o arquivo .txt ou .zip.", "O CMS liga a conversa à pessoa com o mesmo nome ou telefone; se não achar, associe manualmente."] },
       { title: "Pelo celular (Android)", steps: ["Instale o app ENTERPRISER pelo Chrome (Adicionar à tela inicial).", "No WhatsApp, abra a conversa e use <b>Mais › Exportar conversa › Sem mídia</b>.", "Na lista de compartilhamento escolha <b>ENTERPRISER</b>.", "O CMS abre e importa a conversa direto no módulo Conversas."], lead: "No iPhone o compartilhamento direto não é suportado pelo sistema: salve o .zip em Arquivos e importe pelo menu Dados." },
       { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Importada por", "Cada usuário tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
-      { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Criar negociação", "Abre negócios a partir das conversas selecionadas."]] },
+      { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Editar e criar negociação", "No lápis da conversa (ou em Criar negociação, com várias selecionadas) escolha a pessoa, a empresa ou Sem empresa e o produto ou Sem produto. O negócio leva o nome do produto."]] },
       { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
     ] },
   deals: { kicker: "Módulo", title: "Negócios", path: ["Cabeçalho", "Negócios"],
