@@ -1012,6 +1012,7 @@ function activityRemoteBody(task) {
     channel: task.channel || null,
     type: task.type || null,
     recurrence: task.recurrence || "once",
+    deadline_window: task.deadline_window || "date",
     checklist: normalizeChecklist(task.checklist),
     owner_id: task.owner_id || null,
     assignee_ids: normalizeIdList(task.assignee_ids, task.owner_id),
@@ -1059,6 +1060,7 @@ function productActivityRemoteBody(template) {
     priority: template.priority || "normal",
     objective_template_id: template.objective_template_id || null,
     recurrence: template.recurrence || "once",
+    deadline_window: template.deadline_window || "date",
     target_days: template.target_days == null ? null : Number(template.target_days),
     start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
     consider_business_days: Boolean(template.consider_business_days),
@@ -1295,10 +1297,12 @@ async function syncProductActivities() {
       for (let occurrenceIndex = 0; occurrenceIndex < dates.length; occurrenceIndex += 1) {
         const current = existing.find((task) => Number(task.occurrence_index || 0) === occurrenceIndex);
         const occurrenceDate = dates[occurrenceIndex];
-        const plannedStartDate = occurrenceDate || project.start_date || null;
-        const dueDate = plannedStartDate && template.target_days != null
+        const window = template.recurrence === "monthly" ? template.deadline_window || "date" : "date";
+        const range = monthlyDeadlineRange(occurrenceDate || project.start_date, window);
+        const plannedStartDate = range?.start || occurrenceDate || project.start_date || null;
+        const dueDate = range?.end || (plannedStartDate && template.target_days != null
           ? (template.consider_business_days ? addBusinessDays(plannedStartDate, Number(template.target_days)) : addDays(plannedStartDate, Number(template.target_days)))
-          : occurrenceDate;
+          : occurrenceDate);
         const structural = {
           title: template.activity,
           information: template.information || "",
@@ -1314,6 +1318,7 @@ async function syncProductActivities() {
           channel: template.channel || "",
           type: template.type || "",
           recurrence: template.recurrence || "once",
+          deadline_window: window,
           consider_business_days: Boolean(template.consider_business_days),
           target_days: template.target_days == null ? null : Number(template.target_days),
           start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
@@ -1325,6 +1330,7 @@ async function syncProductActivities() {
         if (current) {
           const recurrenceChanged = (current.recurrence || "once") !== structural.recurrence;
           const scheduleChanged = recurrenceChanged
+            || (current.deadline_window || "date") !== structural.deadline_window
             || Boolean(current.consider_business_days) !== structural.consider_business_days
             || (current.target_days == null ? null : Number(current.target_days)) !== structural.target_days;
           const updates = { ...structural, checklist: hasSubtasks ? [] : mergeTemplateChecklist(template.checklist, current.checklist) };
@@ -1338,8 +1344,10 @@ async function syncProductActivities() {
             updates.assignee_job_titles = defaultJobTitles;
           }
           if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
-          if (plannedStartDate && (!current.planned_start_date || scheduleChanged)) updates.planned_start_date = plannedStartDate;
-          if (scheduleChanged || (dueDate && !current.due_date)) {
+          const completed = ["done", "canceled"].includes(current.status);
+          if (completed) updates.deadline_window = current.deadline_window || "date";
+          if (!completed && plannedStartDate && (!current.planned_start_date || scheduleChanged)) updates.planned_start_date = plannedStartDate;
+          if (!completed && (scheduleChanged || (dueDate && !current.due_date))) {
             updates.due_date = dueDate;
             updates.planned_end_date = dueDate;
           }
@@ -1421,6 +1429,7 @@ async function recalculateDependencySchedules(projectId = null) {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const shift = (date, days, business) => business ? addBusinessDays(date, days) : addDays(date, days);
   const candidates = tasks.filter((task) => (!projectId || task.project_id === projectId)
+    && (!task.deadline_window || task.deadline_window === "date")
     && task.start_after_days != null && task.start_after_days !== ""
     && !task.schedule_manual && !["done", "canceled"].includes(task.status)
     && normalizeIdList(task.dependency_ids, task.depends_on_activity_id).length);
@@ -1499,6 +1508,58 @@ function activityOccurrenceDates(project, recurrence, considerBusinessDays = fal
     cursor = monthStep ? addMonthsClamped(cursor, monthStep) : addDays(cursor, dayStep || 1);
   }
   return dates.length ? dates : [start];
+}
+
+const MONTHLY_DEADLINE_OPTIONS = [
+  ["date", "Data específica"], ["month", "Mês inteiro"],
+  ["week1", "Semana 1 · dias 1 a 7"], ["week2", "Semana 2 · dias 8 a 14"],
+  ["week3", "Semana 3 · dias 15 a 21"], ["week4", "Semana 4 · dia 22 ao fim do mês"]
+];
+function monthlyDeadlineRange(date, window = "date") {
+  const source = dateOnly(date);
+  if (!source || window === "date") return null;
+  const week = Number(String(window).replace("week", ""));
+  if (window !== "month" && ![1, 2, 3, 4].includes(week)) return null;
+  const lastDay = new Date(source.getFullYear(), source.getMonth() + 1, 0, 12).getDate();
+  const first = window === "month" ? 1 : (week - 1) * 7 + 1;
+  const last = window === "month" || week === 4 ? lastDay : week * 7;
+  return {
+    start: isoDay(new Date(source.getFullYear(), source.getMonth(), first, 12)),
+    end: isoDay(new Date(source.getFullYear(), source.getMonth(), last, 12))
+  };
+}
+function monthlyDeadlineField(prefix, task) {
+  return `<div class="field task-form-wide" id="${prefix}-deadline-field"${task.recurrence === "monthly" ? "" : " hidden"}><label>Prazo no mês</label><select id="${prefix}-deadline-window">${MONTHLY_DEADLINE_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (task.deadline_window || "date") ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`;
+}
+function wireMonthlyDeadline(prefix) {
+  const recurrence = document.getElementById(`${prefix}-recurrence`);
+  const windowSelect = document.getElementById(`${prefix}-deadline-window`);
+  const refresh = () => {
+    const monthly = recurrence.value === "monthly";
+    document.getElementById(`${prefix}-deadline-field`).hidden = !monthly;
+    const ranged = monthly && windowSelect.value !== "date";
+    const days = document.getElementById(`${prefix}-target-days`);
+    if (days) days.disabled = ranged;
+    const start = document.getElementById(`${prefix}-planned-start`);
+    const end = document.getElementById(`${prefix}-planned-end`);
+    if (start && end && ranged) {
+      const project = cache.projects.find((item) => item.id === projectBoardState.projectId);
+      const range = monthlyDeadlineRange(start.value || end.value || project?.start_date || isoDay(new Date()), windowSelect.value);
+      if (range) { start.value = range.start; end.value = range.end; }
+    }
+    if (end) end.readOnly = ranged;
+  };
+  recurrence.addEventListener("change", refresh);
+  windowSelect.addEventListener("change", refresh);
+  document.getElementById(`${prefix}-planned-start`)?.addEventListener("change", refresh);
+  refresh();
+}
+function taskDeadlinePeriod(task) {
+  if (task.recurrence !== "monthly" || !task.deadline_window || task.deadline_window === "date") return "";
+  const date = dateOnly(taskPlannedStart(task) || taskPlannedEnd(task));
+  if (!date) return "";
+  const month = date.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+  return task.deadline_window === "month" ? month : `Semana ${task.deadline_window.replace("week", "")} · ${month}`;
 }
 function projectTasks(projectId) {
   const tasks = operationalProjectTasks(projectId);
@@ -1956,7 +2017,11 @@ function taskDeadlineState(task) {
   const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
   if (!planned || (task.status === "canceled" && !task.actual_end_date)) return "";
   const actual = String(task.actual_end_date || "").slice(0, 10);
-  if (actual) return actual < planned ? "Adiantado" : actual > planned ? "Atrasado" : "Em dia";
+  if (actual) {
+    if (actual > planned) return "Atrasado";
+    const windowStart = taskDeadlinePeriod(task) ? taskPlannedStart(task) : planned;
+    return windowStart && actual < windowStart ? "Adiantado" : "Em dia";
+  }
   const now = new Date();
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   return today > planned ? "Atrasado" : "Em dia";
@@ -2157,7 +2222,7 @@ function columns(tab, c) {
       { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => stackedCell(responsibilityNameList(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "references", h: "REFERÊNCIAS", fmt: (_v, row) => taskReferencesHtml(row) },
       { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
-      { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => dt(v || row.due_date) || "—" },
+      { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => esc(taskDeadlinePeriod(row) || dt(v || row.due_date) || "—") },
       { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "actual_end_date", h: "TÉRMINO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "status", h: "STATUS", fmt: (_v, row) => inlineTaskStatus(row) },
@@ -3387,6 +3452,7 @@ function timelineItem(tab, row, c) {
     const progress = deliveryGanttProgress(row.id);
     return {
       id: row.id, title: c.productById[row.product_id]?.name || row.name || "Entrega",
+      client: row.client_name || c.companyById[row.company_id]?.trade_name || "Sem cliente",
       detail: c.companyById[row.company_id]?.legal_name || "Sem cliente", start: row.start_date, end: row.end_date || row.start_date, status: row.status,
       progress: {
         ...progress,
@@ -3502,7 +3568,7 @@ function ganttTimelineMarkup(items, label = "Registro", itemClass = "", footer =
         ? `<button class="gantt-milestone ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px" title="${title}"><span></span></button>`
         : `<button class="gantt-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${title}">${esc(item.title)}</button>`;
     const progressHeight = item.progress ? (progressSegments.length ? 50 + progressSegments.length * 21 : 76) : 54;
-    return `<div class="gantt-row${item.progress ? " has-progress" : ""}" style="min-height:${progressHeight}px"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span>${item.progress ? `<small class="gantt-progress-summary">${esc(`${progressPercent}% geral · ${item.progress.label}`)}</small>` : ""}</div>
+    return `<div class="gantt-row${item.progress ? " has-progress" : ""}" style="min-height:${progressHeight}px"><div class="gantt-label"><strong>${esc(item.title)}</strong>${item.client ? `<b class="gantt-client">${esc(item.client)}</b>` : ""}<small>${esc(item.detail)}</small><span>${esc(period)}</span>${item.progress ? `<small class="gantt-progress-summary">${progressPercent}% geral</small>` : ""}</div>
       <div class="gantt-track${item.progress ? " has-progress" : ""}" style="width:${scale.width}px;height:${progressHeight}px">${grid}${todayLine}${control}</div></div>`;
   }).join("");
   const legend = showsProgress
@@ -4543,6 +4609,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       channel: requestedParent.channel || "",
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
+      deadline_window: requestedParent.deadline_window || "date",
       priority: requestedParent.priority || "normal",
       target_days: requestedParent.target_days ?? null,
       consider_business_days: Boolean(requestedParent.consider_business_days),
@@ -4605,6 +4672,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
         <div class="field" title="Dias para iniciar depois que a tarefa da qual esta depende terminar (data real se concluída; senão, a prevista)."><label>Iniciar após dependência (dias)</label><input id="pa-start-after" type="number" min="0" step="1" value="${esc(current.start_after_days ?? "")}" placeholder="Ex.: 2"></div>
         <label class="task-business-days" for="pa-business-days"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
+      ${monthlyDeadlineField("pa", current)}
       <div class="task-name-row">
         <div class="field"><label id="pa-activity-label">${productActivityParentGroupId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
         <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
@@ -4625,6 +4693,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-save").addEventListener("click", saveProductActivity);
+  wireMonthlyDeadline("pa");
   document.getElementById("pa-add-subtask")?.addEventListener("click", () => openProductActivityDrawer(null, null, editing.id));
   document.getElementById("pa-checklist-add")?.addEventListener("click", () => {
     productActivityChecklistDraft.push({ id: crypto.randomUUID(), text: "", checked: false });
@@ -4694,6 +4763,7 @@ async function saveProductActivity() {
     channel: document.getElementById("pa-channel").value.trim(),
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
+    deadline_window: document.getElementById("pa-recurrence").value === "monthly" ? document.getElementById("pa-deadline-window").value : "date",
     priority: document.getElementById("pa-priority").value || "normal",
     target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
     start_after_days: document.getElementById("pa-start-after").value === "" ? null : Number(document.getElementById("pa-start-after").value),
@@ -5317,7 +5387,7 @@ function renderTaskTable(tasks) {
       <td class="compact-multi-cell">${stackedCell(responsibilityNameList(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
       <td>${taskReferencesHtml(task)}</td>
       <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
-      <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
+      <td>${esc(taskDeadlinePeriod(task) || (taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—"))}</td>
       <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
       <td>${esc(task.actual_end_date ? dt(task.actual_end_date) : "—")}</td>
       <td>${inlineTaskStatus(task, "project-inline-task-status")}</td>
@@ -5669,7 +5739,7 @@ function projectSectionValues(item, tasks = []) {
       responsibilityNames(item.assignee_ids, item.owner_id, item.assignee_job_titles, item.assign_to_client),
       [...normalizeIdList(item.document_ids).map((id) => taskDocumentOptions().find((option) => option.value === id)?.label || "Documento"), ...normalizeIdList(item.custom_table_ids).map((id) => taskTableOptions().find((option) => option.value === id)?.label || "Tabela")].join(", ") || "—",
       taskPlannedStart(item) ? dt(taskPlannedStart(item)) : "—",
-      taskPlannedEnd(item) ? dt(taskPlannedEnd(item)) : "—",
+      taskDeadlinePeriod(item) || (taskPlannedEnd(item) ? dt(taskPlannedEnd(item)) : "—"),
       item.actual_start_date ? dt(item.actual_start_date) : "—",
       item.actual_end_date ? dt(item.actual_end_date) : "—",
       taskStatusLabel(item.status || "todo"),
@@ -6192,6 +6262,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
         <label class="task-business-days" for="project-task-business-days"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
+      ${monthlyDeadlineField("project-task", current)}
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
@@ -6211,6 +6282,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const close = () => overlay.remove();
   document.getElementById("project-task-close").addEventListener("click", close);
   document.getElementById("project-task-cancel").addEventListener("click", close);
+  wireMonthlyDeadline("project-task");
   wireTaskGroupSelect("project-task-group", "project-task-subgroup");
   wireMultiPicker("project-task-dependencies");
   wireMultiPicker("project-task-assignees");
@@ -6232,8 +6304,10 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     const dependencyIds = multiPickerValues("project-task-dependencies");
     const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
-    const plannedStart = document.getElementById("project-task-planned-start").value || null;
-    const plannedEnd = document.getElementById("project-task-planned-end").value || null;
+    const deadlineWindow = document.getElementById("project-task-recurrence").value === "monthly" ? document.getElementById("project-task-deadline-window").value : "date";
+    const range = monthlyDeadlineRange(document.getElementById("project-task-planned-start").value || cache.projects.find((item) => item.id === projectId)?.start_date || isoDay(new Date()), deadlineWindow);
+    const plannedStart = range?.start || document.getElementById("project-task-planned-start").value || null;
+    const plannedEnd = range?.end || document.getElementById("project-task-planned-end").value || null;
     const actualStart = document.getElementById("project-task-actual-start").value || null;
     const actualEnd = document.getElementById("project-task-actual-end").value || null;
     if (plannedStart && plannedEnd && plannedEnd < plannedStart) { toast("O término previsto não pode ser anterior ao início previsto.", true); return; }
@@ -6257,6 +6331,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       channel: document.getElementById("project-task-channel").value.trim(),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
+      deadline_window: deadlineWindow,
       consider_business_days: document.getElementById("project-task-business-days").checked,
       priority: document.getElementById("project-task-priority").value || "normal",
       objective_id: document.getElementById("project-task-objective").value || null,
