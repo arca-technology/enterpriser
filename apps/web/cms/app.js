@@ -2112,8 +2112,7 @@ function columns(tab, c) {
       { k: "stage", h: "Etapa", fmt: (v) => v ? badge("lead", v) : "—" },
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
       { k: "lead_source", h: "Origem", cls: "muted" },
-      { k: "amount", h: "Valor", num: true, fmt: brl, cls: "pos" },
-      { k: "expected_close_date", h: "Previsão", fmt: dt }];
+      { k: "amount", h: "Valor", num: true, fmt: brl, cls: "pos" }];
     case "projects": return [
       { k: "delivery_type", h: "TIPO" },
       { k: "group_name", h: "GRUPO" },
@@ -2329,6 +2328,31 @@ function pipelineStageOptions(c, pipelineId) {
   const pipeline = (c.pipelineById && c.pipelineById[pipelineId]) || (c.pipelines || [])[0];
   return (pipeline?.stages || []).map((s) => ({ value: s, label: s }));
 }
+function normalizedDealLabel(value) {
+  return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLocaleLowerCase("pt-BR");
+}
+function defaultDealPipeline(c = cache) {
+  return (c?.pipelines || []).find((pipeline) => normalizedDealLabel(pipeline.name) === "padrao") || null;
+}
+function defaultDealStage(pipeline) {
+  return (pipeline?.stages || []).find((stage) => normalizedDealLabel(stage) === "lead") || null;
+}
+function productStandardPrice(product) {
+  if (product?.price == null || product.price === "") return null;
+  const price = Number(product.price);
+  return Number.isFinite(price) ? price : null;
+}
+function applyNewDealDefaults(body, c = cache) {
+  const pipeline = defaultDealPipeline(c);
+  if (!pipeline) throw new Error('Cadastre ou renomeie um pipeline como "Padrão".');
+  const stage = defaultDealStage(pipeline);
+  if (!stage) throw new Error('O pipeline Padrão precisa ter a etapa "Lead".');
+  body.pipeline_id = pipeline.id;
+  body.stage = stage;
+  body.status = "open";
+  body.expected_close_date = null;
+  return body;
+}
 function fields(tab, c) {
   switch (tab) {
     case "companies": return [
@@ -2382,17 +2406,17 @@ function fields(tab, c) {
       { k: "duration_days", label: "Duração da entrega (dias)", type: "number" },
       { k: "status", label: "Status", type: "select", options: [{ value: "Ativo", label: "Ativo" }, { value: "Pausado", label: "Pausado" }, { value: "Inativo", label: "Inativo" }], def: "Ativo" }];
     case "deals": return [
-      { k: "title", label: "Título", req: true, full: true },
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), placeholder: "Buscar por nome ou CNPJ" },
       { k: "no_company", label: "Não possui empresa", type: "checkbox", embedded: true },
       { k: "contact_id", label: "Contato", type: "select", options: [] },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c) },
-      { k: "pipeline_id", label: "Pipeline", type: "select", options: (c.pipelines || []).map((p) => ({ value: p.id, label: p.name })), req: true },
-      { k: "stage", label: "Etapa", type: "select", options: pipelineStageOptions(c, null) },
-      { k: "status", label: "Status", type: "select", options: STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] })), def: "open" },
+      { k: "no_product", label: "Não possui produto", type: "checkbox", embedded: true },
+      { k: "title", label: "Nome do produto não cadastrado", full: true, placeholder: "Digite o nome do produto" },
+      { k: "pipeline_id", label: "Pipeline", type: "select", options: (c.pipelines || []).map((p) => ({ value: p.id, label: p.name })), createHidden: true },
+      { k: "stage", label: "Etapa", type: "select", options: pipelineStageOptions(c, null), createHidden: true },
+      { k: "status", label: "Status", type: "select", options: STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] })), def: "open", createHidden: true },
       { k: "lead_source", label: "Origem do lead", type: "select", options: SOURCES.map((s) => ({ value: s, label: s })) },
-      { k: "amount", label: "Valor (R$)", type: "number" },
-      { k: "expected_close_date", label: "Previsão", type: "date" }];
+      { k: "amount", label: "Valor do produto (R$)", type: "number", generated: true }];
     case "projects": return [
       { k: "name", label: "Entrega", full: true, generated: true },
       { k: "delivery_type", label: "Tipo", type: "select", options: ["Projeto", "Imersão", "Treinamento", "Consultoria", "Evento", "Serviço recorrente", "Outro"].map((value) => ({ value, label: value })), def: "Projeto", full: true },
@@ -2571,7 +2595,7 @@ const TASK_BULK_FIELDS = () => [
 const MAIN_BULK_FIELD_KEYS = {
   contacts: ["channel", "job_title", "department", "notes"],
   companies: ["notes"],
-  deals: ["product_id", "lead_source", "amount", "expected_close_date"],
+  deals: ["product_id", "lead_source"],
   products: ["category", "status", "price", "price_installment", "duration_days"],
   projects: ["delivery_type", "group_name", "status", "substatus", "start_date", "end_date"]
 };
@@ -2629,6 +2653,13 @@ function entityBulkProvider(tab, keys, rerender) {
         const record = (cache?.[tab] || []).find((row) => String(row[pk(tab)]) === String(id));
         if (!record) continue;
         const body = { ...patch };
+        if (tab === "deals" && body.product_id) {
+          const product = cache.productById?.[body.product_id];
+          if (product) {
+            body.title = product.name;
+            body.amount = productStandardPrice(product);
+          }
+        }
         if (tab === "projects") {
           const status = body.status ?? record.status;
           if (status === "active") body.substatus = null;
@@ -3131,7 +3162,7 @@ function renderTable(c) {
   document.querySelectorAll("#main .rowbtn.del").forEach((b) =>
     b.addEventListener("click", () => confirmDelete(state.tab, b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.convert").forEach((b) =>
-    b.addEventListener("click", () => convertImportToDeal(b.dataset.id)));
+    b.addEventListener("click", () => openConversationEditModal([b.dataset.id], { createDeal: true })));
   document.querySelectorAll("#main .rowbtn.edit-conversation").forEach((b) =>
     b.addEventListener("click", () => openConversationEditModal([b.dataset.id])));
   document.querySelectorAll("#main .rowbtn.del-import").forEach((b) =>
@@ -7185,27 +7216,25 @@ function importSpec(tab, c = cache) {
   if (tab === "deals") return {
     title: "Negócios",
     columns: [
-      { key: "title", header: "Título", req: true },
       { key: "company_id", header: "Empresa", type: "company", note: "CNPJ ou nome; vazio = não possui empresa" },
       { key: "contact_id", header: "Contato", type: "contact", note: "Nome ou e-mail da pessoa cadastrada" },
       { key: "product_id", header: "Produto", type: "select", options: () => refOptions("products", c) },
-      { key: "pipeline_id", header: "Pipeline", type: "select", options: () => (c.pipelines || []).map((pipeline) => ({ value: pipeline.id, label: pipeline.name })), note: "Vazio usa o primeiro pipeline" },
-      { key: "stage", header: "Etapa", note: "Etapa do pipeline" },
-      { key: "status", header: "Status", type: "select", options: () => STATUSES.map((status) => ({ value: status, label: STATUS_LABEL[status] })), note: "Vazio = Aberto" },
-      { key: "lead_source", header: "Origem do lead", type: "select", options: () => opts(SOURCES) },
-      { key: "amount", header: "Valor (R$)", type: "number" },
-      { key: "expected_close_date", header: "Previsão", type: "date" }
+      { key: "title", header: "Nome do produto não cadastrado", note: "Preencha somente quando não houver produto" },
+      { key: "lead_source", header: "Origem do lead", type: "select", options: () => opts(SOURCES) }
     ],
     validate: (body) => {
-      const pipeline = (c.pipelines || []).find((item) => item.id === body.pipeline_id) || (c.pipelines || [])[0];
-      if (!pipeline) return "Cadastre um pipeline antes de importar";
-      body.pipeline_id = pipeline.id;
-      if (body.stage) {
-        const stage = (pipeline.stages || []).find((item) => importNorm(item) === importNorm(body.stage));
-        if (!stage) return `Etapa "${body.stage}" não existe no pipeline ${pipeline.name}`;
-        body.stage = stage;
-      } else body.stage = (pipeline.stages || [])[0] || null;
-      body.status = body.status || "open";
+      const product = c.productById?.[body.product_id];
+      if (product) {
+        body.title = product.name;
+        body.amount = productStandardPrice(product);
+      } else {
+        body.product_id = null;
+        body.title = String(body.title || "").trim();
+        body.amount = null;
+        if (!body.title) return "Informe o produto ou o nome do produto não cadastrado";
+      }
+      try { applyNewDealDefaults(body, c); }
+      catch (error) { return error.message; }
       body.no_company = !body.company_id;
       return "";
     },
@@ -7983,21 +8012,31 @@ function openConversationEditModal(ids, { createDeal = false } = {}) {
       <div class="field check full conv-check"><input type="checkbox" id="conv-edit-deal"${createDeal ? " checked" : ""}><label for="conv-edit-deal">Criar negociação</label></div>
       <div class="field full conv-deal-field"><label>Empresa</label>${singleSearchPickerHtml("conv-edit-company", companyRefOptions(cache), firstCompanyOf(currentContactId), "Buscar por nome ou CNPJ")}</div>
       <div class="field check full conv-check conv-deal-field"><input type="checkbox" id="conv-edit-no-company"><label for="conv-edit-no-company">Sem empresa</label></div>
-      <div class="field full conv-deal-field"><label>Produto</label><select id="conv-edit-product"><option value="">Sem produto</option>${products.map((product) => `<option value="${esc(product.id)}">${esc(product.name)}</option>`).join("")}</select></div>
+      <div class="field full conv-deal-field"><label>Produto</label><select id="conv-edit-product"><option value="">—</option>${products.map((product) => `<option value="${esc(product.id)}">${esc(product.name)}</option>`).join("")}</select></div>
+      <div class="field check full conv-check conv-deal-field"><input type="checkbox" id="conv-edit-no-product"><label for="conv-edit-no-product">Não possui produto</label></div>
+      <div class="field full conv-deal-field"><label>Nome do produto não cadastrado</label><input id="conv-edit-product-name" disabled placeholder="Digite o nome do produto"></div>
     </div>
-    <div class="panel-list" style="padding-top:0">${rows.length > 1 ? `${rows.length} conversa(s) selecionada(s). ` : ""}${converted ? `${converted} já gerou(aram) negociação. ` : ""}<span class="conv-deal-field">O negócio leva o nome do produto; sem produto, o canal e o nome do contato.</span></div>
+    <div class="panel-list" style="padding-top:0">${rows.length > 1 ? `${rows.length} conversa(s) selecionada(s). ` : ""}${converted ? `${converted} já gerou(aram) negociação. ` : ""}<span class="conv-deal-field">O negócio entra no pipeline Padrão como Lead e usa o valor cadastrado no produto.</span></div>
     <div class="modal-foot"><button class="btn" id="cancel">Cancelar</button>
       <button class="btn primary" id="save">Salvar</button></div>`);
   wireSingleSearchPicker("conv-edit-company");
   const companyRoot = document.getElementById("conv-edit-company");
   const dealBox = document.getElementById("conv-edit-deal");
   const noCompany = document.getElementById("conv-edit-no-company");
+  const productEl = document.getElementById("conv-edit-product");
+  const noProduct = document.getElementById("conv-edit-no-product");
+  const productName = document.getElementById("conv-edit-product-name");
   const sync = () => {
     document.querySelectorAll(".conv-deal-field").forEach((el) => { el.hidden = !dealBox.checked; });
     companyRoot.querySelector(".single-search-input").disabled = noCompany.checked;
+    productEl.disabled = noProduct.checked;
+    productName.disabled = !noProduct.checked;
+    if (noProduct.checked) productEl.value = "";
+    else productName.value = "";
   };
   dealBox.addEventListener("change", sync);
   noCompany.addEventListener("change", sync);
+  noProduct.addEventListener("change", sync);
   document.getElementById("conv-edit-person").addEventListener("change", (event) => {
     const companyId = firstCompanyOf(event.target.value);
     const option = companyRoot.querySelector(`.single-search-option[data-value="${CSS.escape(companyId)}"]`);
@@ -8011,6 +8050,8 @@ function openConversationEditModal(ids, { createDeal = false } = {}) {
     const personId = document.getElementById("conv-edit-person").value;
     const companyId = companyRoot.querySelector('input[type="hidden"]').value;
     if (dealBox.checked && !noCompany.checked && !companyId) { toast("Escolha a empresa ou marque Sem empresa.", true); return; }
+    if (dealBox.checked && !noProduct.checked && !productEl.value) { toast("Escolha o produto ou marque Não possui produto.", true); return; }
+    if (dealBox.checked && noProduct.checked && !productName.value.trim()) { toast("Informe o nome do produto não cadastrado.", true); return; }
     event.currentTarget.disabled = true;
     const conversations = loadConversations();
     if (personId || single) conversations.forEach((row) => { if (ids.includes(row.id)) row.contact_id = personId || null; });
@@ -8021,7 +8062,7 @@ function openConversationEditModal(ids, { createDeal = false } = {}) {
       toast(rows.length > 1 ? "Conversas atualizadas." : "Conversa atualizada.");
       return;
     }
-    const options = { companyId: noCompany.checked ? null : companyId, noCompany: noCompany.checked, productId: document.getElementById("conv-edit-product").value || null };
+    const options = { companyId: noCompany.checked ? null : companyId, noCompany: noCompany.checked, productId: productEl.value || null, customProductName: productName.value.trim() };
     for (const row of rows) await convertImportToDeal(row.id, options);
   });
 }
@@ -8050,22 +8091,19 @@ async function convertImportToDeal(id, options = null) {
         whatsapp: String(row.source || "").toLowerCase().includes("whatsapp") ? (row.phone || row.contact || null) : null
       });
     }
-    const firstPipeline = (cache.pipelines || [])[0];
     const product = options?.productId ? cache.productById?.[options.productId] : null;
-    await createRow("deals", {
-      title: product?.name || row.title || `${row.source || "WhatsApp"} - ${contact.name || row.contact_name}`,
+    const deal = {
+      title: product?.name || options?.customProductName || row.title || `${row.source || "WhatsApp"} - ${contact.name || row.contact_name}`,
       contact_id: contact.id,
       company_id: options ? options.companyId || null : normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
       no_company: Boolean(options?.noCompany),
       product_id: product?.id || null,
       owner_id: null,
-      pipeline_id: firstPipeline?.id || null,
-      stage: firstPipeline?.stages?.[0] || null,
-      status: "open",
       lead_source: "WhatsApp",
-      amount: row.amount || null,
-      expected_close_date: null
-    });
+      amount: productStandardPrice(product)
+    };
+    applyNewDealDefaults(deal, cache);
+    await createRow("deals", deal);
     row.status = "converted";
     row.contact_id = contact.id;
     saveConversations(conversations);
@@ -8271,6 +8309,13 @@ function openForm(tab, id, opts = {}) {
   const fieldHtml = (f) => {
     if (f.embedded) return "";
     let val = record ? record[f.k] : opts.defaults?.[f.k] ?? f.def ?? "";
+    if (tab === "deals" && !record) {
+      const pipeline = defaultDealPipeline(c);
+      if (f.k === "pipeline_id") val = pipeline?.id || "";
+      if (f.k === "stage") val = defaultDealStage(pipeline) || "";
+      if (f.k === "status") val = "open";
+    }
+    if (f.hidden || (!record && f.createHidden)) return `<input type="hidden" data-k="${esc(f.k)}" value="${esc(val ?? "")}">`;
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
     if (tab === "projects" && record && ["financial_accounts", "freight_channels"].includes(f.k)) {
@@ -8313,6 +8358,10 @@ function openForm(tab, id, opts = {}) {
     if (tab === "deals" && f.k === "company_id") {
       const noCompany = record ? record.no_company : opts.defaults?.no_company;
       return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${noCompany ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
+    }
+    if (tab === "deals" && f.k === "product_id") {
+      const noProduct = record ? !record.product_id : Boolean(opts.defaults?.no_product);
+      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_product"${noProduct ? " checked" : ""}><span>Não possui produto</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
@@ -8387,6 +8436,10 @@ function openForm(tab, id, opts = {}) {
     const companyPicker = document.getElementById("form-company_id");
     const noCompanyEl = form?.querySelector('[data-k="no_company"]');
     const contactEl = form?.querySelector('[data-k="contact_id"]');
+    const productEl = form?.querySelector('[data-k="product_id"]');
+    const noProductEl = form?.querySelector('[data-k="no_product"]');
+    const productNameEl = form?.querySelector('[data-k="title"]');
+    const amountEl = form?.querySelector('[data-k="amount"]');
     const pipelineEl = form?.querySelector('[data-k="pipeline_id"]');
     const stageEl = form?.querySelector('[data-k="stage"]');
     const preferredContactId = String(record?.contact_id || opts.defaults?.contact_id || "");
@@ -8409,13 +8462,31 @@ function openForm(tab, id, opts = {}) {
       }
       syncDealContacts();
     };
+    const syncDealProduct = (clearSelected = false) => {
+      const customProduct = Boolean(noProductEl?.checked);
+      if (customProduct && clearSelected && productEl) productEl.value = "";
+      productEl?.toggleAttribute("disabled", customProduct);
+      productNameEl?.toggleAttribute("disabled", !customProduct);
+      if (customProduct) {
+        if (amountEl) amountEl.value = "";
+        return;
+      }
+      const product = c.productById?.[productEl?.value];
+      if (productNameEl) productNameEl.value = product?.name || "";
+      if (amountEl) amountEl.value = productStandardPrice(product) ?? "";
+    };
     companyEl?.addEventListener("change", syncDealContacts);
     noCompanyEl?.addEventListener("change", syncNoCompany);
+    productEl?.addEventListener("change", () => syncDealProduct());
+    noProductEl?.addEventListener("change", () => syncDealProduct(true));
     syncNoCompany();
+    syncDealProduct();
     pipelineEl?.addEventListener("change", () => {
       const stages = pipelineStageOptions(c, pipelineEl.value);
-      stageEl.innerHTML = ['<option value="">—</option>']
-        .concat(stages.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)).join("");
+      if (stageEl?.tagName === "SELECT") {
+        stageEl.innerHTML = ['<option value="">—</option>']
+          .concat(stages.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)).join("");
+      }
     });
   }
   // Fim calculado a partir do início + duração do produto.
@@ -8973,10 +9044,26 @@ async function saveForm(tab, id, fs, opts = {}) {
     body.no_company = Boolean(body.no_company);
     if (body.no_company) {
       body.company_id = null;
-      body.contact_id = null;
     } else if (!body.company_id) {
       toast("Preencha: Empresa ou marque Não possui empresa", true);
       return;
+    }
+    const customProduct = Boolean(body.no_product);
+    delete body.no_product;
+    if (customProduct) {
+      body.product_id = null;
+      body.title = String(body.title || "").trim();
+      body.amount = null;
+      if (!body.title) { toast("Preencha: Nome do produto não cadastrado", true); return; }
+    } else {
+      const product = cache.productById?.[body.product_id];
+      if (!product) { toast("Selecione o produto ou marque Não possui produto", true); return; }
+      body.title = product.name;
+      body.amount = productStandardPrice(product);
+    }
+    if (!id) {
+      try { applyNewDealDefaults(body, cache); }
+      catch (error) { toast(error.message, true); return; }
     }
   }
   if (tab === "contacts") {
