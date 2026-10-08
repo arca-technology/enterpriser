@@ -7785,7 +7785,33 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-async function zipTextFromBuffer(buffer) {
+const CONVERSATION_MEDIA_BUCKET = "conversation-media";
+const CONVERSATION_MEDIA_MAX_FILE_SIZE = 50 * 1024 * 1024;
+const CONVERSATION_MEDIA_MIME = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp", heic: "image/heic",
+  mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", opus: "audio/ogg", wav: "audio/wav",
+  mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", "3gp": "video/3gpp",
+  pdf: "application/pdf", doc: "application/msword", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  txt: "text/plain", csv: "text/csv", vcf: "text/vcard"
+};
+
+function conversationMediaMime(name) {
+  const extension = String(name || "").split(".").pop().toLocaleLowerCase("pt-BR");
+  return CONVERSATION_MEDIA_MIME[extension] || "application/octet-stream";
+}
+
+async function inflateZipPayload(payload, method) {
+  if (method === 0) return payload;
+  if (method === 8 && "DecompressionStream" in window) {
+    const stream = new Blob([payload]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  throw new Error("ZIP compactado em formato não suportado pelo navegador.");
+}
+
+async function zipContentFromBuffer(buffer) {
   const bytes = new Uint8Array(buffer);
   const view = new DataView(buffer);
   let eocd = -1;
@@ -7796,6 +7822,8 @@ async function zipTextFromBuffer(buffer) {
   const centralOffset = view.getUint32(eocd + 16, true);
   const entries = view.getUint16(eocd + 10, true);
   let pos = centralOffset;
+  let text = "";
+  const attachments = [];
   for (let i = 0; i < entries; i++) {
     if (view.getUint32(pos, true) !== 0x02014b50) break;
     const method = view.getUint16(pos + 10, true);
@@ -7806,32 +7834,122 @@ async function zipTextFromBuffer(buffer) {
     const localOffset = view.getUint32(pos + 42, true);
     const nameStart = pos + 46;
     const name = new TextDecoder().decode(bytes.slice(nameStart, nameStart + fileNameLength));
-    if (name.toLowerCase().endsWith(".txt")) {
+    if (!name.endsWith("/") && !name.startsWith("__MACOSX/")) {
       const localNameLength = view.getUint16(localOffset + 26, true);
       const localExtraLength = view.getUint16(localOffset + 28, true);
       const dataStart = localOffset + 30 + localNameLength + localExtraLength;
       const dataEnd = dataStart + compressedSize;
       const payload = bytes.slice(dataStart, dataEnd);
-      if (method === 0) return new TextDecoder("utf-8").decode(payload);
-      if (method === 8 && "DecompressionStream" in window) {
-        const stream = new Blob([payload]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-        return await new Response(stream).text();
-      }
-      throw new Error("ZIP compactado em formato não suportado pelo navegador.");
+      const content = await inflateZipPayload(payload, method);
+      if (!text && name.toLocaleLowerCase("pt-BR").endsWith(".txt")) text = new TextDecoder("utf-8").decode(content);
+      else attachments.push({ name: name.split("/").pop(), bytes: content, size: content.byteLength, mime_type: conversationMediaMime(name) });
     }
     pos += 46 + fileNameLength + extraLength + commentLength;
   }
-  throw new Error("Nenhum arquivo .txt encontrado no ZIP.");
+  if (!text) throw new Error("Nenhum arquivo .txt encontrado no ZIP.");
+  return { text, attachments };
 }
 
-async function textFromImportFile(file) {
+async function contentFromImportFile(file) {
   const buffer = await readFileAsArrayBuffer(file);
   // O compartilhamento do Android pode mandar o ZIP sem a extensão no nome:
   // reconhece pelo conteúdo (assinatura "PK").
   const head = new Uint8Array(buffer.slice(0, 4));
   const isZip = head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
-  if (isZip || file.name.toLowerCase().endsWith(".zip")) return zipTextFromBuffer(buffer);
-  return new TextDecoder("utf-8").decode(buffer);
+  if (isZip || file.name.toLowerCase().endsWith(".zip")) return zipContentFromBuffer(buffer);
+  return { text: new TextDecoder("utf-8").decode(buffer), attachments: [] };
+}
+
+function conversationMediaKind(mimeType) {
+  if (String(mimeType).startsWith("image/")) return "image";
+  if (String(mimeType).startsWith("audio/")) return "audio";
+  if (String(mimeType).startsWith("video/")) return "video";
+  return "document";
+}
+
+function safeConversationMediaName(name) {
+  const base = String(name || "arquivo").split(/[\\/]/).pop().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return base.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(-120) || "arquivo";
+}
+
+async function conversationMediaHash(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function conversationMediaMessageIndexes(messages, entries) {
+  const freePlaceholders = (messages || []).map((message, index) => ({ message, index }))
+    .filter(({ message }) => /^<M[íi]dia oculta>$/i.test(String(message.text || "").trim()))
+    .map(({ index }) => index);
+  return entries.map((entry) => {
+    const target = conversationNorm(entry.name);
+    const direct = (messages || []).findIndex((message) => conversationNorm(message.text).includes(target));
+    return direct >= 0 ? direct : (freePlaceholders.shift() ?? null);
+  });
+}
+
+function encodedStoragePath(path) {
+  return String(path || "").split("/").map((part) => encodeURIComponent(part)).join("/");
+}
+
+async function uploadConversationMedia(conversation, entries) {
+  if (!entries.length) return { uploaded: [], skipped: [] };
+  if (!isLive()) return { uploaded: [], skipped: entries.map((entry) => ({ name: entry.name, reason: "Storage indisponível no modo de demonstração" })) };
+  const session = readAuthSession();
+  const authUserId = session?.user?.id;
+  const token = await getAccessToken();
+  if (!authUserId || !token) throw new Error("Sessão expirada ao enviar as mídias.");
+  const c = getCfg();
+  const existing = Array.isArray(conversation.attachments) ? conversation.attachments : [];
+  const knownHashes = new Set(existing.map((attachment) => attachment.hash).filter(Boolean));
+  const messageIndexes = conversationMediaMessageIndexes(conversation.messages, entries);
+  const uploaded = [];
+  const skipped = [];
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    if (entry.size > CONVERSATION_MEDIA_MAX_FILE_SIZE) {
+      skipped.push({ name: entry.name, reason: "Arquivo maior que 50 MB" });
+      continue;
+    }
+    const hash = await conversationMediaHash(entry.bytes);
+    if (knownHashes.has(hash)) continue;
+    const path = `${authUserId}/${conversation.id}/${crypto.randomUUID()}-${safeConversationMediaName(entry.name)}`;
+    try {
+      const response = await fetch(`${c.url}/storage/v1/object/${CONVERSATION_MEDIA_BUCKET}/${encodedStoragePath(path)}`, {
+        method: "POST",
+        headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": entry.mime_type, "x-upsert": "false" },
+        body: entry.bytes
+      });
+      if (!response.ok) throw new Error(`${response.status} · ${await response.text().catch(() => response.statusText)}`);
+      uploaded.push({
+        id: crypto.randomUUID(), name: entry.name, storage_path: path, mime_type: entry.mime_type,
+        kind: conversationMediaKind(entry.mime_type), size: entry.size, hash,
+        message_index: messageIndexes[index], created_at: new Date().toISOString()
+      });
+      knownHashes.add(hash);
+    } catch (error) {
+      skipped.push({ name: entry.name, reason: error.message });
+    }
+  }
+  return { uploaded, skipped };
+}
+
+async function conversationMediaSignedUrl(path) {
+  const c = getCfg();
+  const token = await getAccessToken();
+  if (!token) throw new Error("Sessão expirada");
+  const response = await fetch(`${c.url}/storage/v1/object/sign/${CONVERSATION_MEDIA_BUCKET}/${encodedStoragePath(path)}`, {
+    method: "POST",
+    headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ expiresIn: 600 })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || data.error || `Falha ao abrir mídia (${response.status})`);
+  const signed = data.signedURL || data.signedUrl;
+  if (!signed) throw new Error("O Storage não retornou a URL da mídia.");
+  if (signed.startsWith("http")) return signed;
+  if (signed.startsWith("/storage/v1/")) return `${c.url}${signed}`;
+  return `${c.url}/storage/v1${signed.startsWith("/") ? signed : `/${signed}`}`;
 }
 
 function parseWhatsAppText(text, filename) {
@@ -7908,8 +8026,8 @@ function matchConversationContact(row) {
 
 async function importWhatsAppFile(file) {
   try {
-    const text = await textFromImportFile(file);
-    const parsed = parseWhatsAppText(text, file.name);
+    const content = await contentFromImportFile(file);
+    const parsed = parseWhatsAppText(content.text, file.name);
     delete parsed.raw;
     if (!parsed.messages?.length) throw new Error("nenhuma mensagem encontrada no arquivo. Use Exportar conversa do WhatsApp (.txt ou .zip).");
     parsed.owner_id = currentProfile?.id || null;
@@ -7918,6 +8036,8 @@ async function importWhatsAppFile(file) {
     const existing = conversations.find((item) => item.owner_id === parsed.owner_id && item.source === parsed.source && conversationKey(item) === parsed.conversation_key);
     const row = existing ? Object.assign(existing, { ...parsed, id: existing.id, contact_id: existing.contact_id || null, status: existing.status === "converted" ? "converted" : parsed.status }) : parsed;
     if (!row.contact_id) row.contact_id = matchConversationContact(row);
+    const media = await uploadConversationMedia(row, content.attachments);
+    if (media.uploaded.length) row.attachments = [...(Array.isArray(row.attachments) ? row.attachments : []), ...media.uploaded];
     if (!existing) conversations.unshift(row);
     saveConversations(conversations);
     state.tab = "conversations";
@@ -7926,7 +8046,9 @@ async function importWhatsAppFile(file) {
     document.getElementById("search").value = "";
     render();
     const linked = row.contact_id ? cache.contactById?.[row.contact_id]?.name : "";
-    toast(`${existing ? "Conversa atualizada" : "Conversa importada"}: ${row.contact_name}.${linked ? ` Vinculada a ${linked}.` : " Associe a uma pessoa para vincular ao CMS."}`);
+    const mediaNote = media.uploaded.length ? ` ${media.uploaded.length} mídia(s) importada(s).` : "";
+    const skippedNote = media.skipped.length ? ` ${media.skipped.length} arquivo(s) não foram enviados.` : "";
+    toast(`${existing ? "Conversa atualizada" : "Conversa importada"}: ${row.contact_name}.${linked ? ` Vinculada a ${linked}.` : " Associe a uma pessoa para vincular ao CMS."}${mediaNote}${skippedNote}`, Boolean(media.skipped.length));
   } catch (err) {
     toast("Erro ao importar · " + err.message, true);
   }
@@ -7944,26 +8066,47 @@ function openConversationPopup(id) {
   const row = findConversation(id);
   if (!row) return;
   const messages = row.messages || [];
+  const attachments = Array.isArray(row.attachments) ? row.attachments : [];
+  const mediaLabel = { image: "Imagem", audio: "Áudio", video: "Vídeo", document: "Documento" };
+  const mediaButtons = (items) => items.map((attachment) => `<button class="conversation-media-open" type="button" data-storage-path="${esc(attachment.storage_path)}" title="Abrir ${esc(attachment.name)}"><span>${esc(mediaLabel[attachment.kind] || "Arquivo")}</span><strong>${esc(attachment.name)}</strong></button>`).join("");
   // "Minhas" mensagens são reconhecidas pelo nome cadastrado em
   // Configurações → Meus dados (sem isso configurado, nada é destacado).
   const owner = cache?.users?.find((user) => user.id === row.owner_id);
   const myNames = [getCfg().myName, owner?.full_name, owner?.nickname].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
   const body = messages.length
-    ? messages.map((m) => {
+    ? messages.map((m, messageIndex) => {
       const author = String(m.author || "").toLowerCase();
       const authorWords = author.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/).filter(Boolean);
       const mine = myNames.some((name) => {
         const nameWords = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/);
         return author === name || author.includes(name) || (authorWords.length > 1 && authorWords.every((word) => nameWords.includes(word)));
       });
+      const messageMedia = attachments.filter((attachment) => attachment.message_index != null && Number(attachment.message_index) === messageIndex);
       return `<div class="chat-msg${mine ? " mine" : ""}">
         <div class="meta">${esc(m.author || "Sistema")} · ${esc(m.at || "")}</div>
         <div class="txt">${esc(m.text || "")}</div>
+        ${messageMedia.length ? `<div class="conversation-media-list">${mediaButtons(messageMedia)}</div>` : ""}
       </div>`;
     }).join("")
     : `<div class="panel-list">${esc(row.raw || row.summary || "Sem conteúdo.")}</div>`;
   const ownerLine = owner ? `<div class="panel-list chat-owner">Responsável <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
-  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>`);
+  const unmatched = attachments.filter((attachment) => attachment.message_index == null);
+  const unmatchedHtml = unmatched.length ? `<div class="panel-list"><strong>Mídias sem mensagem identificada</strong><div class="conversation-media-list">${mediaButtons(unmatched)}</div></div>` : "";
+  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>${unmatchedHtml}`);
+  document.querySelectorAll("#modal-root .conversation-media-open").forEach((button) => button.addEventListener("click", async () => {
+    const popup = window.open("about:blank", "_blank");
+    button.disabled = true;
+    try {
+      const url = await conversationMediaSignedUrl(button.dataset.storagePath);
+      if (popup) popup.location.href = url;
+      else location.href = url;
+    } catch (error) {
+      popup?.close();
+      toast("Erro ao abrir mídia · " + error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }));
 }
 
 function openAssociateContactModal(ids = [...state.selectedConversations]) {

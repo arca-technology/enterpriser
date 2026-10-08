@@ -265,6 +265,12 @@
   .chat-msg.mine{align-self:flex-end;background:#122a45}
   .chat-msg .meta{font-size:10.5px;color:var(--muted);margin-bottom:4px}
   .chat-msg .txt{white-space:pre-wrap;line-height:1.35}
+  .conversation-media-list{display:flex;flex-direction:column;gap:5px;margin-top:7px}
+  .conversation-media-open{display:flex;align-items:center;gap:8px;max-width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--panel);color:var(--text);cursor:pointer;text-align:left}
+  .conversation-media-open:hover{border-color:var(--cyan)}
+  .conversation-media-open:disabled{cursor:wait;opacity:.65}
+  .conversation-media-open span{flex:0 0 auto;color:var(--cyan);font-size:10px;text-transform:uppercase}
+  .conversation-media-open strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
   .project-board{flex:1;display:flex;flex-direction:column;min-height:0}
   .project-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,500px) minmax(0,1fr);align-items:center;gap:10px;
     height:40px;box-sizing:border-box;padding:4px 9px;border-bottom:1px solid var(--border2);flex:0 0 40px}
