@@ -137,6 +137,7 @@ async function callUserAdmin(action, payload = {}) {
 async function signOut() {
   const session = readAuthSession();
   try { if (session?.access_token) await authRequest("logout", null, session.access_token); } catch (e) {}
+  stopLiveUpdates();
   storeAuthSession(null);
   currentProfile = null;
   cache = null;
@@ -157,8 +158,27 @@ const DELIVERY_CHANNEL_OPTIONS = {
   erp: ["BLING", "OLIST"],
   marketplaces: ["AMAZON", "MAGAZINE LUIZA", "MERCADO LIVRE", "SHEIN", "SHOPEE", "TIKTOKSHOP"],
   stores: ["LOJA FÍSICA", "BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
-  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "TOTAL EXPRESS"]
+  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "MERCADO ENVIOS", "NUVEM ENVIO", "TOTAL EXPRESS"],
+  financial: [
+    "BANCO DO BRASIL", "BRADESCO", "BTG PACTUAL", "C6 BANK", "CAIXA", "INTER", "ITAÚ", "NUBANK", "SANTANDER", "SICOOB", "SICREDI",
+    "APPMAX", "ASAAS", "CIELO", "EFÍ", "GETNET", "MERCADO PAGO", "NUVEM PAGO", "PAGAR.ME", "PAGBANK", "PAYPAL", "REDE", "STONE", "STRIPE", "VINDI"
+  ]
 };
+const DELIVERY_COMPANY_SETUP_OPTIONS = ["ABERTA"];
+// Canais que trazem contas financeiras e fretes automaticamente.
+const DELIVERY_AUTO_SETUPS = [
+  { channel: "MERCADO LIVRE", financial: ["MERCADO PAGO"], freight: ["MERCADO ENVIOS"] },
+  { channel: "NUVEM SHOP", financial: ["NUVEM PAGO"], freight: ["NUVEM ENVIO"] },
+  { channel: "TRAY", financial: ["VINDI"], freight: [] }
+];
+function deliveryAutoSetups(marketplaces = [], stores = []) {
+  const active = new Set([...normalizeTextList(marketplaces), ...normalizeTextList(stores)].map(normalizeDeliveryChannel));
+  const rules = DELIVERY_AUTO_SETUPS.filter((rule) => active.has(normalizeDeliveryChannel(rule.channel)));
+  return { financial: normalizeTextList(rules.flatMap((rule) => rule.financial)), freight: normalizeTextList(rules.flatMap((rule) => rule.freight)) };
+}
+function projectStoreList(project) {
+  return normalizeTextList(project?.store_platforms).length ? normalizeTextList(project.store_platforms) : normalizeTextList(project?.store_platform ? [project.store_platform] : []);
+}
 const MANAGED_DELIVERY_CHANNELS = new Set(Object.values(DELIVERY_CHANNEL_OPTIONS).flat().map(normalizeDeliveryChannel));
 const deliveryChannelOptions = (group) => DELIVERY_CHANNEL_OPTIONS[group].map((value) => ({ value, label: value }));
 function normalizeDeliveryChannel(value) {
@@ -170,7 +190,9 @@ function activatedDeliveryChannels(project) {
     ...normalizeTextList(project?.marketplace_channels),
     ...normalizeTextList(project?.store_platforms),
     project?.store_platform,
-    ...normalizeTextList(project?.freight_channels)
+    ...normalizeTextList(project?.freight_channels),
+    ...normalizeTextList(project?.financial_accounts),
+    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project))).flat()
   ].filter(Boolean).map(normalizeDeliveryChannel));
 }
 function projectChannelEnabled(project, channel) {
@@ -215,7 +237,41 @@ function wireTaskGroupSelect(groupId, subgroupId) {
   group.addEventListener("change", () => update(false));
   update(true);
 }
+const TASK_STRUCTURE_REQUIRED_LABEL = "Categoria, Canal, Módulo e Tipo";
+function taskStructureFieldsFilled(fieldIds) {
+  return fieldIds.every((id) => String(document.getElementById(id)?.value || "").trim());
+}
+function wireTaskStructureToggle(toggleId, inputId, labelId, requiredFieldIds = []) {
+  const toggle = document.getElementById(toggleId);
+  const input = document.getElementById(inputId);
+  const label = document.getElementById(labelId);
+  if (!toggle || !input || !label) return;
+  const locked = toggle.disabled;
+  const baseLabel = label.textContent.replace(/\s*\*$/, "");
+  const update = () => {
+    if (!locked) {
+      const ready = taskStructureFieldsFilled(requiredFieldIds);
+      toggle.disabled = !ready;
+      if (!ready) toggle.checked = false;
+      toggle.closest("label")?.setAttribute("title", ready ? "" : `Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`);
+    }
+    input.disabled = toggle.checked;
+    input.required = !toggle.checked;
+    label.textContent = toggle.checked ? baseLabel : `${baseLabel} *`;
+  };
+  toggle.addEventListener("change", update);
+  requiredFieldIds.forEach((id) => document.getElementById(id)?.addEventListener("input", update));
+  update();
+}
 const CONTACT_TYPE_OPTIONS = ["Colaborador", "Fornecedor", "Cliente", "Parceiro", "Network"];
+// Tipos de contato que a empresa define e replica para as pessoas vinculadas.
+const COMPANY_CONTACT_TYPE_OPTIONS = ["Cliente", "Fornecedor", "Parceiro"];
+const BR_UFS = ["AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"];
+const taxIdDigits = (value) => String(value || "").replace(/\D/g, "");
+function companyHasDelivery(taxId) {
+  const digits = taxIdDigits(taxId);
+  return Boolean(digits) && (cache?.projects || []).some((project) => taxIdDigits(project.company_id) === digits);
+}
 const CONTACT_CHANNEL_OPTIONS = ["Facebook", "Instagram", "LinkedIn", "Reddit", "TikTok", "YouTube", "E-mail", "Telefone", "Evento", "Outros"];
 function normalizeIdList(value, fallback = null) {
   let ids = value;
@@ -374,6 +430,10 @@ const REMOTE_TABLE = {
   directMessages: "direct_messages"
 };
 const remoteTable = (tab) => REMOTE_TABLE[tab] || tab;
+// Estado do tempo real (ver seção "Tempo real").
+const LIVE_TABLES = ["activities", "activity_comments", "deliveries", "negotiations", "contacts", "companies", "delivery_objectives", "delivery_goals", "conversations"];
+const LIVE_TOPIC = "realtime:cms-live";
+const liveState = { socket: null, ref: 0, heartbeat: null, tokenTimer: null, retry: 0, reconnectTimer: null, pending: 0, ownWrites: new Map(), commentsActivityId: null, stopped: false, connectedOnce: false };
 const DATA_PERMISSION_MODULE = {
   users: "users", products: "products", pipelines: "pipelines",
   productActivities: "activityTemplates", productObjectives: "objectiveTemplates", productGoals: "goalTemplates",
@@ -488,18 +548,112 @@ async function api(path, opts = {}) {
     throw new Error(`Perfil ${label}: alterações no banco estão bloqueadas.`);
   }
   const headers = { apikey: c.anonKey, Authorization: `Bearer ${token || c.anonKey}`, ...(opts.headers || {}) };
-  const res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
+  const startedAt = performance.now();
+  const [resource, query = ""] = String(path).split("?");
+  noteOwnWrite(resource, query, method);
+  const entry = { at: new Date().toISOString(), method, resource, query: query.slice(0, 300), status: 0, ms: 0, error: "" };
+  let res;
+  try {
+    res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
+  } catch (networkError) {
+    entry.ms = Math.round(performance.now() - startedAt);
+    entry.error = networkError?.message || "Falha de rede";
+    recordApiRequest(entry);
+    throw networkError;
+  }
+  entry.status = res.status;
+  entry.ms = Math.round(performance.now() - startedAt);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
+    entry.error = `${res.statusText}${txt ? " · " + txt.slice(0, 500) : ""}`.trim();
+    recordApiRequest(entry);
     if (res.status === 401) {
       storeAuthSession(null);
       showLogin("Sua sessão expirou. Entre novamente.");
     }
     throw new Error(`${res.status} ${res.statusText}${txt ? " · " + txt.slice(0, 120) : ""}`);
   }
+  recordApiRequest(entry);
   if (res.status === 204) return null;
   const text = await res.text();
   return text.trim() ? JSON.parse(text) : null;
+}
+
+// ---------- Diagnóstico de chamadas e atividades dos usuários ----------
+const API_REQUEST_LOG = [];
+const API_REQUEST_LOG_LIMIT = 500;
+const DIAGNOSTIC_TABLES = new Set(["user_activities", "app_request_errors"]);
+function diagnosticInsert(table, body) {
+  if (!isLive() || !currentProfile?.id) return;
+  const c = getCfg();
+  getAccessToken().then((token) => {
+    if (!token) return null;
+    return fetch(`${c.url}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ profile_id: currentProfile.id, ...body })
+    });
+  }).catch(() => {});
+}
+function recordApiRequest(entry) {
+  API_REQUEST_LOG.unshift(entry);
+  if (API_REQUEST_LOG.length > API_REQUEST_LOG_LIMIT) API_REQUEST_LOG.length = API_REQUEST_LOG_LIMIT;
+  if (entry.error && !DIAGNOSTIC_TABLES.has(entry.resource) && entry.status !== 401) {
+    diagnosticInsert("app_request_errors", { method: entry.method, path: `${entry.resource}${entry.query ? `?${entry.query}` : ""}`.slice(0, 600), status: entry.status || null, message: entry.error.slice(0, 1000) });
+  }
+}
+let activityLogSuppressed = 0;
+const ACTIVITY_ENTITY_LABEL = {
+  companies: "Empresa", contacts: "Pessoa", deals: "Negócio", products: "Produto", projects: "Entrega", activities: "Tarefa",
+  users: "Usuário", pipelines: "Pipeline", productActivities: "Tarefa (cadastro)", productObjectives: "Objetivo (cadastro)",
+  productGoals: "Meta (cadastro)", deliveryObjectives: "Objetivo", deliveryGoals: "Meta", files: "Arquivo", processes: "Processo",
+  documents: "Documento", customTables: "Tabela", activityComments: "Comentário"
+};
+const ACTIVITY_LOG_SKIP_TABLES = new Set(["directMessages", "contactCompanies"]);
+function activitySourceRows(table) {
+  try {
+    if (table === "activities") return cache?.activityRecords || [];
+    if (table === "productActivities") return loadProductActivities();
+    if (table === "productObjectives") return loadProductObjectives();
+    if (table === "productGoals") return loadProductGoals();
+    if (table === "deliveryObjectives") return loadDeliveryObjectives();
+    if (table === "deliveryGoals") return loadDeliveryGoals();
+    return Array.isArray(cache?.[table]) ? cache[table] : [];
+  } catch (e) { return []; }
+}
+function activityRecordLabel(table, id, body = {}) {
+  const key = pk(table);
+  const stored = id == null ? null : activitySourceRows(table).find((item) => item?.[key] === id);
+  const source = { ...(stored || {}), ...(body || {}) };
+  if (["activities", "productActivities"].includes(table)) {
+    const label = activityDisplayName(source);
+    return label === "—" ? "" : label.slice(0, 200);
+  }
+  return String(source.name || source.title || source.trade_name || source.legal_name || source.full_name || source.email || source.body || "").slice(0, 200);
+}
+function activityUpdateVerb(table, body = {}) {
+  const keys = Object.keys(body || {}).filter((key) => !["updated_at", "actual_start_date", "actual_end_date"].includes(key));
+  if (body?.status && keys.length === 1 && ["activities", "deliveryObjectives", "deliveryGoals"].includes(table)) {
+    return { done: "Concluiu", doing: "Iniciou", todo: "Reabriu", canceled: "Cancelou" }[body.status] || "Alterou status de";
+  }
+  return "Editou";
+}
+function logUserActivity(action, table = null, id = null, label = "") {
+  if (!isLive() || activityLogSuppressed > 0) return;
+  if (table && ACTIVITY_LOG_SKIP_TABLES.has(table)) return;
+  diagnosticInsert("user_activities", {
+    action,
+    entity_type: table ? (ACTIVITY_ENTITY_LABEL[table] || table) : null,
+    entity_id: id == null ? null : String(id),
+    entity_label: label || null
+  });
+}
+function withActivityLogSuppressed(fn) {
+  return async function (...args) {
+    activityLogSuppressed += 1;
+    try { return await fn.apply(this, args); }
+    finally { activityLogSuppressed -= 1; }
+  };
 }
 
 async function fetchTable(name) {
@@ -525,7 +679,9 @@ async function createRow(table, body) {
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
   const r = await api(remoteTable(table), { method: "POST", headers: j, body: JSON.stringify(toRemoteBody(table, body)) });
   const row = Array.isArray(r) ? r[0] : r;
-  return fromRemoteRow(table, row);
+  const created = fromRemoteRow(table, row);
+  logUserActivity("Criou", table, created?.[pk(table)] ?? body?.[pk(table)], activityRecordLabel(table, null, { ...body, ...(created || {}) }));
+  return created;
 }
 async function createActivityOrLoadExisting(body) {
   try {
@@ -545,13 +701,18 @@ async function updateRow(table, id, body) {
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
   const r = await api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: j, body: JSON.stringify(toRemoteBody(table, body)) });
   const row = Array.isArray(r) ? r[0] : r;
-  return fromRemoteRow(table, row);
+  const updated = fromRemoteRow(table, row);
+  logUserActivity(activityUpdateVerb(table, body), table, id, activityRecordLabel(table, id, { ...body, ...(updated || {}) }));
+  return updated;
 }
 async function deleteRow(table, id) {
   if (!requireDataPermission(table, "delete")) throw new Error("Operação não permitida para este usuário.");
   const k = pk(table);
   if (!isLive()) { DEMO[table] = DEMO[table].filter((x) => x[k] !== id); return; }
-  return api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+  const label = activityRecordLabel(table, id);
+  const result = await api(`${remoteTable(table)}?${k}=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+  logUserActivity("Excluiu", table, id, label);
+  return result;
 }
 
 async function emailAccountsRequest(method = "GET", body = null) {
@@ -636,7 +797,10 @@ async function provisionDeliveryResources(project) {
 
 // ---------- Cache ----------
 let cache = null;
+// Conversas: no banco (tabela conversations, por usuário) quando conectado;
+// no navegador só no modo de demonstração.
 function loadConversations() {
+  if (isLive() && cache?.conversations) return cache.conversations;
   try {
     const rows = JSON.parse(localStorage.getItem("crm_conversations") || "null");
     if (Array.isArray(rows)) return rows;
@@ -651,8 +815,106 @@ function loadConversations() {
   return [];
 }
 function saveConversations(rows) {
-  localStorage.setItem("crm_conversations", JSON.stringify(rows));
   if (cache) cache.conversations = rows;
+  if (isLive()) { scheduleConversationSync(); return; }
+  localStorage.setItem("crm_conversations", JSON.stringify(rows));
+}
+
+const CONVERSATION_COLUMNS = ["id", "owner_id", "source", "origin", "conversation_key", "contact_name", "contact", "username", "profile_url", "chat_url", "phone", "email", "contact_id", "amount", "title", "summary", "message_count", "first_at", "last_at", "imported_at", "status", "messages"];
+const conversationSync = { snapshot: new Map(), timer: null, running: false, again: false };
+const conversationNorm = (value) => String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+function conversationKey(row) {
+  if (row.conversation_key) return row.conversation_key;
+  if (row.external_room_id) return `room:${row.external_room_id}`;
+  const digits = String(row.phone || "").replace(/\D/g, "");
+  return digits.length >= 10 ? `phone:${digits.slice(-11)}` : `name:${conversationNorm(row.contact_name)}`;
+}
+function conversationRemoteBody(row) {
+  const body = {};
+  CONVERSATION_COLUMNS.forEach((key) => { if (row[key] !== undefined) body[key] = row[key]; });
+  body.conversation_key = conversationKey(row);
+  body.message_count = Number(row.message_count || (row.messages || []).length || 0);
+  body.messages = Array.isArray(row.messages) ? row.messages : [];
+  body.amount = row.amount == null || row.amount === "" ? null : Number(row.amount);
+  body.contact_id = row.contact_id || null;
+  body.extra = Object.fromEntries(Object.entries(row).filter(([key]) => !CONVERSATION_COLUMNS.includes(key) && !["extra", "raw", "created_at", "updated_at"].includes(key)));
+  return body;
+}
+function conversationFromRemote(row) {
+  return { ...(row.extra || {}), ...Object.fromEntries(CONVERSATION_COLUMNS.map((key) => [key, row[key]])), created_at: row.created_at, updated_at: row.updated_at };
+}
+function rememberConversationSnapshot(rows) {
+  conversationSync.snapshot = new Map(rows.map((row) => [row.id, JSON.stringify(conversationRemoteBody(row))]));
+}
+function scheduleConversationSync() {
+  clearTimeout(conversationSync.timer);
+  conversationSync.timer = setTimeout(syncConversationsToDb, 500);
+}
+// Grava no banco só o que mudou: novas conversas (do usuário atual),
+// alterações e exclusões.
+async function syncConversationsToDb() {
+  if (!isLive() || !cache) return;
+  if (conversationSync.running) { conversationSync.again = true; return; }
+  conversationSync.running = true;
+  try {
+    const rows = cache.conversations || [];
+    const ids = new Set();
+    const created = [];
+    const updated = [];
+    rows.forEach((row) => {
+      if (!row.owner_id) row.owner_id = currentProfile?.id || null;
+      ids.add(row.id);
+      const body = conversationRemoteBody(row);
+      const hash = JSON.stringify(body);
+      const previous = conversationSync.snapshot.get(row.id);
+      if (previous === hash) return;
+      (previous === undefined ? created : updated).push({ body, hash });
+    });
+    const removed = [...conversationSync.snapshot.keys()].filter((id) => !ids.has(id));
+    const now = new Date().toISOString();
+    if (created.length) {
+      await api("conversations", { method: "POST", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(created.map(({ body }) => ({ ...body, updated_at: now }))) });
+      created.forEach(({ body, hash }) => conversationSync.snapshot.set(body.id, hash));
+    }
+    for (const { body, hash } of updated) {
+      const { id, owner_id: ownerId, ...changes } = body;
+      await api(`conversations?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ ...changes, updated_at: now }) });
+      conversationSync.snapshot.set(id, hash);
+    }
+    if (removed.length) {
+      await api(`conversations?id=in.(${removed.map(encodeURIComponent).join(",")})`, { method: "DELETE" });
+      removed.forEach((id) => conversationSync.snapshot.delete(id));
+    }
+  } catch (error) {
+    toast("Erro ao salvar conversas no banco · " + error.message, true);
+  } finally {
+    conversationSync.running = false;
+    if (conversationSync.again) { conversationSync.again = false; scheduleConversationSync(); }
+  }
+}
+
+// Envia para o banco, uma única vez por navegador, as conversas que estavam
+// salvas só neste aparelho.
+async function migrateLocalConversations() {
+  if (!isLive() || !currentProfile?.id || !cache) return;
+  const flag = `crm_conversations_migrated:${currentProfile.id}`;
+  try { if (localStorage.getItem(flag)) return; } catch (error) { return; }
+  let local = [];
+  try { local = JSON.parse(localStorage.getItem("crm_conversations") || "[]"); } catch (error) { local = []; }
+  const known = new Set((cache.conversations || []).map((row) => row.id));
+  const pending = (Array.isArray(local) ? local : []).filter((row) => row?.id && !known.has(row.id)).map((row) => {
+    const { raw, ...rest } = row;
+    return { ...rest, owner_id: currentProfile.id, id: /^[0-9a-f-]{36}$/i.test(row.id) ? row.id : crypto.randomUUID() };
+  });
+  if (pending.length) {
+    cache.conversations = [...pending, ...(cache.conversations || [])];
+    await syncConversationsToDb();
+    toast(`${pending.length} conversa(s) deste aparelho enviada(s) para o banco.`);
+  }
+  try {
+    localStorage.setItem("crm_conversations_backup", JSON.stringify(local));
+    localStorage.setItem(flag, new Date().toISOString());
+  } catch (error) {}
 }
 function loadProjectTasks() {
   if (isLive() && cache?.activityRecords) return cache.activityRecords;
@@ -746,6 +1008,7 @@ function activityRemoteBody(task) {
     subsector: task.subsector || null,
     module: task.module || null,
     submodule: task.submodule || null,
+    category: task.category || null,
     channel: task.channel || null,
     type: task.type || null,
     recurrence: task.recurrence || "once",
@@ -763,6 +1026,8 @@ function activityRemoteBody(task) {
     notes: task.notes || null,
     document_ids: normalizeIdList(task.document_ids),
     custom_table_ids: normalizeIdList(task.custom_table_ids),
+    start_after_days: task.start_after_days == null || task.start_after_days === "" ? null : Number(task.start_after_days),
+    schedule_manual: Boolean(task.schedule_manual),
     status: task.status || "todo",
     created_at: task.created_at || new Date().toISOString(),
     updated_at: task.updated_at || new Date().toISOString()
@@ -781,6 +1046,7 @@ function productActivityRemoteBody(template) {
     subsector: template.subsector || null,
     module: template.module || null,
     submodule: template.submodule || null,
+    category: template.category || null,
     channel: template.channel || null,
     type: template.type || null,
     activity: template.activity,
@@ -794,6 +1060,7 @@ function productActivityRemoteBody(template) {
     objective_template_id: template.objective_template_id || null,
     recurrence: template.recurrence || "once",
     target_days: template.target_days == null ? null : Number(template.target_days),
+    start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
     consider_business_days: Boolean(template.consider_business_days),
     checklist: normalizeChecklist(template.checklist).map((item) => ({ ...item, checked: false })),
     document_ids: normalizeIdList(template.document_ids),
@@ -849,6 +1116,9 @@ async function syncProductObjectives() {
         name: template.name,
         completion_criteria: template.completion_criteria || "",
         comments: template.comments || "",
+        category: template.category || "",
+        channel: template.channel || "",
+        notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
       const suggestedDue = project.start_date && template.target_days != null
@@ -934,6 +1204,9 @@ async function syncProductGoals() {
         target_value: Number(template.target_value || 0),
         unit: template.unit || "",
         comments: template.comments || "",
+        category: template.category || "",
+        channel: template.channel || "",
+        notes: template.notes || "",
         sort_order: Number(template.sort_order || 0)
       };
       const suggestedDue = project.start_date && template.target_days != null
@@ -1037,11 +1310,13 @@ async function syncProductActivities() {
           subsector: template.subsector || "",
           module: template.module || "",
           submodule: template.submodule || "",
+          category: template.category || "",
           channel: template.channel || "",
           type: template.type || "",
           recurrence: template.recurrence || "once",
           consider_business_days: Boolean(template.consider_business_days),
           target_days: template.target_days == null ? null : Number(template.target_days),
+          start_after_days: template.start_after_days == null || template.start_after_days === "" ? null : Number(template.start_after_days),
           occurrence_index: occurrenceIndex,
           objective_id: objective?.id || null,
           document_ids: normalizeIdList(template.document_ids),
@@ -1136,9 +1411,65 @@ async function syncProductActivities() {
     if (isLive()) cache.activityRecords = tasks;
     else saveProjectTasks(tasks);
   }
+  await recalculateDependencySchedules();
   await syncDeliveryObjectiveDependencies();
   await syncDeliveryGoalDependencies();
 }
+// Reprograma o início previsto pelas dependências: término real (se concluída) ou previsto + "iniciar após".
+async function recalculateDependencySchedules(projectId = null) {
+  const tasks = loadProjectTasks();
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const shift = (date, days, business) => business ? addBusinessDays(date, days) : addDays(date, days);
+  const candidates = tasks.filter((task) => (!projectId || task.project_id === projectId)
+    && task.start_after_days != null && task.start_after_days !== ""
+    && !task.schedule_manual && !["done", "canceled"].includes(task.status)
+    && normalizeIdList(task.dependency_ids, task.depends_on_activity_id).length);
+  const changedIds = new Set();
+  for (let pass = 0; pass <= candidates.length; pass += 1) {
+    let changedThisPass = false;
+    for (const task of candidates) {
+      const dependencies = normalizeIdList(task.dependency_ids, task.depends_on_activity_id).map((id) => byId.get(id)).filter(Boolean);
+      if (!dependencies.length) continue;
+      const ends = dependencies.map((dependency) => dependency.status === "done" && dependency.actual_end_date ? dependency.actual_end_date : taskPlannedEnd(dependency));
+      if (ends.some((end) => !end)) continue;
+      const base = ends.map((end) => String(end).slice(0, 10)).sort().at(-1);
+      const business = Boolean(task.consider_business_days);
+      const start = shift(base, Number(task.start_after_days || 0), business);
+      let end;
+      if (task.target_days != null && task.target_days !== "") end = shift(start, Number(task.target_days), business);
+      else {
+        const previousStart = task.planned_start_date ? String(task.planned_start_date).slice(0, 10) : null;
+        const previousEnd = taskPlannedEnd(task) ? String(taskPlannedEnd(task)).slice(0, 10) : null;
+        const duration = previousStart && previousEnd && previousEnd >= previousStart
+          ? Math.round((new Date(`${previousEnd}T12:00:00`) - new Date(`${previousStart}T12:00:00`)) / 86400000) : 0;
+        end = addDays(start, duration);
+      }
+      if (task.planned_start_date === start && task.planned_end_date === end && task.due_date === end) continue;
+      Object.assign(task, { planned_start_date: start, planned_end_date: end, due_date: end });
+      changedIds.add(task.id);
+      changedThisPass = true;
+    }
+    if (!changedThisPass) break;
+  }
+  if (!changedIds.size) return false;
+  const now = new Date().toISOString();
+  for (const id of changedIds) {
+    const task = byId.get(id);
+    task.updated_at = now;
+    if (isLive()) await updateRow("activities", id, { planned_start_date: task.planned_start_date, planned_end_date: task.planned_end_date, due_date: task.due_date, updated_at: now });
+  }
+  if (isLive()) cache.activityRecords = tasks;
+  else saveProjectTasks(tasks);
+  refreshActivityCache();
+  return true;
+}
+migrateLocalOperationalData = withActivityLogSuppressed(migrateLocalOperationalData);
+syncProductObjectives = withActivityLogSuppressed(syncProductObjectives);
+syncProductGoals = withActivityLogSuppressed(syncProductGoals);
+syncProductActivities = withActivityLogSuppressed(syncProductActivities);
+syncDeliveryObjectiveDependencies = withActivityLogSuppressed(syncDeliveryObjectiveDependencies);
+syncDeliveryGoalDependencies = withActivityLogSuppressed(syncDeliveryGoalDependencies);
+recalculateDependencySchedules = withActivityLogSuppressed(recalculateDependencySchedules);
 function activityOccurrenceSort(a, b) {
   return String(a.due_date || "9999-12-31").localeCompare(String(b.due_date || "9999-12-31"))
     || Number(a.sort_order || 0) - Number(b.sort_order || 0)
@@ -1452,8 +1783,12 @@ async function loadAll() {
   });
   companies.forEach((company) => {
     company.contact_ids = [...new Set(contactIdsByCompany.get(company.tax_id) || [])];
+    company.state_registration_text = normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ");
   });
-  const conversations = loadConversations();
+  const conversations = isLive()
+    ? (await fetchTable("conversations").catch(() => [])).map(conversationFromRemote)
+    : loadConversations();
+  if (isLive()) rememberConversationSnapshot(conversations);
   const projectById = byId(projects);
   cache = { users, companies, contacts, products, deals, projects, pipelines, conversations,
     activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [], activityComments,
@@ -1572,7 +1907,7 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.channel, item.module, item.submodule, item.type, item.activity || item.title]
+  const parts = [item.category, item.channel, item.module, item.submodule, item.activity || item.title, item.type]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -1613,8 +1948,8 @@ const taskPlannedEnd = (task) => task?.planned_end_date || task?.due_date || nul
 const taskStatusLabel = (status) => TASK_STATUS.find((item) => item.id === status)?.label || "Em aberto";
 const taskStatusTone = (status) => status === "done" ? "won" : status === "canceled" ? "lost" : status === "doing" ? "negotiation" : "lead";
 function inlineTaskStatus(task, className = "inline-task-status") {
-  const disabled = !currentUserCan("activities", "operate");
-  return `<select class="${className}" data-id="${esc(task.id)}" title="Alterar status"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task))}</select>`;
+  const disabled = !currentUserCan("activities", "operate") || taskStatusLocked(task);
+  return `<select class="${className}" data-id="${esc(task.id)}" title="${taskStatusLocked(task) ? "Somente administradores alteram esta tarefa" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
 }
 function taskDeadlineState(task) {
   const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
@@ -1700,6 +2035,7 @@ async function createProjectFromDeal(deal) {
     });
     toast("Entrega criada automaticamente a partir do negócio ganho.");
     await provisionDeliveryResources(savedProject);
+    if (deal.company_id) await ensureCompanyClientType(deal.company_id);
   } catch (err) {
     toast("Erro ao criar entrega automática · " + err.message, true);
   }
@@ -1718,13 +2054,16 @@ function columns(tab, c) {
   switch (tab) {
     case "companies": return [
       { k: "tax_id", h: "CNPJ", cls: "muted company-sticky-col company-sticky-col-1", thCls: "company-sticky-col company-sticky-col-1" },
-      { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2" },
+      { k: "legal_name", h: "NOME EMPRESARIAL", cls: "company-sticky-col company-sticky-col-2", thCls: "company-sticky-col company-sticky-col-2", fmt: (v, row) => `${companyRegistryBadgeHtml(row)}${esc(v || (row.registry_pending ? "Aguardando Receita" : "—"))}` },
       { k: "trade_name", h: "NOME FANTASIA" },
+      { k: "contact_type", h: "TIPO DE CONTATO", fmt: (v) => `<span class="tool-tags">${normalizeTextList(v).map((type) => `<span class="tool-tag">${esc(type)}</span>`).join("") || '<span class="muted">—</span>'}</span>` },
       { k: "email", h: "E-MAIL", cls: "muted" },
       { k: "phone", h: "TELEFONE", cls: "muted" },
       { k: "headquarters", h: "SEDE" },
       { k: "founded_at", h: "DATA DE ABERTURA", fmt: dt },
       { k: "registration_status", h: "SITUAÇÃO CADASTRAL" },
+      { k: "state_registration_text", h: "INSCRIÇÃO ESTADUAL", cls: "muted" },
+      { k: "municipal_registration", h: "INSCRIÇÃO MUNICIPAL", cls: "muted" },
       { k: "qsa", h: "QSA", fmt: (v) => multiLineCell(v) },
       { k: "share_capital", h: "CAPITAL SOCIAL", num: true, fmt: brl, cls: "pos" },
       { k: "activities", h: "ATIVIDADES" },
@@ -1743,6 +2082,8 @@ function columns(tab, c) {
       { k: "job_title", h: "CARGO" },
       { k: "department", h: "DEPARTAMENTO" },
       { k: "company_ids", h: "EMPRESA(S)", fmt: (v, row) => companyNames(v?.length ? v : [row.company_id], c) },
+      { k: "__conversations", h: "CONVERSAS", fmt: (v) => v ? `<span class="tool-tag">${v} ${v === 1 ? "conversa" : "conversas"}</span>` : '<span class="muted">—</span>' },
+      { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => contactDealsCell(row, c) },
       { k: "linkedin", h: "LINKEDIN", cls: "muted" },
       { k: "facebook", h: "FACEBOOK", cls: "muted" },
       { k: "instagram", h: "INSTAGRAM", cls: "muted" },
@@ -1764,8 +2105,9 @@ function columns(tab, c) {
       { k: "duration_days", h: "DURAÇÃO (DIAS)", num: true, cls: "muted" },
       { k: "status", h: "STATUS", fmt: (v) => badge(v === "Ativo" ? "open" : v === "Pausado" ? "lead" : "lost", v) }];
     case "deals": return [
-      { k: "title", h: "Negócio" },
+      { k: "title", h: "Negócio", fmt: (v, row) => esc(c.productById[row.product_id]?.name || v || "—") },
       { k: "company_id", h: "Empresa", fmt: (v, row) => row.no_company ? '<span class="muted">Não possui empresa</span>' : c.companyById[v]?.legal_name || c.companyById[v]?.name || "—" },
+      { k: "contact_id", h: "Pessoa", fmt: (v) => esc(c.contactById[v]?.name || "—") },
       { k: "pipeline_id", h: "Pipeline", fmt: (v) => c.pipelineById?.[v]?.name || "—", cls: "muted" },
       { k: "stage", h: "Etapa", fmt: (v) => v ? badge("lead", v) : "—" },
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
@@ -1798,6 +2140,7 @@ function columns(tab, c) {
       { k: "subsector", h: "SUBSETOR" },
       { k: "module", h: "MÓDULO" },
       { k: "submodule", h: "SUBMÓDULO" },
+      { k: "category", h: "CATEGORIA" },
       { k: "channel", h: "CANAL" },
       { k: "type", h: "TIPO" },
       { k: "recurrence", h: "RECORRÊNCIA", fmt: (v) => RECURRENCE_LABEL[v] || "Única" },
@@ -1822,6 +2165,8 @@ function columns(tab, c) {
       { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
+      { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => conversationDealsCell(row, c) },
+      { k: "owner_id", h: "RESPONSÁVEL", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
       { k: "contact", h: "CONTATO", fmt: (_v, row) => contactForConversation(row) || "—" },
       { k: "username", h: "USUÁRIO", fmt: (v, row) => v ? (row.source === "Reddit" ? `u/${v}` : v) : "—" },
       { k: "profile_url", h: "URL PERFIL", fmt: (v) => safeHttpUrl(v) ? `<a href="${esc(safeHttpUrl(v))}" target="_blank" rel="noopener">Perfil</a>` : "—", csv: (v) => v || "" },
@@ -1947,8 +2292,11 @@ function readProjectBusinessMetrics(form = document.querySelector("#modal-root .
   }).filter((row) => row.revenue != null || row.skus != null || row.supplier_company_ids.length || row.observations);
 }
 
-function dealContactOptions(c, companyId) {
-  if (!companyId) return [];
+function dealContactOptions(c, companyId, preferredContactId = "") {
+  if (!companyId) {
+    const preferred = c.contactById?.[preferredContactId];
+    return preferred ? [{ value: preferred.id, label: preferred.name || "Contato sem nome" }] : [];
+  }
   const linkedIds = new Set((c.contactCompanies || [])
     .filter((link) => String(link.company_id) === String(companyId))
     .map((link) => String(link.contact_id)));
@@ -1985,20 +2333,23 @@ function fields(tab, c) {
   switch (tab) {
     case "companies": return [
       { k: "tax_id", label: "CNPJ", req: true, full: true, lookup: "cnpj" },
-      { k: "legal_name", label: "Nome empresarial", full: true },
-      { k: "trade_name", label: "Nome fantasia" },
-      { k: "email", label: "E-mail" },
-      { k: "phone", label: "Telefone" },
-      { k: "headquarters", label: "Sede" },
-      { k: "founded_at", label: "Data de abertura", type: "date" },
-      { k: "registration_status", label: "Situação cadastral" },
-      { k: "qsa", label: "QSA", type: "textarea", full: true, placeholder: "Nome/Nome Empresarial: NOME | Qualificação: 49-Sócio-Administrador; ..." },
-      { k: "share_capital", label: "Capital social (R$)", type: "number", min: 0, step: 0.01 },
-      { k: "activities", label: "Atividades", full: true },
-      { k: "address", label: "Endereço", full: true },
-      { k: "zip_code", label: "CEP" },
-      { k: "city", label: "Cidade" },
-      { k: "state", label: "UF" },
+      { k: "legal_name", label: "Nome empresarial", full: true, receita: true },
+      { k: "trade_name", label: "Nome fantasia", receita: true },
+      { k: "contact_type", label: "Tipo de contato", type: "multi", options: COMPANY_CONTACT_TYPE_OPTIONS.map((value) => ({ value, label: value })), textValues: true, placeholder: "Vazio", lockedValues: (record) => companyHasDelivery(record?.tax_id) ? ["Cliente"] : [], help: "Aceita mais de uma opção. Ao salvar, as pessoas vinculadas recebem estes tipos; vazio não altera as pessoas. Empresa com entrega é sempre Cliente." },
+      { k: "email", label: "E-mail", receita: true },
+      { k: "phone", label: "Telefone", receita: true },
+      { k: "headquarters", label: "Sede", receita: true },
+      { k: "founded_at", label: "Data de abertura", type: "date", receita: true },
+      { k: "registration_status", label: "Situação cadastral", receita: true },
+      { k: "state_registrations", label: "Inscrições estaduais", type: "ie_list", full: true, help: "A primeira é a do estado da empresa. Preenchida pela consulta quando disponível; adicione outras UFs se a empresa tiver inscrição como substituta." },
+      { k: "municipal_registration", label: "Inscrição municipal" },
+      { k: "qsa", label: "QSA", type: "textarea", full: true, receita: true },
+      { k: "share_capital", label: "Capital social (R$)", type: "number", min: 0, step: 0.01, receita: true },
+      { k: "activities", label: "Atividades", full: true, receita: true },
+      { k: "address", label: "Endereço", full: true, receita: true },
+      { k: "zip_code", label: "CEP", receita: true },
+      { k: "city", label: "Cidade", receita: true },
+      { k: "state", label: "UF", receita: true },
       { k: "contact_ids", label: "Pessoas vinculadas", type: "multi", options: refOptions("contacts", c), full: true, placeholder: "Selecionar pessoas" },
       { k: "notes", label: "Observações", full: true }];
     case "contacts": return [
@@ -2057,7 +2408,9 @@ function fields(tab, c) {
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
       { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
-      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" }];
+      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" },
+      { k: "company_setup", label: "Situação da empresa", type: "select", options: DELIVERY_COMPANY_SETUP_OPTIONS.map((value) => ({ value, label: value })), full: true },
+      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar bancos e gateways", help: "Mercado Livre inclui Mercado Pago e Mercado Envios; Nuvem Shop inclui Nuvem Pago e Nuvem Envio; Tray inclui Vindi." }];
   }
 }
 
@@ -2083,15 +2436,369 @@ let state = {
   pageSize: 50, kanbanPipelineId: null, calendarCursor: null
 };
 const secondaryTableSelections = new Map();
+const HORIZONTAL_TABLE_SCROLL_SELECTOR = ".table-scroll,.table-wrap,.product-activity-list,.registration-table-scroll,.task-table-wrap,.business-metrics-table";
+
+function preserveHorizontalTableScroll(root, scope) {
+  if (!root) return;
+  const previousScope = root.dataset.horizontalScrollScope;
+  const positions = previousScope === scope
+    ? [...root.querySelectorAll(HORIZONTAL_TABLE_SCROLL_SELECTOR)].map((element) => element.scrollLeft)
+    : [];
+  root.dataset.horizontalScrollScope = scope;
+  queueMicrotask(() => {
+    if (!root.isConnected || root.dataset.horizontalScrollScope !== scope) return;
+    [...root.querySelectorAll(HORIZONTAL_TABLE_SCROLL_SELECTOR)].forEach((element, index) => {
+      if (positions[index] != null) element.scrollLeft = positions[index];
+    });
+  });
+}
 
 function secondaryTableSelection(scope) {
   if (!secondaryTableSelections.has(scope)) secondaryTableSelections.set(scope, new Set());
   return secondaryTableSelections.get(scope);
 }
 
+function orderLeadingTableCells(row, cells) {
+  const select = cells.find((cell) => cell.classList.contains("select-cell") || cell.classList.contains("select-head"));
+  const expand = cells.find((cell) => cell.classList.contains("expand-cell") || cell.classList.contains("expand-head"));
+  cells.filter((cell) => cell !== select && cell !== expand).forEach((cell) => row.appendChild(cell));
+  if (expand) row.insertBefore(expand, row.firstChild);
+  if (select) row.insertBefore(select, row.firstChild);
+}
+
+const tableExpandMemory = new Map();
+function tableExpandHeadInner(enabled, allExpanded) {
+  const label = !enabled ? "Nada para expandir nesta tabela" : allExpanded ? "Recolher todos" : "Expandir todos";
+  return `<button class="table-expand-btn table-expand-all" type="button" title="${label}" aria-label="${label}"${enabled ? "" : " disabled"}>${enabled && allExpanded ? "▾" : "▸"}</button>`;
+}
+function tableRowExpandInner(expanded, extraClass = "", attrs = "") {
+  const label = expanded ? "Recolher" : "Expandir";
+  return `<button class="table-expand-btn table-row-expand${extraClass ? ` ${extraClass}` : ""}" type="button" title="${label}" aria-label="${label}" aria-expanded="${expanded}"${attrs}>${expanded ? "▾" : "▸"}</button>`;
+}
+
+function wireTableExpandColumn(table, scope) {
+  const headRow = table.tHead?.rows?.[0];
+  if (!headRow || headRow.querySelector(".expand-head")) return;
+  const dataRows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+  const childrenOf = (id) => dataRows.filter((row) => row.dataset.expandParent === id);
+  const parents = dataRows.filter((row) => row.dataset.expandId && childrenOf(row.dataset.expandId).length);
+  if (!tableExpandMemory.has(scope)) tableExpandMemory.set(scope, new Map());
+  const memory = tableExpandMemory.get(scope);
+  const head = document.createElement("th");
+  head.className = "expand-head noclick";
+  const selectHead = headRow.querySelector(":scope > .select-head");
+  headRow.insertBefore(head, selectHead ? selectHead.nextSibling : headRow.firstChild);
+  dataRows.forEach((row) => {
+    const cell = document.createElement("td");
+    cell.className = "expand-cell";
+    const selectCell = row.querySelector(":scope > .select-cell");
+    row.insertBefore(cell, selectCell ? selectCell.nextSibling : row.firstChild);
+  });
+  table.querySelectorAll("tbody tr .empty").forEach((cell) => { cell.colSpan = Number(cell.colSpan || 1) + 1; });
+  const proxyOf = (parent) => parent.querySelector(".registration-task-toggle[data-group]");
+  const isExpanded = (parent) => childrenOf(parent.dataset.expandId).some((row) => !row.hidden);
+  const paint = (parent) => {
+    const button = parent.querySelector(":scope > .expand-cell .table-row-expand");
+    if (!button) return;
+    const expanded = isExpanded(parent);
+    button.textContent = expanded ? "▾" : "▸";
+    button.title = expanded ? "Recolher" : "Expandir";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-expanded", String(expanded));
+  };
+  const paintHead = () => { head.innerHTML = tableExpandHeadInner(parents.length > 0, parents.length > 0 && parents.every(isExpanded)); };
+  const setExpanded = (parent, expanded) => {
+    const proxy = proxyOf(parent);
+    if (proxy) { if (isExpanded(parent) !== expanded) proxy.click(); }
+    else childrenOf(parent.dataset.expandId).forEach((row) => { row.hidden = !expanded; });
+    memory.set(parent.dataset.expandId, expanded);
+    paint(parent);
+  };
+  parents.forEach((parent) => {
+    const id = parent.dataset.expandId;
+    if (!proxyOf(parent) && memory.has(id)) childrenOf(id).forEach((row) => { row.hidden = !memory.get(id); });
+    const cell = parent.querySelector(":scope > .expand-cell");
+    cell.innerHTML = tableRowExpandInner(isExpanded(parent));
+    cell.firstChild.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setExpanded(parent, !isExpanded(parent));
+      paintHead();
+    });
+  });
+  paintHead();
+  head.addEventListener("click", (event) => {
+    if (!event.target.closest(".table-expand-all") || !parents.length) return;
+    event.stopPropagation();
+    const expand = parents.some((parent) => !isExpanded(parent));
+    parents.forEach((parent) => setExpanded(parent, expand));
+    paintHead();
+  });
+}
+
+function renderTableActionsHead(head, count, provider, getIds, clearSelection) {
+  if (!head) return;
+  if (!count) {
+    head.classList.remove("has-bulk-actions");
+    head.textContent = "AÇÕES";
+    return;
+  }
+  const canEdit = Boolean(provider && provider.canEdit !== false && provider.fields().length);
+  const editTitle = canEdit ? `Editar campo de ${count} selecionado(s)` : "Edição em massa indisponível nesta tabela";
+  head.classList.add("has-bulk-actions");
+  head.innerHTML = `<span class="table-actions table-bulk-actions"><button type="button" class="rowbtn table-action-btn action-edit table-bulk-edit${canEdit ? "" : " is-disabled"}" title="${esc(editTitle)}" aria-label="${esc(editTitle)}"${canEdit ? "" : " disabled"}>${TABLE_ACTION_ICONS.edit}</button><button type="button" class="rowbtn table-action-btn table-bulk-clear" title="Limpar seleção (${count})" aria-label="Limpar seleção">${TABLE_BULK_CLEAR_ICON}</button></span>`;
+  head.querySelector(".table-bulk-edit")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openTableBulkEditor(event.currentTarget, provider, getIds());
+  });
+  head.querySelector(".table-bulk-clear")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    clearSelection();
+  });
+}
+
+const TABLE_BULK_CLEAR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+const TASK_BULK_FIELDS = () => [
+  { k: "status", label: "Status", type: "select", options: TASK_STATUS.map((status) => ({ value: status.id, label: status.label })) },
+  { k: "priority", label: "Prioridade", type: "select", options: PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })) },
+  { k: "category", label: "Categoria", type: "text" },
+  { k: "channel", label: "Canal", type: "text" },
+  { k: "module", label: "Módulo", type: "text" },
+  { k: "submodule", label: "Submódulo", type: "text" },
+  { k: "type", label: "Tipo", type: "text" },
+  { k: "planned_start_date", label: "Início previsto", type: "date" },
+  { k: "planned_end_date", label: "Término previsto", type: "date" }
+];
+const MAIN_BULK_FIELD_KEYS = {
+  contacts: ["channel", "job_title", "department", "notes"],
+  companies: ["notes"],
+  deals: ["product_id", "lead_source", "amount", "expected_close_date"],
+  products: ["category", "status", "price", "price_installment", "duration_days"],
+  projects: ["delivery_type", "group_name", "status", "substatus", "start_date", "end_date"]
+};
+
+function bulkSuggestions(rows, key) {
+  return [...new Set((rows || []).map((row) => String(row?.[key] ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+}
+
+function taskBulkProvider(rows, rerender, keys = null) {
+  return {
+    canEdit: currentUserCan("activities", "edit"),
+    fields: () => TASK_BULK_FIELDS().filter((field) => !keys || keys.includes(field.k)).map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
+    apply: async (ids, patch) => {
+      const dates = "planned_start_date" in patch || "planned_end_date" in patch;
+      const changes = { ...patch };
+      if ("planned_end_date" in changes) changes.due_date = changes.planned_end_date;
+      if (dates) changes.schedule_manual = true;
+      let updated = 0;
+      let refused = 0;
+      const projects = new Set();
+      for (const id of ids) {
+        const task = loadProjectTasks().find((item) => item.id === id);
+        if (!task) continue;
+        if (changes.status && taskStatusTransitionError(task.status || "todo", changes.status)) { refused += 1; continue; }
+        if (await updateProjectTask(id, changes)) { updated += 1; projects.add(task.project_id); }
+      }
+      if (refused) toast(`${refused} tarefa(s) mantida(s) pelo fluxo de status: Em andamento não volta para Em aberto e cancelar ou reabrir é só para administradores.`, true);
+      if (dates) for (const projectId of projects) await recalculateDependencySchedules(projectId);
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function mainTabBulkProvider(tab) {
+  if (tab === "activities") return taskBulkProvider(() => loadProjectTasks(), () => render(), ["status", "priority"]);
+  const keys = MAIN_BULK_FIELD_KEYS[tab];
+  if (!keys) return null;
+  return entityBulkProvider(tab, keys, () => render());
+}
+
+function entityBulkProvider(tab, keys, rerender) {
+  return {
+    canEdit: currentUserCan(tab, "edit"),
+    fields: () => {
+      const definitions = fields(tab, cache) || [];
+      return keys.map((key) => definitions.find((field) => field.k === key)).filter(Boolean).map((field) => ({
+        k: field.k, label: field.label, type: ["select", "number", "date", "textarea", "checkbox"].includes(field.type) ? field.type : "text",
+        options: field.options, suggestions: field.type ? undefined : bulkSuggestions(cache?.[tab], field.k)
+      }));
+    },
+    apply: async (ids, patch) => {
+      let updated = 0;
+      for (const id of ids) {
+        const record = (cache?.[tab] || []).find((row) => String(row[pk(tab)]) === String(id));
+        if (!record) continue;
+        const body = { ...patch };
+        if (tab === "projects") {
+          const status = body.status ?? record.status;
+          if (status === "active") body.substatus = null;
+          if (status === "closed") body.substatus = "closed";
+          if (status === "inactive" && !(body.substatus ?? record.substatus)) { toast("Entrega inativa precisa de substatus (Suporte ou Encerrado).", true); continue; }
+        }
+        const saved = await updateRow(tab, record[pk(tab)], body);
+        upsertCachedEntity(tab, saved || { ...record, ...body });
+        updated += 1;
+      }
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function templateBulkProvider(section) {
+  const config = {
+    activities: { table: "productActivities", permission: "activityTemplates", load: loadProductActivities, save: saveProductActivities, cacheKey: "productActivities",
+      fields: [
+        { k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" },
+        { k: "module", label: "Módulo", type: "text" }, { k: "submodule", label: "Submódulo", type: "text" },
+        { k: "type", label: "Tipo", type: "text" },
+        { k: "priority", label: "Prioridade", type: "select", options: PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })) },
+        { k: "recurrence", label: "Recorrência", type: "select", options: RECURRENCE_OPTIONS.map(([value, label]) => ({ value, label })) },
+        { k: "target_days", label: "Prazo (dias)", type: "number" },
+        { k: "start_after_days", label: "Iniciar após dependência (dias)", type: "number" },
+        { k: "consider_business_days", label: "Dias úteis", type: "checkbox" }
+      ],
+      sync: async () => { await syncProductActivities(); refreshActivityCache(); } },
+    objectives: { table: "productObjectives", permission: "objectiveTemplates", load: loadProductObjectives, save: saveProductObjectives, cacheKey: "productObjectives",
+      fields: [{ k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" }, { k: "notes", label: "Observações", type: "textarea" }],
+      sync: async () => { await syncProductObjectives(); await syncProductActivities(); refreshActivityCache(); } },
+    goals: { table: "productGoals", permission: "goalTemplates", load: loadProductGoals, save: saveProductGoals, cacheKey: "productGoals",
+      fields: [{ k: "category", label: "Categoria", type: "text" }, { k: "channel", label: "Canal", type: "text" }, { k: "notes", label: "Observações", type: "textarea" }],
+      sync: async () => { await syncProductGoals(); refreshActivityCache(); } }
+  }[section];
+  if (!config) return null;
+  return {
+    canEdit: currentUserCan(config.permission, "edit"),
+    fields: () => config.fields.map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(config.load(), field.k) } : field),
+    apply: async (ids, patch) => {
+      const rows = config.load();
+      const targets = new Map();
+      ids.forEach((id) => {
+        const item = rows.find((row) => row.id === id);
+        if (!item) return;
+        const linked = section === "activities" ? rows.filter((row) => (row.template_group_id || row.id) === (item.template_group_id || item.id)) : [item];
+        linked.forEach((row) => targets.set(row.id, row));
+      });
+      for (const row of targets.values()) {
+        const changes = { ...patch, updated_at: new Date().toISOString() };
+        const saved = isLive() ? await updateRow(config.table, row.id, changes) : { ...row, ...changes };
+        Object.assign(row, saved);
+      }
+      if (isLive()) cache[config.cacheKey] = rows;
+      else config.save(rows);
+      return ids.filter((id) => rows.some((row) => row.id === id)).length;
+    },
+    done: async () => {
+      renderRegistrationsSection();
+      toast("Sincronizando com as entregas...");
+      try { await config.sync(); } catch (err) { toast("Erro ao sincronizar com as entregas · " + err.message, true); }
+    }
+  };
+}
+
+function deliveryBulkProvider(projectId, section) {
+  const rerender = () => renderProjectBoard(projectId);
+  if (section === "activities") return taskBulkProvider(() => projectTasks(projectId), rerender);
+  const isGoal = section === "goals";
+  if (!["objectives", "goals"].includes(section)) return null;
+  const load = isGoal ? loadDeliveryGoals : loadDeliveryObjectives;
+  return {
+    canEdit: currentUserCan("projects", "edit"),
+    fields: () => [
+      { k: "status", label: "Status", type: "select", options: TASK_STATUS.map((status) => ({ value: status.id, label: status.label })) },
+      { k: "category", label: "Categoria", type: "text", suggestions: bulkSuggestions(load().filter((row) => row.project_id === projectId), "category") },
+      { k: "channel", label: "Canal", type: "text", suggestions: bulkSuggestions(load().filter((row) => row.project_id === projectId), "channel") },
+      { k: "notes", label: "Observações", type: "textarea" }
+    ],
+    apply: async (ids, patch) => {
+      let updated = 0;
+      for (const id of ids) {
+        const ok = isGoal ? await updateDeliveryGoal(id, patch) : await updateDeliveryObjective(id, patch);
+        if (ok) updated += 1;
+      }
+      return updated;
+    },
+    done: rerender
+  };
+}
+
+function tableBulkEditProvider(scope) {
+  const [kind, first, second] = String(scope || "").split(":");
+  if (kind === "main") return mainTabBulkProvider(first);
+  if (kind === "registrations") {
+    if (first === "products") return entityBulkProvider("products", MAIN_BULK_FIELD_KEYS.products, () => renderRegistrationsSection());
+    return templateBulkProvider(first);
+  }
+  if (kind === "delivery") return deliveryBulkProvider(first, second);
+  return null;
+}
+
+function bulkValueControlHtml(field) {
+  if (field.type === "select") return `<select id="bulk-edit-value"><option value="">— Limpar —</option>${(field.options || []).map((option) => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join("")}</select>`;
+  if (field.type === "checkbox") return '<select id="bulk-edit-value"><option value="true">Sim</option><option value="false">Não</option></select>';
+  if (field.type === "textarea") return '<textarea id="bulk-edit-value" rows="3" placeholder="Vazio limpa o campo"></textarea>';
+  const type = field.type === "number" ? "number" : field.type === "date" ? "date" : "text";
+  const list = field.suggestions?.length ? `<datalist id="bulk-edit-suggestions">${field.suggestions.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>` : "";
+  return `<input id="bulk-edit-value" type="${type}"${list ? ' list="bulk-edit-suggestions"' : ""} placeholder="Vazio limpa o campo">${list}`;
+}
+
+function openTableBulkEditor(anchor, provider, ids) {
+  document.getElementById("table-bulk-dd")?.remove();
+  if (!provider || !ids.length) return;
+  const fieldsList = provider.fields();
+  if (!fieldsList.length) return;
+  const panel = document.createElement("div");
+  panel.id = "table-bulk-dd";
+  panel.className = "data-dd table-bulk-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Editar em massa</span><span>${ids.length} selecionado(s)</span></div>
+    <div class="table-bulk-body">
+      <label>Campo<select id="bulk-edit-field">${fieldsList.map((field, index) => `<option value="${index}">${esc(field.label)}</option>`).join("")}</select></label>
+      <label>Novo valor<span id="bulk-edit-value-slot"></span></label>
+      <div class="table-bulk-foot"><button class="btn" type="button" id="bulk-edit-cancel">Cancelar</button><button class="btn primary" type="button" id="bulk-edit-apply">Aplicar</button></div>
+    </div>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 280, window.innerWidth - 288))}px`;
+  panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 260)}px`;
+  const fieldSelect = panel.querySelector("#bulk-edit-field");
+  const paintValue = () => {
+    panel.querySelector("#bulk-edit-value-slot").innerHTML = bulkValueControlHtml(fieldsList[Number(fieldSelect.value)]);
+    panel.querySelector("#bulk-edit-value")?.focus({ preventScroll: true });
+  };
+  fieldSelect.addEventListener("change", paintValue);
+  paintValue();
+  const close = () => { panel.remove(); document.removeEventListener("mousedown", outside, true); };
+  const outside = (event) => { if (!panel.contains(event.target) && !anchor.contains(event.target)) close(); };
+  setTimeout(() => document.addEventListener("mousedown", outside, true), 60);
+  panel.querySelector("#bulk-edit-cancel").addEventListener("click", close);
+  panel.querySelector("#bulk-edit-apply").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const field = fieldsList[Number(fieldSelect.value)];
+    const raw = panel.querySelector("#bulk-edit-value")?.value ?? "";
+    let value = String(raw).trim() === "" ? null : raw;
+    if (field.type === "checkbox") value = raw === "true";
+    else if (field.type === "number" && value != null) value = Number(value);
+    else if (typeof value === "string" && field.type !== "textarea") value = value.trim();
+    button.disabled = true;
+    button.textContent = "Aplicando...";
+    try {
+      const updated = await provider.apply(ids, { [field.k]: value });
+      close();
+      toast(`${field.label} atualizado em ${updated} de ${ids.length} registro(s).`, updated < ids.length);
+      await provider.done?.();
+    } catch (err) {
+      toast("Erro na edição em massa · " + err.message, true);
+      button.disabled = false;
+      button.textContent = "Aplicar";
+    }
+  });
+}
+
 function wireSecondaryTableSelection(table, scope) {
   if (!table || table.querySelector("thead .secondary-select-all")) return;
-  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty") && !row.dataset.groupRow);
   const selected = secondaryTableSelection(scope);
   const headRow = table.tHead?.rows?.[0];
   if (!headRow) return;
@@ -2108,9 +2815,17 @@ function wireSecondaryTableSelection(table, scope) {
     cell.innerHTML = `<input type="checkbox" class="secondary-row-select" aria-label="Selecionar linha"${selected.has(rowId) ? " checked" : ""}>`;
     row.insertBefore(cell, row.firstChild);
   });
+  table.querySelectorAll("tbody tr[data-group-row]").forEach((row) => {
+    const cell = document.createElement("td");
+    cell.className = "select-cell";
+    row.insertBefore(cell, row.firstChild);
+  });
   table.querySelectorAll("tbody tr .empty").forEach((cell) => {
     cell.colSpan = Number(cell.colSpan || headRow.cells.length - 1) + 1;
   });
+  wireTableExpandColumn(table, scope);
+  const actionsHead = headRow.querySelector(".table-actions-head");
+  const bulkProvider = tableBulkEditProvider(scope);
   const host = table.closest("#registrations-root, #project-board-root, #tools-root, #product-activities-root") || table.parentElement;
   const toolbar = host?.querySelector(".registration-toolbar-left, .project-data-toolbar .registration-toolbar-left, .tools-toolbar .registration-toolbar-left, .modal-toolbar");
   let count = toolbar?.querySelector(".table-selection-count");
@@ -2130,8 +2845,14 @@ function wireSecondaryTableSelection(table, scope) {
       count.textContent = selected.size ? `${selected.size} selecionado(s)` : "";
       count.hidden = !selected.size;
     }
+    table.classList.toggle("has-selection", selected.size > 0);
+    renderTableActionsHead(actionsHead, selected.size, bulkProvider, () => [...selected], () => {
+      selected.clear();
+      rows.forEach((row) => { const box = row.querySelector(".secondary-row-select"); if (box) box.checked = false; });
+      refresh();
+    });
   };
-  table._refreshSecondarySelection = refresh;
+  table._refreshSecondarySelection = () => { refresh(); };
   table.querySelectorAll(".secondary-row-select").forEach((box) => box.addEventListener("change", () => {
     const row = box.closest("tr");
     if (box.checked) selected.add(row.dataset.selectionId); else selected.delete(row.dataset.selectionId);
@@ -2156,10 +2877,15 @@ function orderedColumns(tab, c) {
   const cols = columns(tab, c);
   const savedOrder = Array.isArray(prefs.__order) ? prefs.__order : [];
   const byKey = Object.fromEntries(cols.map((col) => [col.k, col]));
-  return [
-    ...savedOrder.map((key) => byKey[key]).filter(Boolean),
-    ...cols.filter((col) => !savedOrder.includes(col.k))
-  ];
+  const ordered = savedOrder.map((key) => byKey[key]).filter(Boolean);
+  // Coluna nova (fora da ordem salva) entra logo após a coluna que a
+  // antecede no padrão, em vez de ir para o fim da tabela.
+  cols.forEach((col, index) => {
+    if (savedOrder.includes(col.k)) return;
+    const previous = cols.slice(0, index).reverse().find((item) => ordered.includes(item));
+    ordered.splice(previous ? ordered.indexOf(previous) + 1 : 0, 0, col);
+  });
+  return ordered;
 }
 function visibleColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
@@ -2170,7 +2896,91 @@ function displayValue(row, col, c) {
   return String(val ?? "").replace(/<[^>]+>/g, "");
 }
 
+// Cor fixa de cada pipeline (pela ordem de cadastro), usada nos sinais de
+// negócios da tabela de pessoas.
+const PIPELINE_COLORS = ["#38bdf8", "#a78bfa", "#f59e0b", "#34d399", "#f472b6", "#fb7185", "#22d3ee", "#facc15", "#818cf8", "#4ade80"];
+function pipelineColor(pipelineId, c = cache) {
+  const index = (c?.pipelines || []).findIndex((pipeline) => pipeline.id === pipelineId);
+  return index < 0 ? "#94a3b8" : PIPELINE_COLORS[index % PIPELINE_COLORS.length];
+}
+
+// Marca em cada pessoa quantas conversas e quais negócios ela tem. Os campos
+// não são enumeráveis: servem para filtrar/ordenar e não vão para o banco.
+function annotateContactLinks(c) {
+  const conversations = {};
+  (c.conversations || []).forEach((row) => { if (row.contact_id) conversations[row.contact_id] = (conversations[row.contact_id] || 0) + 1; });
+  const deals = {};
+  (c.deals || []).forEach((deal) => { if (deal.contact_id) (deals[deal.contact_id] ||= []).push(deal); });
+  const set = (row, key, value) => Object.defineProperty(row, key, { value, writable: true, configurable: true, enumerable: false });
+  (c.contacts || []).forEach((person) => {
+    const list = deals[person.id] || [];
+    set(person, "__conversations", conversations[person.id] || 0);
+    set(person, "__dealList", list);
+    set(person, "__deals", [...new Set(list.map((deal) => c.pipelineById?.[deal.pipeline_id]?.name || "Sem pipeline"))].sort().join(", "));
+  });
+}
+
+function annotateConversationLinks(c) {
+  const dealsByContact = {};
+  (c.deals || []).forEach((deal) => { if (deal.contact_id) (dealsByContact[deal.contact_id] ||= []).push(deal); });
+  (c.conversations || []).forEach((conversation) => {
+    const list = dealsByContact[conversation.contact_id] || [];
+    const value = !conversation.contact_id || !c.contactById?.[conversation.contact_id]
+      ? "Pessoa não vinculada"
+      : list.length ? "Com negócio" : "Sem negócio";
+    Object.defineProperty(conversation, "__deals", { value, writable: true, configurable: true, enumerable: false });
+  });
+}
+
+function contactDealsCell(person, c) {
+  const list = person.__dealList || [];
+  if (!list.length) return '<span class="muted">—</span>';
+  const groups = new Map();
+  list.forEach((deal) => {
+    const key = deal.pipeline_id || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(deal);
+  });
+  return `<span class="tool-tags">${[...groups].map(([pipelineId, items]) => {
+    const name = c.pipelineById?.[pipelineId]?.name || "Sem pipeline";
+    const titles = items.map((deal) => `${c.productById?.[deal.product_id]?.name || deal.title || "Negócio"} · ${STATUS_LABEL[deal.status] || deal.status || ""}`).join("\n");
+    return `<span class="tool-tag pipeline-tag" style="--pipe:${pipelineColor(pipelineId, c)}" title="${esc(titles)}">${esc(name)}${items.length > 1 ? ` · ${items.length}` : ""}</span>`;
+  }).join("")}</span>`;
+}
+
+function conversationDealsCell(conversation, c) {
+  const contactId = conversation.contact_id;
+  if (!contactId || !c.contactById?.[contactId]) return '<span class="muted">Pessoa não vinculada</span>';
+  const list = (c.deals || []).filter((deal) => deal.contact_id === contactId);
+  const content = list.length
+    ? contactDealsCell({ __dealList: list }, c)
+    : '<span class="muted">Sem negócio</span>';
+  return `<button class="conversation-deals-link" type="button" data-contact-id="${esc(contactId)}" data-create="${list.length ? "false" : "true"}" title="${list.length ? "Abrir negócios desta pessoa" : "Cadastrar negócio para esta pessoa"}">${content}</button>`;
+}
+
+function openDealsForContact(contactId, createWhenEmpty = false) {
+  if (!currentUserCan("deals", "view")) { toast("Você não possui acesso ao módulo Negócios.", true); return; }
+  const contact = cache.contactById?.[contactId];
+  if (!contact) { toast("Vincule a conversa a uma pessoa antes de acessar os negócios.", true); return; }
+  const deals = (cache.deals || []).filter((deal) => deal.contact_id === contactId);
+  state.tab = "deals";
+  state.view = "table";
+  state.q = "";
+  state.sortK = null;
+  state.filters.deals = { contact_id: new Set([String(contactId)]) };
+  state.pages.deals = 1;
+  const search = document.getElementById("search");
+  if (search) search.value = "";
+  render();
+  if (!deals.length && createWhenEmpty && currentUserCan("deals", "create")) {
+    const companyId = normalizeIdList(contact.company_ids, contact.company_id)[0] || "";
+    openForm("deals", null, { defaults: { contact_id: contactId, company_id: companyId, no_company: !companyId } });
+  }
+}
+
 function rowsFor(tab, c) {
+  if (tab === "contacts") annotateContactLinks(c);
+  if (tab === "conversations") annotateConversationLinks(c);
   let rows = c[tab] || [];
   if (state.q) {
     const q = state.q.toLowerCase();
@@ -2194,6 +3004,7 @@ function rowsFor(tab, c) {
 
 // ---------- Render tabela ----------
 function renderTable(c) {
+  preserveHorizontalTableScroll(document.getElementById("main"), `main:${state.tab}:table`);
   const cols = visibleColumns(state.tab, c);
   let allRows = rowsFor(state.tab, c);
   const groupByClient = state.tab === "activities" && state.groupActivitiesByClient;
@@ -2225,7 +3036,9 @@ function renderTable(c) {
     ? `<th class="select-head noclick"><input type="checkbox" id="select-all-rows"${rows.length && selectedVisible.length === rows.length ? " checked" : ""}></th>`
     : "";
   const actionHead = tableActionsHead();
-  const head = selectHead + cols.map((col) => {
+  const expandableClients = groupByClient ? clientNames : [];
+  const expandHead = `<th class="expand-head noclick">${tableExpandHeadInner(expandableClients.length > 0, expandableClients.length > 0 && expandableClients.every((client) => state.expandedActivityClients.has(client)))}</th>`;
+  const head = selectHead + expandHead + cols.map((col) => {
     const isFiltered = filters[col.k]?.size > 0;
     const arr = isFiltered ? `<span class="arrow">▼</span>` : state.sortK === col.k ? `<span class="arrow">${state.sortDir > 0 ? "▲" : "▼"}</span>` : "";
     const cls = [isFiltered ? "filtered" : "", col.thCls || ""].filter(Boolean).join(" ");
@@ -2238,10 +3051,10 @@ function renderTable(c) {
     const client = String(r.client_name || "Sem cliente");
     const clientExpanded = groupByClient && state.expandedActivityClients.has(client);
     const groupCells = groupByClient ? cols.map((col, index) => index === 0
-      ? `<td data-k="${esc(col.k)}"><button class="client-group-toggle" type="button" data-client="${esc(client)}" title="${clientExpanded ? "Recolher" : "Expandir"} tarefas de ${esc(client)}"><span class="registration-task-toggle">${clientExpanded ? "▾" : "▸"}</span><strong>${esc(client)}</strong><span class="registration-subtask-count">${clientCounts.get(client) || 0}</span></button></td>`
+      ? `<td data-k="${esc(col.k)}"><button class="client-group-toggle" type="button" data-client="${esc(client)}" title="${clientExpanded ? "Recolher" : "Expandir"} tarefas de ${esc(client)}"><strong>${esc(client)}</strong><span class="registration-subtask-count">${clientCounts.get(client) || 0}</span></button></td>`
       : `<td data-k="${esc(col.k)}"></td>`).join("") : "";
     const groupHeader = groupByClient && client !== previousClient
-      ? `<tr class="client-group-row" data-client="${esc(client)}">${selectable ? '<td class="select-cell"></td>' : ""}${groupCells}<td class="act action-col table-actions-cell"></td></tr>`
+      ? `<tr class="client-group-row" data-client="${esc(client)}">${selectable ? '<td class="select-cell"></td>' : ""}<td class="expand-cell">${tableRowExpandInner(clientExpanded, "client-group-expand", ` data-client="${esc(client)}"`)}</td>${groupCells}<td class="act action-col table-actions-cell"></td></tr>`
       : "";
     const taskRowAttrs = groupByClient ? ` class="client-task-row" data-client="${esc(client)}"${clientExpanded ? "" : " hidden"}` : "";
     if (groupByClient) previousClient = client;
@@ -2255,13 +3068,14 @@ function renderTable(c) {
       return `<td class="${cls}" data-k="${esc(col.k)}">${val}</td>`;
     }).join("");
     if (state.tab === "conversations") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "open-chat", attrs: { "data-id": rid }, title: "Abrir conversa", enabled: currentUserCan("conversations", "view") },
+        edit: { className: "edit-conversation", attrs: { "data-id": rid }, title: "Editar conversa · pessoa e negociação", enabled: currentUserCan("conversations", "edit") },
         delete: { className: "del-import", attrs: { "data-id": rid }, title: "Excluir conversa", enabled: currentUserCan("conversations", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "projects") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "project-board-btn", attrs: { "data-id": rid }, title: "Abrir entrega", enabled: currentUserCan("projects", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar entrega", enabled: currentUserCan("projects", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir entrega", enabled: currentUserCan("projects", "delete") }
@@ -2269,26 +3083,26 @@ function renderTable(c) {
     }
     if (state.tab === "activities") {
       const checklist = normalizeChecklist(r.checklist);
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
         edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
     if (state.tab === "products") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar produto", enabled: currentUserCan("products", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir produto", enabled: currentUserCan("products", "delete") }
       })}</td></tr>`;
     }
     if (state.tab === "companies") {
-      return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "company-details-btn", attrs: { "data-id": rid }, title: "Abrir empresa", enabled: currentUserCan("companies", "view") },
         edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar empresa", enabled: currentUserCan("companies", "edit") },
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir empresa", enabled: currentUserCan("companies", "delete") }
       })}</td></tr>`;
     }
-    return groupHeader + `<tr${taskRowAttrs}>${selectTd}${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+    return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
     })}</td></tr>`;
@@ -2300,9 +3114,9 @@ function renderTable(c) {
       : `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength}` : "0 registros"}</span>
     <div><button class="btn" id="page-prev"${currentPage <= 1 ? " disabled" : ""}>‹</button><span>Página ${currentPage} de ${totalPages}</span><button class="btn" id="page-next"${currentPage >= totalPages ? " disabled" : ""}>›</button></div>
   </div>` : "";
-  const emptyColspan = cols.length + (selectable ? 1 : 0) + 1;
+  const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
   const tableBody = body || `<tr><td colspan="${emptyColspan}" class="empty">Nenhum registro. Clique em <b>+</b> para criar.</td></tr>`;
-  document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
+  document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table${selectable && selectedSet.size ? " has-selection" : ""}" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
 
   document.querySelectorAll("thead th[data-k]").forEach((th) =>
     th.addEventListener("click", (e) => {
@@ -2318,10 +3132,14 @@ function renderTable(c) {
     b.addEventListener("click", () => confirmDelete(state.tab, b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.convert").forEach((b) =>
     b.addEventListener("click", () => convertImportToDeal(b.dataset.id)));
+  document.querySelectorAll("#main .rowbtn.edit-conversation").forEach((b) =>
+    b.addEventListener("click", () => openConversationEditModal([b.dataset.id])));
   document.querySelectorAll("#main .rowbtn.del-import").forEach((b) =>
     b.addEventListener("click", () => deleteImport(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.open-chat").forEach((b) =>
     b.addEventListener("click", () => openConversationPopup(b.dataset.id)));
+  document.querySelectorAll("#main .conversation-deals-link").forEach((button) =>
+    button.addEventListener("click", () => openDealsForContact(button.dataset.contactId, button.dataset.create === "true")));
   document.querySelectorAll("#main .rowbtn.project-board-btn").forEach((b) =>
     b.addEventListener("click", () => openProjectBoard(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.product-activities-btn").forEach((b) =>
@@ -2348,12 +3166,22 @@ function renderTable(c) {
       else selectedSet.delete(box.dataset.id);
       render();
     }));
-  document.querySelectorAll(".client-group-toggle").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll(".client-group-toggle,.client-group-expand").forEach((button) => button.addEventListener("click", () => {
     const client = button.dataset.client;
     if (state.expandedActivityClients.has(client)) state.expandedActivityClients.delete(client);
     else state.expandedActivityClients.add(client);
     render();
   }));
+  document.querySelector("#main .expand-head .table-expand-all")?.addEventListener("click", () => {
+    const expand = clientNames.some((client) => !state.expandedActivityClients.has(client));
+    if (expand) clientNames.forEach((client) => state.expandedActivityClients.add(client));
+    else state.expandedActivityClients.clear();
+    render();
+  });
+  if (selectable) {
+    renderTableActionsHead(document.querySelector("#main .data-table .table-actions-head"), selectedSet.size,
+      state.tab === "conversations" ? null : tableBulkEditProvider(`main:${state.tab}`), () => [...selectedSet], () => { selectedSet.clear(); render(); });
+  }
   document.getElementById("select-all-rows")?.addEventListener("change", (e) => {
     rows.forEach((r) => {
       const id = String(r[rowKey]);
@@ -2851,8 +3679,22 @@ let productActivitySavePending = false;
 let productObjectiveSavePending = false;
 let productGoalSavePending = false;
 const registrationExpandedTaskGroups = new Set();
-const registrationMindMapCollapsedGroups = new Set();
-const registrationMindMapCollapsedCategories = new Set();
+const registrationMindMapCollapsedBranches = new Set();
+const REGISTRATION_MIND_MAP_LEVELS = [
+  { key: "category", empty: "Sem categoria" },
+  { key: "channel", empty: "Sem canal" },
+  { key: "module", empty: "Sem módulo" },
+  { key: "submodule", empty: "Sem submódulo" }
+];
+let registrationMindMapFullscreen = false;
+let registrationMindMapHandMode = false;
+let registrationMindMapZoom = 1;
+let registrationMindMapPointerPressed = false;
+let registrationMindMapPointerWired = false;
+const REGISTRATION_MIND_MAP_ZOOM_LIMITS = [0.3, 2];
+let registrationMindMapOrientation = (() => {
+  try { return localStorage.getItem("registrationMindMapOrientation") === "vertical" ? "vertical" : "horizontal"; } catch { return "horizontal"; }
+})();
 
 function productTemplateSubtasks(templateId, templates = loadProductActivities()) {
   return templates.filter((item) => item.parent_template_id === templateId);
@@ -2872,7 +3714,7 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
+  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.category, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR"))
     .join("|");
 }
@@ -2922,6 +3764,7 @@ function openProductActivities(productId, opts = {}) {
 }
 
 function renderProductWorkspace() {
+  preserveHorizontalTableScroll(document.getElementById("product-activities-root"), `product:${productActivityState.productId}:${productActivityState.tab}`);
   if (productActivityState.tab === "objectives") renderProductObjectives();
   else if (productActivityState.tab === "goals") renderProductGoals();
   else renderProductActivities();
@@ -2943,7 +3786,7 @@ function renderProductActivities() {
   const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" draggable="true">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
     <td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td>
-    <td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
+    <td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
     <td>${item.parent_template_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}</td><td>${esc(item.information || "—")}</td>
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
@@ -2958,8 +3801,8 @@ function renderProductActivities() {
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
     <div class="product-activity-list"><table><thead><tr>
-      <th class="noclick"></th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
-    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="21" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+      <th class="noclick"></th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Tarefa</th><th>Informação</th><th>Checklist</th><th>Objetivo</th><th>Prioridade</th><th>Responsáveis padrão</th><th>Depende de</th><th>Referências</th>${tableActionsHead()}
+    </tr></thead><tbody id="pa-tbody">${rows || '<tr><td colspan="22" class="empty">Nenhuma tarefa cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   document.getElementById("pa-ready").addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -3072,9 +3915,12 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     <h3>${editId ? "Editar objetivo" : cloneSource ? "Clonar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
+      <div class="field"><label>Categoria</label><input id="po-category" value="${esc(current.category || "")}"></div>
+      <div class="field"><label>Canal</label><input id="po-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
-      <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Observações e contexto do objetivo">${esc(current.comments || "")}</textarea></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="po-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 30"></div>
       <div class="field"><label>Depende de objetivos</label>${multiPickerHtml("po-objective-dependencies", objectiveDependencyOptions, new Set(normalizeIdList(current.dependency_objective_template_ids)), "Selecionar objetivos")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("po-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
@@ -3130,6 +3976,9 @@ async function saveProductObjective() {
     name,
     completion_criteria: document.getElementById("po-criteria").value.trim(),
     comments: document.getElementById("po-comments").value.trim(),
+    category: document.getElementById("po-category").value.trim(),
+    channel: document.getElementById("po-channel").value.trim(),
+    notes: document.getElementById("po-notes").value.trim(),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
     assign_to_client: assignees.assignToClient,
@@ -3255,13 +4104,16 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     <h3>${editId ? "Editar meta" : cloneSource ? "Clonar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
+      <div class="field"><label>Categoria</label><input id="pg-category" value="${esc(current.category || "")}"></div>
+      <div class="field"><label>Canal</label><input id="pg-channel" value="${esc(current.channel || "")}"></div>
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
       <div class="field"><label>Unidade</label><input id="pg-unit" value="${esc(current.unit || "")}" placeholder="Ex.: pedidos/mês, %, R$"></div>
-      <div class="field"><label>Comentários</label><textarea id="pg-comments" rows="4" placeholder="Observações e contexto da meta">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Comentários</label><textarea id="pg-comments" rows="4" placeholder="Contexto da meta">${esc(current.comments || "")}</textarea></div>
+      <div class="field"><label>Observações</label><textarea id="pg-notes" rows="3" placeholder="Observações da meta">${esc(current.notes || "")}</textarea></div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="pg-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 90"></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pg-assignees", assigneePickerOptions(), selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pg-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Depende de metas</label>${multiPickerHtml("pg-goal-dependencies", goalDependencyOptions, new Set(normalizeIdList(current.dependency_goal_template_ids)), "Selecionar metas")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("pg-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
     </div>
@@ -3321,6 +4173,9 @@ async function saveProductGoal() {
     target_value: Number(targetValue),
     unit: document.getElementById("pg-unit").value.trim(),
     comments: document.getElementById("pg-comments").value.trim(),
+    category: document.getElementById("pg-category").value.trim(),
+    channel: document.getElementById("pg-channel").value.trim(),
+    notes: document.getElementById("pg-notes").value.trim(),
     target_days: targetDays === "" ? null : Number(targetDays),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
@@ -3458,6 +4313,7 @@ function openReadyActivityPicker() {
           const objectiveDraft = {
             id: crypto.randomUUID(), product_id: productActivityState.productId,
             name: sourceObjective.name, completion_criteria: sourceObjective.completion_criteria || "",
+            category: sourceObjective.category || "", channel: sourceObjective.channel || "", notes: sourceObjective.notes || "", comments: sourceObjective.comments || "",
             default_owner_id: sourceObjective.default_owner_id || null,
             target_days: sourceObjective.target_days ?? null,
             sort_order: Math.max(-1, ...targetObjectives.map((item) => Number(item.sort_order || 0))) + 1,
@@ -3593,7 +4449,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const templates = allTemplates.filter((item) => item.product_id === productActivityState.productId);
   const editing = templates.find((item) => item.id === editId) || null;
   const cloneSource = templates.find((item) => item.id === cloneSourceId) || null;
-  const current = editing || (cloneSource ? { ...cloneSource, id: null, activity: `${cloneSource.activity} (cópia)` } : {});
+  const current = editing || (cloneSource ? { ...cloneSource, id: null, activity: cloneSource.activity ? `${cloneSource.activity} (cópia)` : "" } : {});
+  const useStructure = Boolean((editing || cloneSource) && !String(current.activity || "").trim());
   const requestedParent = allTemplates.find((item) => item.id === (editing?.parent_template_id || cloneSource?.parent_template_id || parentTemplateId)) || null;
   if (requestedParent?.parent_template_id) {
     toast("Uma subtarefa não pode receber outra subtarefa.", true);
@@ -3607,6 +4464,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       subsector: requestedParent.subsector || "",
       module: requestedParent.module || "",
       submodule: requestedParent.submodule || "",
+      category: requestedParent.category || "",
       channel: requestedParent.channel || "",
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
@@ -3637,7 +4495,6 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const selectedDependencies = new Set(normalizeIdList(current.dependency_template_ids, current.depends_on_template_id));
   const dependencyOptions = templates.filter((item) => item.id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
-  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -3662,21 +4519,26 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Categoria</label><input id="pa-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
-      <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
-      <div class="task-schedule-row">
+      <div class="task-schedule-row task-schedule-row-wide">
         <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
         <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
         <div class="field"><label>Prazo sugerido (dias)</label><input id="pa-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 7"></div>
+        <div class="field" title="Dias para iniciar depois que a tarefa da qual esta depende terminar (data real se concluída; senão, a prevista)."><label>Iniciar após dependência (dias)</label><input id="pa-start-after" type="number" min="0" step="1" value="${esc(current.start_after_days ?? "")}" placeholder="Ex.: 2"></div>
         <label class="task-business-days" for="pa-business-days"><input id="pa-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
-      <div class="field task-form-wide"><label>${productActivityParentGroupId ? "Subtarefa" : "Tarefa"} *</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+      <div class="task-name-row">
+        <div class="field"><label id="pa-activity-label">${productActivityParentGroupId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
+        <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
+        <label class="task-use-structure" for="pa-use-structure"><input id="pa-use-structure" type="checkbox"${useStructure ? " checked" : ""}><span>Usar estrutura</span></label>
+      </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
-      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("pa-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("pa-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
@@ -3701,8 +4563,9 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireMultiPicker("pa-dependencies");
   wireMultiPicker("pa-documents");
   wireMultiPicker("pa-tables");
+  wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
   renderProductActivityChecklistEditor();
-  document.getElementById("pa-activity")?.focus({ preventScroll: true });
+  (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-category") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
 }
 
 function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
@@ -3721,8 +4584,10 @@ function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
 async function saveProductActivity() {
   if (productActivityState.editId ? !requireCurrentUserPermission("activityTemplates", "edit", "Tarefas") : !(currentUserCan("activityTemplates", "create") || currentUserCan("activityTemplates", "clone"))) { if (!productActivityState.editId) toast("Sem permissão para cadastrar tarefas.", true); return; }
   if (productActivitySavePending) return;
-  const activity = document.getElementById("pa-activity").value.trim();
-  if (!activity) { toast("Informe a tarefa.", true); return; }
+  const useStructure = document.getElementById("pa-use-structure").checked;
+  const activity = useStructure ? "" : document.getElementById("pa-activity").value.trim();
+  if (!useStructure && !activity) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
+  if (useStructure && !taskStructureFieldsFilled(["pa-category", "pa-channel", "pa-module", "pa-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
   const rows = loadProductActivities();
   const current = rows.find((item) => item.id === productActivityState.editId);
   const recordId = current?.id || crypto.randomUUID();
@@ -3750,11 +4615,13 @@ async function saveProductActivity() {
     subsector: document.getElementById("pa-subsector").value.trim(),
     module: document.getElementById("pa-module").value.trim(),
     submodule: document.getElementById("pa-submodule").value.trim(),
+    category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
     priority: document.getElementById("pa-priority").value || "normal",
     target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
+    start_after_days: document.getElementById("pa-start-after").value === "" ? null : Number(document.getElementById("pa-start-after").value),
     consider_business_days: document.getElementById("pa-business-days").checked,
     activity,
     information: document.getElementById("pa-information").value.trim(),
@@ -3851,9 +4718,15 @@ const TASK_STATUS = [
 const CLIENT_ASSIGNEE_VALUE = "__client__";
 let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
 
-function assigneePickerOptions() {
+function internalAssigneeUser(user) {
+  return ["admin", "collaborator"].includes(normalizedProfileRole(user?.role)) && (user?.status || "active") === "active";
+}
+
+function assigneePickerOptions(selected = []) {
+  const keep = new Set(selected instanceof Set ? selected : normalizeIdList(selected));
   return [
-    ...(cache?.users || []).map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
+    ...(cache?.users || []).filter((user) => internalAssigneeUser(user) || keep.has(user.id))
+      .map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
     { value: CLIENT_ASSIGNEE_VALUE, label: "Cliente", detail: "Responsável da empresa" }
   ];
 }
@@ -3896,7 +4769,7 @@ function assigneeNames(ids, fallbackId = null, assignToClient = false) {
 
 function assigneeJobTitleOptions() {
   return [...new Map((cache?.users || [])
-    .filter((user) => user.status === "active" && String(user.job_title || "").trim())
+    .filter((user) => internalAssigneeUser(user) && String(user.job_title || "").trim())
     .map((user) => {
       const title = String(user.job_title).trim();
       return [title.toLocaleLowerCase("pt-BR"), { value: title, label: title }];
@@ -4105,8 +4978,25 @@ document.addEventListener("click", (event) => {
   });
 });
 
-function taskStatusOptions(selected = "todo", blocked = false) {
-  return TASK_STATUS.map((s) => `<option value="${s.id}"${s.id === selected ? " selected" : ""}${blocked && !["todo", "canceled"].includes(s.id) ? " disabled" : ""}>${s.label}</option>`).join("");
+// Fluxo de status das tarefas: Em andamento não volta para Em aberto,
+// Atendido e Cancelado só são reabertos por administradores e só
+// administradores cancelam tarefas em aberto ou em andamento.
+function taskStatusTransitionError(from = "todo", to = "todo") {
+  if (!to || to === from) return "";
+  const admin = currentUserIsAdmin();
+  if (from === "done" && !admin) return "Tarefa Atendida só pode ser alterada por administradores.";
+  if (from === "canceled" && !admin) return "Tarefa Cancelada só pode ser reaberta por administradores.";
+  if (from === "doing" && to === "todo") return "Tarefa Em andamento não pode voltar para Em aberto.";
+  if (to === "canceled" && ["todo", "doing"].includes(from) && !admin) return "Somente administradores podem cancelar tarefas.";
+  return "";
+}
+const taskStatusLocked = (task) => ["done", "canceled"].includes(task?.status) && !currentUserIsAdmin();
+
+function taskStatusOptions(selected = "todo", blocked = false, flow = false) {
+  return TASK_STATUS.map((s) => {
+    const disabled = (blocked && !["todo", "canceled"].includes(s.id)) || (flow && taskStatusTransitionError(selected, s.id));
+    return `<option value="${s.id}"${s.id === selected ? " selected" : ""}${disabled ? " disabled" : ""}>${s.label}</option>`;
+  }).join("");
 }
 
 function taskDependencies(task, tasks = loadProjectTasks()) {
@@ -4152,7 +5042,7 @@ function taskCardHtml(task) {
       ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}" type="button">Checklist ${checklist.done}/${checklist.total}</button>`
       : `<div class="task-subtask-summary">Subtarefas ${subtasks.done}/${subtasks.total} · checklist nas subtarefas</div>`}
     <div class="task-actions">
-      <select class="task-status"${blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked)}</select>
+      <select class="task-status"${taskStatusLocked(task) ? ' title="Somente administradores alteram esta tarefa" disabled' : blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked, true)}</select>
       ${parent ? "" : '<button class="rowbtn task-add-subtask" title="Adicionar subtarefa">＋</button>'}
       <button class="rowbtn task-edit" title="Editar tarefa">✎</button>
       ${task.source_template_id ? '<span class="muted">Produto</span>' : '<button class="rowbtn del-task" title="Excluir tarefa">✕</button>'}
@@ -4199,7 +5089,8 @@ function openProjectBoard(projectId) {
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: `<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Entrega · ${esc(project.name || "Sem nome")}</em></span>`
+    headerActions: liveRefreshButtonHtml(),
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
     projectBoardState.section = button.dataset.projectSection;
@@ -4327,7 +5218,7 @@ function renderTaskTable(tasks) {
     const parent = taskParent(task, allTasks);
     const subtasks = taskSubtaskProgress(task.id, allTasks);
     const terminal = subtasks.total === 0;
-    return `<tr class="${parent ? "task-subtask-row" : "task-root-row"}">
+    return `<tr class="${parent ? "task-subtask-row" : "task-root-row"}"${parent ? ` data-expand-parent="${esc(parent.id)}"` : ` data-expand-id="${esc(task.id)}"`}>
       <td><span class="task-table-title">${parent ? '<span class="task-subtask-branch">↳</span>' : ""}<span>${esc(activityDisplayName(task))}</span>${parent ? '<small>Subtarefa</small>' : ""}</span></td>
       <td>${badge(task.source_template_id ? "qualification" : "proposal", task.source_template_id ? "Produto" : "Dia a dia")}</td>
       <td>${priorityBadge(task.priority)}</td>
@@ -4339,6 +5230,7 @@ function renderTaskTable(tasks) {
       <td>${esc(task.subsector || "—")}</td>
       <td>${esc(task.module || "—")}</td>
       <td>${esc(task.submodule || "—")}</td>
+      <td>${esc(task.category || "—")}</td>
       <td>${esc(task.channel || "—")}</td>
       <td>${esc(task.type || "—")}</td>
       <td>${esc(RECURRENCE_LABEL[task.recurrence] || "Única")}</td>
@@ -4364,8 +5256,8 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="28" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="29" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -4422,19 +5314,22 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     const dependencyLabel = deliveryObjectiveDependencyLabel(objective);
     return `<tr data-objective-id="${esc(objective.id)}">
       <td><strong>${esc(objective.name)}</strong></td>
+      <td>${esc(objective.category || "—")}</td>
+      <td>${esc(objective.channel || "—")}</td>
       <td>${esc(objective.completion_criteria || "—")}</td>
       <td>${esc(objective.comments || "—")}</td>
+      <td>${esc(objective.notes || "—")}</td>
       <td>${done}/${linked.length} · ${progress}%</td>
       <td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(objective.assignee_ids), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-objective-due" type="date" value="${esc(objective.due_date || "")}"></td>
       <td><select class="objective-control delivery-objective-status">${taskStatusOptions(objective.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
   return `<div class="task-table-wrap"><table><thead><tr>
-    <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="9" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
+    <th>Objetivo</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="12" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
 }
 
 function deliveryObjectiveDependencyState(objective) {
@@ -4496,18 +5391,18 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
     return `<tr data-goal-id="${esc(goal.id)}">
-      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.metric)}</td>
+      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
-      <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
+      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(goal.assignee_ids), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-goal-due" type="date" value="${esc(goal.due_date || "")}"></td>
       <td><select class="objective-control delivery-goal-status">${taskStatusOptions(goal.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap"><table><thead><tr>
-    <th>Meta</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="11" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
+    <th>Meta</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
   <div class="table-pagination"><span>${goals.length} meta(s)</span><div><span>Acompanhamento da entrega</span></div></div></div>`;
 }
 
@@ -4541,20 +5436,96 @@ function renderDeliveryStatusMatrix(rows, kind, tasks = []) {
   }).join("")}</div>`;
 }
 
+function deliveryGoalPercent(goal) {
+  if (goal.__percent != null) return goal.__percent;
+  const current = Number(goal.current_value || 0);
+  const target = Number(goal.target_value || 0);
+  if (deliveryGoalReached(goal, current)) return 100;
+  if (goal.comparison === "at_most") return current ? Math.max(0, Math.min(99, Math.round(target / current * 100))) : 0;
+  if (goal.comparison === "exactly") return target || current ? Math.max(0, Math.min(99, Math.round(Math.min(current, target) / Math.max(current, target) * 100))) : 0;
+  return target ? Math.max(0, Math.min(99, Math.round(current / target * 100))) : 0;
+}
+
+function deliveryObjectivePercent(objective, tasks) {
+  if (objective.__percent != null) return objective.__percent;
+  if (objective.status === "done") return 100;
+  const linked = tasks.filter((task) => task.objective_id === objective.id);
+  return linked.length ? Math.round(linked.filter((task) => task.status === "done").length / linked.length * 100) : 0;
+}
+
+function dashboardBarHtml(percent, tone = "") {
+  return `<div class="okr-bar${tone ? ` ${tone}` : ""}"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div><b class="okr-percent">${percent}%</b>`;
+}
+
+function deliveryOkrBoardHtml(objectives, goals, tasks) {
+  const key = (item) => [item.category, item.channel].map((value) => String(value || "").trim().toLocaleUpperCase("pt-BR")).join(" · ") || "—";
+  const label = (item) => [item.category || "Sem categoria", item.channel || "Sem canal"].join(" · ");
+  const groups = new Map();
+  const ensure = (item) => {
+    const id = key(item);
+    if (!groups.has(id)) groups.set(id, { label: label(item), objectives: [], goals: [] });
+    return groups.get(id);
+  };
+  objectives.forEach((objective) => ensure(objective).objectives.push(objective));
+  goals.forEach((goal) => ensure(goal).goals.push(goal));
+  if (!groups.size) return '<div class="empty">Cadastre objetivos e metas para montar o OKR.</div>';
+  const today = new Date().toISOString().slice(0, 10);
+  return `<div class="okr-board">${[...groups.values()].map((group) => {
+    const krPercents = group.goals.map(deliveryGoalPercent);
+    const objectivePercents = group.objectives.map((objective) => deliveryObjectivePercent(objective, tasks));
+    const overall = krPercents.length ? Math.round(krPercents.reduce((a, b) => a + b, 0) / krPercents.length)
+      : objectivePercents.length ? Math.round(objectivePercents.reduce((a, b) => a + b, 0) / objectivePercents.length) : 0;
+    return `<section class="okr-card">
+      <header><span>${esc(group.label)}</span>${dashboardBarHtml(overall, overall >= 100 ? "is-done" : "")}</header>
+      <div class="okr-section"><span class="okr-tag">O</span><div class="okr-list">${group.objectives.map((objective) => {
+        const percent = deliveryObjectivePercent(objective, tasks);
+        const late = objective.due_date && objective.status !== "done" && objective.due_date < today;
+        return `<div class="okr-item"><strong>${esc(objective.name || "Objetivo")}</strong><small>${objective.__subtitle ? esc(objective.__subtitle) : `${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+      }).join("") || '<span class="muted">Sem objetivo nesta Categoria/Canal</span>'}</div></div>
+      <div class="okr-section"><span class="okr-tag is-kr">KR</span><div class="okr-list">${group.goals.map((goal) => {
+        const percent = deliveryGoalPercent(goal);
+        const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
+        return `<div class="okr-item"><strong>${esc(goal.name || "Meta")}</strong><small>${goal.__subtitle ? `${esc(goal.__subtitle)} · alvo ${esc(target)}` : `${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+      }).join("") || '<span class="muted">Sem metas (resultados-chave) nesta Categoria/Canal</span>'}</div></div>
+    </section>`;
+  }).join("")}</div>`;
+}
+
 function renderDeliverySectionDashboard(rows, kind, tasks = []) {
+  const projectId = projectBoardState.projectId;
+  const objectives = kind === "objectives" ? rows : loadDeliveryObjectives().filter((item) => item.project_id === projectId);
+  const goals = kind === "goals" ? rows : loadDeliveryGoals().filter((item) => item.project_id === projectId);
+  const today = new Date().toISOString().slice(0, 10);
   const done = rows.filter((item) => item.status === "done").length;
   const doing = rows.filter((item) => item.status === "doing").length;
   const blocked = rows.filter((item) => kind === "objectives" ? deliveryObjectiveDependencyState(item).blocked : deliveryGoalDependencyState(item).blocked).length;
-  const overdue = rows.filter((item) => item.due_date && item.status !== "done" && item.due_date < new Date().toISOString().slice(0, 10)).length;
-  const linked = kind === "objectives" ? tasks.filter((task) => rows.some((item) => item.id === task.objective_id)).length : 0;
-  return `<div class="project-dashboard">
-    <div class="metric"><div class="k">${kind === "objectives" ? "Objetivos" : "Metas"}</div><div class="v">${rows.length}</div></div>
-    <div class="metric"><div class="k">Em andamento</div><div class="v">${doing}</div></div>
-    <div class="metric"><div class="k">Concluídos</div><div class="v">${done}</div></div>
-    <div class="metric"><div class="k">Bloqueados</div><div class="v">${blocked}</div></div>
-    <div class="metric"><div class="k">Atrasados</div><div class="v">${overdue}</div></div>
-    ${kind === "objectives" ? `<div class="metric"><div class="k">Tarefas vinculadas</div><div class="v">${linked}</div></div>` : ""}
-  </div>`;
+  const overdue = rows.filter((item) => item.due_date && item.status !== "done" && item.due_date < today).length;
+  const average = (values) => values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : 0;
+  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${label}</div><div class="v">${value}</div>${hint ? `<div class="metric-hint">${hint}</div>` : ""}</div>`;
+  const cards = kind === "objectives"
+    ? [
+      metric("Objetivos", rows.length),
+      metric("Progresso médio", `${average(rows.map((item) => deliveryObjectivePercent(item, tasks)))}%`, "Tarefas concluídas dos objetivos"),
+      metric("Concluídos", done, rows.length ? `${Math.round(done / rows.length * 100)}% do total` : ""),
+      metric("Em andamento", doing),
+      metric("Bloqueados", blocked),
+      metric("Atrasados", overdue),
+      metric("Tarefas vinculadas", tasks.filter((task) => rows.some((item) => item.id === task.objective_id)).length)
+    ]
+    : [
+      metric("Metas (KPIs)", rows.length),
+      metric("Atingimento médio", `${average(rows.map(deliveryGoalPercent))}%`, "Valor atual x valor-alvo"),
+      metric("Metas atingidas", rows.filter((goal) => deliveryGoalReached(goal)).length, rows.length ? `${Math.round(rows.filter((goal) => deliveryGoalReached(goal)).length / rows.length * 100)}% do total` : ""),
+      metric("Em andamento", doing),
+      metric("Bloqueadas", blocked),
+      metric("Atrasadas", overdue)
+    ];
+  const kpis = kind === "goals" && rows.length ? `<section class="dashboard-block"><h4>KPIs</h4><div class="kpi-list">${rows.map((goal) => {
+    const percent = deliveryGoalPercent(goal);
+    const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
+    return `<div class="kpi-row"><div><strong>${esc(goal.name || "Meta")}</strong><small>${esc(goal.metric || "Sem indicador")}</small></div><span class="kpi-values">${Number(goal.current_value || 0).toLocaleString("pt-BR")} <small>/ ${esc(target)}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+  }).join("")}</div></section>` : "";
+  return `<div class="delivery-dashboard"><div class="project-dashboard">${cards.join("")}</div>${kpis}<section class="dashboard-block"><h4>OKR <small>Objetivos (O) e Resultados-chave (KR) ligados pela mesma Categoria e Canal</small></h4>${deliveryOkrBoardHtml(objectives, goals, tasks)}</section></div>`;
 }
 
 function projectSectionRows(projectId, section = projectBoardState.section) {
@@ -4564,9 +5535,9 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
-  objectives: ["Objetivo", "Critério de conclusão", "Comentários", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
-  goals: ["Meta", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  objectives: ["Objetivo", "Categoria", "Canal", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
+  goals: ["Meta", "Categoria", "Canal", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
 };
 
 function projectSectionValues(item, tasks = []) {
@@ -4578,7 +5549,7 @@ function projectSectionValues(item, tasks = []) {
       item.source_template_id ? "Produto" : "Dia a dia",
       PRIORITY_LABEL[item.priority || "normal"] || "Normal",
       dependencyNames(item.dependency_ids, item.depends_on_activity_id, tasks),
-      item.information || "—", item.group || "—", item.subgroup || "—", item.sector || "—", item.subsector || "—", item.module || "—", item.submodule || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
+      item.information || "—", item.group || "—", item.subgroup || "—", item.sector || "—", item.subsector || "—", item.module || "—", item.submodule || "—", item.category || "—", item.channel || "—", item.type || "—", RECURRENCE_LABEL[item.recurrence] || "Única", item.consider_business_days ? "Sim" : "Não",
       subtasks.total ? "Nas subtarefas" : `${checklist.done}/${checklist.total}`,
       item.parent_activity_id ? "—" : `${subtasks.done}/${subtasks.total}`,
       cache.deliveryObjectiveById?.[item.objective_id]?.name || "—",
@@ -4598,7 +5569,7 @@ function projectSectionValues(item, tasks = []) {
     const done = linked.filter((task) => task.status === "done").length;
     const progress = linked.length ? Math.round(done / linked.length * 100) : 0;
     return [
-      item.name || "—", item.completion_criteria || "—", item.comments || "—", `${done}/${linked.length} · ${progress}%`,
+      item.name || "—", item.category || "—", item.channel || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
       deliveryObjectiveDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
@@ -4607,8 +5578,8 @@ function projectSectionValues(item, tasks = []) {
   const current = Number(item.current_value || 0);
   const target = Number(item.target_value || 0);
   return [
-    item.name || "—", item.metric || "—", current.toLocaleString("pt-BR"),
-    `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—",
+    item.name || "—", item.category || "—", item.channel || "—", item.metric || "—", current.toLocaleString("pt-BR"),
+    `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—", item.notes || "—",
     `${target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0}%`,
     deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
     item.due_date ? dt(item.due_date) : "—",
@@ -4649,16 +5620,17 @@ function projectFilterStripHtml() {
 
 function projectToolbarHtml(client, product, total) {
   const sectionLabel = projectBoardState.section === "activities" ? "tarefa(s)" : projectBoardState.section === "objectives" ? "objetivo(s)" : "meta(s)";
-  const primaryModes = new Set(["table", "kanban", "calendar", "gantt"]);
+  const primaryModes = new Set(PROJECT_VIEW_MODES.map((mode) => mode.id));
   const activePrimaryMode = primaryModes.has(projectBoardState.view) ? projectBoardState.view : "table";
-  const activePrimaryLabel = VIEW_MODES.find((mode) => mode.id === activePrimaryMode)?.label || "Tabela";
+  const activePrimaryLabel = PROJECT_VIEW_MODES.find((mode) => mode.id === activePrimaryMode)?.label || "Tabela";
+  const projectName = (cache?.projects || []).find((item) => item.id === projectBoardState.projectId)?.name || "Sem nome";
   return `<div class="project-head project-data-toolbar">
-    <div class="registration-toolbar-left"><div class="project-meta"><span>${esc(client)}</span><span>·</span><span>${esc(product)}</span><span>·</span><span>${total} ${sectionLabel}</span></div></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title" title="${esc(projectName)}">${esc(projectName)}</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
-      <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização"><span>${esc(activePrimaryLabel.toUpperCase())}</span><span class="chevron">▾</span></button>
-      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix">Matriz</button>
-      <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard">Dashboard</button>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
+      <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização: ${esc(activePrimaryLabel)}">${viewTriggerInner(activePrimaryMode)}</button>
+      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz"${projectBoardState.section === "activities" ? "" : " disabled"}>${viewButtonInner("matrix")}</button>
+      <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard" title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button>
       <button class="btn project-data-btn" type="button" title="Dados">⬆⬇</button>
     </div>
   </div>`;
@@ -4668,6 +5640,7 @@ function renderProjectBoard(projectId) {
   const root = document.getElementById("project-board-root");
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!root || !project) return;
+  preserveHorizontalTableScroll(root, `project:${projectId}:${projectBoardState.section}:${projectBoardState.view || "table"}`);
   if (projectBoardState.section === "data") {
     root.innerHTML = `<div class="project-board">${renderProjectDataModule(project)}</div>`;
     wireProjectDataModule(project);
@@ -4678,6 +5651,7 @@ function renderProjectBoard(projectId) {
   const rows = filterProjectSectionRows(allRows, allTasks);
   const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
   const product = cache.productById[project.product_id]?.name || "Sem produto";
+  if (projectBoardState.section !== "activities" && projectBoardState.view === "matrix") projectBoardState.view = "table";
   const view = projectBoardState.view || "table";
   let body = "";
   if (projectBoardState.section === "activities") {
@@ -4685,22 +5659,30 @@ function renderProjectBoard(projectId) {
       : ["matrix", "kanban"].includes(view) ? renderTaskMatrix(rows)
       : view === "calendar" ? renderProjectTaskCalendar(rows)
       : view === "gantt" ? renderProjectTaskGantt(rows)
+      : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_TASK_ADAPTER, "", `delivery:${projectId}`).html
       : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
     body = view === "table" ? renderDeliveryObjectives(projectId, allTasks, rows)
+      : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER, "", `delivery-objectives:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "objectives", allTasks)
       : renderDeliverySectionDashboard(rows, "objectives", allTasks);
   } else {
     body = view === "table" ? renderDeliveryGoals(projectId, rows)
+      : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_GOAL_ADAPTER, "", `delivery-goals:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "goals")
-      : renderDeliverySectionDashboard(rows, "goals");
+      : renderDeliverySectionDashboard(rows, "goals", allTasks);
   }
-  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${view === "table" ? projectFilterStripHtml() : ""}${body}</div>`;
+  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${["table", "mindmap"].includes(view) ? projectFilterStripHtml() : ""}${body}</div>`;
   const table = root.querySelector("table");
   if (table && view === "table") wireProjectTableColumns(table);
   if (projectBoardState.section === "objectives" && view === "table") wireDeliveryObjectives(projectId);
   if (projectBoardState.section === "goals" && view === "table") wireDeliveryGoals(projectId);
   wireProjectBoard(projectId);
+  if (view === "mindmap") {
+    root.querySelectorAll(".delivery-mind-task-open[data-id]").forEach((button) =>
+      button.addEventListener("click", () => openDeliveryTaskDrawer(projectId, button.dataset.id)));
+    wireMindMap(root, () => renderProjectBoard(projectId));
+  }
 }
 
 async function updateDeliveryObjective(objectiveId, patch) {
@@ -4816,6 +5798,11 @@ async function updateProjectTask(taskId, patch) {
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
+  const transitionError = patch.status ? taskStatusTransitionError(task.status || "todo", patch.status) : "";
+  if (transitionError) {
+    toast(transitionError, true);
+    return false;
+  }
   const operationalTasks = operationalProjectTasks(task.project_id);
   if (patch.status && !["todo", "canceled"].includes(patch.status) && taskIsBlocked(task, operationalTasks)) {
     const dependency = taskDependencies(task, operationalTasks).find((item) => item.status !== "done");
@@ -4825,7 +5812,7 @@ async function updateProjectTask(taskId, patch) {
   if (patch.status && patch.status !== "done" && task.status === "done") {
     const activeDependent = operationalTasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
     if (activeDependent) {
-      toast(`Volte "${activityDisplayName(activeDependent)}" para Em aberto antes de reabrir esta tarefa.`, true);
+      toast(`"${activityDisplayName(activeDependent)}" depende desta tarefa e já foi iniciada; não é possível reabrir.`, true);
       return false;
     }
   }
@@ -4839,6 +5826,7 @@ async function updateProjectTask(taskId, patch) {
   if (isLive()) cache.activityRecords = tasks;
   else saveProjectTasks(tasks);
   refreshActivityCache();
+  if (patch.status || "actual_end_date" in patch) await recalculateDependencySchedules(task.project_id);
   return true;
 }
 
@@ -4940,8 +5928,8 @@ function openProjectViewMenu() {
   panel.className = "view-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 198))}px`;
   panel.style.top = `${rect.bottom + 5}px`;
-  panel.innerHTML = VIEW_MODES.map((mode) => {
-    const available = mode.id === "table" || projectBoardState.section === "activities";
+  panel.innerHTML = PROJECT_VIEW_MODES.map((mode) => {
+    const available = mode.id === "table" || projectBoardState.section === "activities" || (mode.id === "mindmap" && ["objectives", "goals"].includes(projectBoardState.section));
     return `<button class="view-option${projectBoardState.view === mode.id ? " active" : ""}" data-view="${mode.id}"${available ? "" : " disabled"}>
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${projectBoardState.view === mode.id ? "✓" : ""}</span>
   </button>`;
@@ -5042,7 +6030,6 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
   const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
-  const assigneeOptions = assigneePickerOptions();
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -5050,30 +6037,36 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.recurrence || "once") ? " selected" : ""}>${label}</option>`).join("");
   const priorityOptions = PRIORITY_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.priority || "normal") ? " selected" : ""}>${label}</option>`).join("");
+  const useStructure = Boolean(editId && !String(current.title || "").trim());
   const overlay = document.createElement("div");
   overlay.id = "project-task-drawer-overlay";
   overlay.className = "activity-form-overlay";
   overlay.innerHTML = `<aside class="activity-form-drawer task-form-drawer"><h3>${editId ? (parentId ? "Editar subtarefa" : "Editar tarefa") : (parentId ? "Nova subtarefa" : "Nova tarefa")}<button class="modal-close-x" id="project-task-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form task-form-grid">
       <div class="field"><label>Origem</label><input value="${esc(parentTask ? `Subtarefa de ${activityDisplayName(parentTask)}` : current.source_template_id ? "Produto" : "Dia a dia")}" disabled></div>
-      <div class="field"><label>${parentId ? "Subtarefa" : "Tarefa"} *</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
+      <div class="task-name-row task-form-wide">
+        <div class="field"><label id="project-task-title-label">${parentId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="project-task-title" value="${esc(current.title || "")}" placeholder="Nome da ${parentId ? "subtarefa" : "tarefa"}"${current.source_template_id ? " readonly" : ""}></div>
+        <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
+        <label class="task-use-structure" for="project-task-use-structure"><input id="project-task-use-structure" type="checkbox"${useStructure ? " checked" : ""}${current.source_template_id ? " disabled" : ""}><span>Usar estrutura</span></label>
+      </div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="project-task-information" rows="3" placeholder="Instruções ou contexto">${esc(current.information || "")}</textarea></div>
       <div class="field"><label>Grupo</label><select id="project-task-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group || parentTask?.group, "Sem grupo")}</select></div>
       <div class="field"><label>Subgrupo</label><select id="project-task-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group || parentTask?.group, TASK_GROUP_OPTIONS)] || [], current.subgroup || parentTask?.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="project-task-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector || parentTask?.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="project-task-subsector" value="${esc(current.subsector || parentTask?.subsector || "")}" placeholder="Subsetor opcional"></div>
+      <div class="field"><label>Categoria</label><input id="project-task-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
-      <div class="field"><label>Tipo</label><input id="project-task-type" value="${esc(current.type || "")}"></div>
       <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
-      <div class="task-schedule-row task-schedule-row-compact">
+      <div class="task-schedule-row">
         <div class="field"><label>Recorrência</label><select id="project-task-recurrence">${recurrenceOptions}</select></div>
         <div class="field"><label>Prioridade</label><select id="project-task-priority">${priorityOptions}</select></div>
+        <div class="field" title="Dias para iniciar depois que a tarefa da qual esta depende terminar (data real se concluída; senão, a prevista)."><label>Iniciar após dependência (dias)</label><input id="project-task-start-after" type="number" min="0" step="1" value="${esc(current.start_after_days ?? "")}" placeholder="Ex.: 2"></div>
         <label class="task-business-days" for="project-task-business-days"><input id="project-task-business-days" type="checkbox"${current.consider_business_days ? " checked" : ""}><span>Dias úteis</span></label>
       </div>
       <div class="field"><label>Objetivo</label><select id="project-task-objective">${objectiveOptions}</select></div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("project-task-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
-      <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneeOptions, selectedAssignees, "Selecionar responsáveis")}</div>
+      <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("project-task-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
       <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("project-task-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
@@ -5097,6 +6090,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   wireMultiPicker("project-task-assignee-job-titles");
   wireMultiPicker("project-task-documents");
   wireMultiPicker("project-task-tables");
+  wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-category", "project-task-channel", "project-task-module", "project-task-type"]);
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
@@ -5104,8 +6098,10 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   document.getElementById("project-task-save").addEventListener("click", async () => {
     const saveButton = document.getElementById("project-task-save");
     if (saveButton?.disabled) return;
-    const title = document.getElementById("project-task-title").value.trim();
-    if (!title) { toast("Informe a tarefa.", true); return; }
+    const useStructure = document.getElementById("project-task-use-structure").checked;
+    const title = useStructure ? "" : document.getElementById("project-task-title").value.trim();
+    if (!useStructure && !title) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
+    if (useStructure && !document.getElementById("project-task-use-structure").disabled && !taskStructureFieldsFilled(["project-task-category", "project-task-channel", "project-task-module", "project-task-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
     const dependencyIds = multiPickerValues("project-task-dependencies");
     const assignees = assigneePickerValue("project-task-assignees");
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
@@ -5130,6 +6126,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       subsector: document.getElementById("project-task-subsector").value.trim(),
       module: document.getElementById("project-task-module").value.trim(),
       submodule: document.getElementById("project-task-submodule").value.trim(),
+      category: document.getElementById("project-task-category").value.trim(),
       channel: document.getElementById("project-task-channel").value.trim(),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
@@ -5149,6 +6146,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       actual_start_date: actualStart,
       actual_end_date: actualEnd,
       due_date: plannedEnd,
+      start_after_days: document.getElementById("project-task-start-after").value === "" ? null : Number(document.getElementById("project-task-start-after").value),
+      schedule_manual: editId && (plannedStart || null) === (current.planned_start_date || null) ? Boolean(current.schedule_manual) : Boolean(plannedStart),
       notes: current.notes || null,
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
       checklist: parentId ? (editId ? normalizeChecklist(current.checklist) : inheritedChecklist) : (subtasks.length ? [] : normalizeChecklist(current.checklist)),
@@ -5174,6 +6173,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       if (isLive()) cache.activityRecords = allTasks;
       else saveProjectTasks(allTasks);
       refreshActivityCache();
+      await recalculateDependencySchedules(projectId);
       projectBoardState.page = Math.max(1, Math.ceil(projectTasks(projectId).length / projectBoardState.pageSize));
       close();
       renderProjectBoard(projectId);
@@ -5183,7 +6183,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       toast("Erro ao salvar tarefa · " + err.message, true);
     }
   });
-  document.getElementById("project-task-title").focus();
+  (document.getElementById("project-task-title").disabled ? document.getElementById("project-task-category") : document.getElementById("project-task-title"))?.focus();
 }
 
 function projectTableRows(table) {
@@ -5206,16 +6206,12 @@ function applyProjectTableColumnPreferences(table) {
   const headers = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.projectColumn).map((cell) => [cell.dataset.projectColumn, cell]));
   const fixedHeaders = [...headRow.cells].filter((cell) => !cell.dataset.projectColumn);
   ordered.forEach((col) => headRow.appendChild(headers[col.k]));
-  const selectionHeader = fixedHeaders.find((cell) => cell.classList.contains("select-head"));
-  if (selectionHeader) headRow.insertBefore(selectionHeader, headRow.firstChild);
-  fixedHeaders.filter((cell) => cell !== selectionHeader).forEach((cell) => headRow.appendChild(cell));
+  orderLeadingTableCells(headRow, fixedHeaders);
   projectTableRows(table).forEach((row) => {
     const cells = Object.fromEntries([...row.cells].filter((cell) => cell.dataset.projectColumn).map((cell) => [cell.dataset.projectColumn, cell]));
     const fixedCells = [...row.cells].filter((cell) => !cell.dataset.projectColumn);
     ordered.forEach((col) => { if (cells[col.k]) row.appendChild(cells[col.k]); });
-    const selectionCell = fixedCells.find((cell) => cell.classList.contains("select-cell"));
-    if (selectionCell) row.insertBefore(selectionCell, row.firstChild);
-    fixedCells.filter((cell) => cell !== selectionCell).forEach((cell) => row.appendChild(cell));
+    orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
     const visible = prefs[col.k] !== false;
@@ -5266,48 +6262,22 @@ function openProjectColumnFilter(header, key) {
   const rows = projectSectionRows(projectBoardState.projectId);
   const values = [...new Set(rows.map((item) => projectRowValue(item, key, tasks)))]
     .sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" }));
-  const selected = new Set(projectBoardState.filters?.[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "project-filter-dd";
   panel.className = "filter-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 330))}px`;
   panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 360)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(header.dataset.projectLabel)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn project-filter-all">Todos</button><button class="btn danger project-filter-clear">Limpar</button><button class="btn primary project-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query))
-      .map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".project-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${header.dataset.projectLabel || key}`, values, key, current: projectBoardState.filters?.[key],
+    onApply: (rule) => {
+      if (rule) projectBoardState.filters[key] = rule; else delete projectBoardState.filters[key];
+      projectBoardState.page = 1;
+      panel.remove();
+      renderProjectBoard(projectBoardState.projectId);
+    }
   });
-  panel.querySelector(".project-filter-clear").addEventListener("click", () => {
-    delete projectBoardState.filters[key];
-    projectBoardState.page = 1;
-    panel.remove();
-    renderProjectBoard(projectBoardState.projectId);
-  });
-  panel.querySelector(".project-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) projectBoardState.filters[key] = selected;
-    else delete projectBoardState.filters[key];
-    projectBoardState.page = 1;
-    panel.remove();
-    renderProjectBoard(projectBoardState.projectId);
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -5427,6 +6397,21 @@ const VIEW_MODES = [
   { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities"] }
 ];
 
+const VIEW_ICON_PATHS = {
+  table: '<rect x="3" y="4" width="14" height="12" rx="1.5"/><path d="M3 8.5h14M3 12.5h14M8 4v12"/>',
+  kanban: '<rect x="3" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13" y="4" width="4" height="10" rx="1"/>',
+  calendar: '<rect x="3" y="4.5" width="14" height="12" rx="1.5"/><path d="M3 8.5h14M7 3v3M13 3v3"/>',
+  gantt: '<path d="M4 5.5h7M7 10h9M5 14.5h6"/>',
+  mindmap: '<circle cx="5" cy="10" r="2"/><circle cx="15" cy="5" r="2"/><circle cx="15" cy="15" r="2"/><path d="M7 10h3M10 5v10M10 5h3M10 15h3"/>',
+  matrix: '<circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/>',
+  dashboard: '<path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/>'
+};
+const viewIcon = (id) => `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
+const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", mindmap: "Mapa mental", matrix: "Matriz", dashboard: "Dashboard" };
+const viewButtonInner = (id) => `${viewIcon(id)}<span class="view-label">${VIEW_LABELS[id] || ""}</span>`;
+const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="view-label">${VIEW_LABELS[id] || "Tabela"}</span><span class="chevron">▾</span>`;
+const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa mental", icon: "⌘" }];
+
 function viewModeAvailable(mode, tab = state.tab) {
   return !mode.tabs || mode.tabs.includes(tab);
 }
@@ -5479,7 +6464,7 @@ function renderActiveFilterBadges() {
     const label = col?.h || key;
     const selected = [...values];
     const sample = (cache[state.tab] || []).find((row) => String(row[key] ?? "") === selected[0]) || {};
-    const valueLabel = selected.length === 1
+    const valueLabel = values instanceof FilterRule ? values.label : selected.length === 1
       ? (selected[0] === "" ? "(em branco)" : col ? displayValue(sample, col, cache) : selected[0])
       : `${selected.length} selecionados`;
     return `<button class="filter-badge" data-key="${esc(key)}" title="Remover filtro de ${esc(label)}"><span>${esc(label)}: ${esc(valueLabel)}</span><span class="x">×</span></button>`;
@@ -5500,66 +6485,323 @@ function renderActiveFilterBadges() {
   };
 }
 
+// ---------- Filtros de coluna (lista, número e período) ----------
+// Todas as tabelas guardam o filtro da coluna como um Set de valores. Os
+// filtros de número (entre, maior, menor...) e de data (período com
+// calendário) usam FilterRule, que responde .size, .has() e iteração como um
+// Set — assim os pontos que aplicam e exibem os filtros continuam funcionando.
+const FILTER_BLANKS = new Set(["", "—", "-", "(em branco)", "(vazio)"]);
+const FILTER_MONTH_NAMES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const FILTER_WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"];
+const FILTER_NUMBER_OPS = [["between", "Entre"], ["gt", "Maior que"], ["gte", "Maior ou igual a"], ["lt", "Menor que"], ["lte", "Menor ou igual a"], ["eq", "Igual a"]];
+const FILTER_DATE_PRESETS = [["today", "Hoje"], ["this_week", "Esta semana"], ["last_week", "Semana passada"], ["this_month", "Este mês"], ["last_month", "Mês passado"], ["month", "Selecionar mês"], ["custom", "Período customizado"]];
+
+function filterNumberValue(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (FILTER_BLANKS.has(text)) return null;
+  let clean = text.replace(/[^\d,.\-]/g, "");
+  if (!/\d/.test(clean)) return null;
+  if (clean.includes(",")) clean = clean.replace(/\./g, "").replace(",", ".");
+  else if (/^-?\d{1,3}(\.\d{3})+$/.test(clean)) clean = clean.replace(/\./g, "");
+  const number = Number(clean);
+  return Number.isFinite(number) ? number : null;
+}
+
+// Data (AAAA-MM-DD) a partir de ISO ou dd/mm/aaaa; "" quando não é data.
+function filterDayValue(value) {
+  const text = String(value ?? "").trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+  match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (match) return `${match[3]}-${match[2]}-${match[1]}`;
+  return "";
+}
+const filterIsoDay = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const filterDateFromIso = (iso) => { const [year, month, day] = iso.split("-").map(Number); return new Date(year, month - 1, day); };
+const filterBrDay = (iso) => iso ? iso.split("-").reverse().join("/") : "";
+const filterNumberLabel = (number) => Number(number).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+
+function filterPresetRange(preset, base = new Date()) {
+  const today = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+  const shift = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  if (preset === "today") return [today, today];
+  if (preset === "this_week") { const start = shift(today, -today.getDay()); return [start, shift(start, 6)]; }
+  if (preset === "last_week") { const start = shift(today, -today.getDay() - 7); return [start, shift(start, 6)]; }
+  if (preset === "this_month") return [new Date(today.getFullYear(), today.getMonth(), 1), new Date(today.getFullYear(), today.getMonth() + 1, 0)];
+  if (preset === "last_month") return [new Date(today.getFullYear(), today.getMonth() - 1, 1), new Date(today.getFullYear(), today.getMonth(), 0)];
+  return null;
+}
+
+class FilterRule {
+  constructor(kind, data) { Object.assign(this, data, { kind }); }
+  get size() { return 1; }
+  has(value) {
+    if (this.kind === "range") {
+      const day = filterDayValue(value);
+      return Boolean(day) && day >= this.from && day <= this.to;
+    }
+    const number = filterNumberValue(value);
+    if (number == null) return false;
+    if (this.op === "between") return number >= Math.min(this.a, this.b) && number <= Math.max(this.a, this.b);
+    if (this.op === "gt") return number > this.a;
+    if (this.op === "gte") return number >= this.a;
+    if (this.op === "lt") return number < this.a;
+    if (this.op === "lte") return number <= this.a;
+    return number === this.a;
+  }
+  get label() {
+    if (this.kind === "range") return this.from === this.to ? filterBrDay(this.from) : `${filterBrDay(this.from)} – ${filterBrDay(this.to)}`;
+    if (this.op === "between") return `entre ${filterNumberLabel(this.a)} e ${filterNumberLabel(this.b)}`;
+    return `${{ gt: ">", gte: "≥", lt: "<", lte: "≤", eq: "=" }[this.op]} ${filterNumberLabel(this.a)}`;
+  }
+  *[Symbol.iterator]() { yield this.label; }
+}
+
+// Tipo da coluna: pela dica da coluna ou pelos próprios valores. Códigos
+// (CNPJ, CPF, telefone, CEP) continuam como lista.
+function filterColumnKind(values, key = "", hint = "") {
+  if (hint === "number" || hint === "date") return hint;
+  const filled = values.map((value) => String(value ?? "").trim()).filter((value) => !FILTER_BLANKS.has(value));
+  if (!filled.length) return "list";
+  if (filled.every((value) => /^(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4})([ T].*)?$/.test(value))) return "date";
+  if (/(tax_?id|cnpj|cpf|phone|tel|zip|cep|code|codigo|document|_id$|^id$)/i.test(key)) return "list";
+  const numeric = filled.every((value) => /^(R\$\s*)?-?(\d{1,3}(\.\d{3})+|\d+)([.,]\d+)?\s*%?$/.test(value) && value.replace(/\D/g, "").length <= 12);
+  return numeric ? "number" : "list";
+}
+
+// Seletor de período (calendários de início e fim + atalhos), no padrão dos
+// filtros de data de mercado.
+function mountDateRangeFilter(panel, { title, current, onApply }) {
+  const rule = current instanceof FilterRule && current.kind === "range" ? current : null;
+  const todayIso = filterIsoDay(new Date());
+  const range = { from: rule?.from || "", to: rule?.to || "" };
+  let preset = "custom";
+  const startView = filterDateFromIso(range.from || todayIso);
+  const views = [new Date(startView.getFullYear(), startView.getMonth() - (range.from ? 0 : 1), 1), null];
+  const endView = range.to ? filterDateFromIso(range.to) : null;
+  views[1] = endView && (endView.getFullYear() * 12 + endView.getMonth()) > (views[0].getFullYear() * 12 + views[0].getMonth())
+    ? new Date(endView.getFullYear(), endView.getMonth(), 1)
+    : new Date(views[0].getFullYear(), views[0].getMonth() + 1, 1);
+  let pickYear = views[0].getFullYear();
+  panel.classList.add("filter-dd-date");
+  panel.style.maxHeight = "none";
+  panel.innerHTML = `<div class="dd-head"><span>${esc(title)}</span><span>Período</span></div>
+    <div class="dr">
+      <div class="dr-main">
+        <div class="dr-cals">
+          ${[["from", "Início do período"], ["to", "Fim do período"]].map(([side, label], index) => `<div class="dr-col">
+            <label>${label}</label><input class="dr-input" data-side="${side}" inputmode="numeric" placeholder="dd/mm/aaaa" maxlength="10">
+            <div class="dr-cal" data-cal="${index}"></div>
+          </div>`).join("")}
+        </div>
+        <div class="dr-monthpick" hidden></div>
+      </div>
+      <div class="dr-presets">${FILTER_DATE_PRESETS.map(([id, label]) => `<button class="dr-preset" type="button" data-preset="${id}">${label}</button>`).join("")}</div>
+    </div>
+    <div class="dd-foot dr-foot"><button class="btn danger dd-clear" type="button">Limpar</button><span></span><button class="btn dr-cancel" type="button">Cancelar</button><button class="btn primary dd-apply" type="button">Filtrar</button></div>`;
+  const inputs = { from: panel.querySelector('[data-side="from"]'), to: panel.querySelector('[data-side="to"]') };
+  const calendarHtml = (view, index) => {
+    const year = view.getFullYear();
+    const month = view.getMonth();
+    const first = new Date(year, month, 1);
+    const start = new Date(year, month, 1 - first.getDay());
+    const days = Array.from({ length: 42 }, (_, offset) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + offset));
+    const cells = days.map((date) => {
+      const iso = filterIsoDay(date);
+      const to = range.to || range.from;
+      const cls = [
+        "dr-day",
+        date.getMonth() !== month ? "out" : "",
+        iso === todayIso ? "today" : "",
+        range.from && iso >= range.from && iso <= to ? "in" : "",
+        iso === range.from ? "start" : "",
+        iso === to && range.from ? "end" : ""
+      ].filter(Boolean).join(" ");
+      return `<button class="${cls}" type="button" data-day="${iso}">${date.getDate()}</button>`;
+    }).join("");
+    return `<div class="dr-cal-head"><button class="dr-nav" type="button" data-nav="${index}" data-step="-1" aria-label="Mês anterior">«</button><b>${FILTER_MONTH_NAMES[month]} ${year}</b><button class="dr-nav" type="button" data-nav="${index}" data-step="1" aria-label="Próximo mês">»</button></div>
+      <div class="dr-grid">${FILTER_WEEKDAYS.map((day) => `<span>${day}</span>`).join("")}${cells}</div>`;
+  };
+  const monthPickHtml = () => `<div class="dr-cal-head"><button class="dr-nav" type="button" data-year-step="-1" aria-label="Ano anterior">«</button><b>${pickYear}</b><button class="dr-nav" type="button" data-year-step="1" aria-label="Próximo ano">»</button></div>
+    <div class="dr-months">${FILTER_MONTH_NAMES.map((name, index) => {
+      const from = filterIsoDay(new Date(pickYear, index, 1));
+      const on = range.from === from && range.to === filterIsoDay(new Date(pickYear, index + 1, 0));
+      return `<button class="dr-month${on ? " on" : ""}" type="button" data-month="${index}">${name.slice(0, 3)}</button>`;
+    }).join("")}</div>`;
+  const draw = () => {
+    inputs.from.value = filterBrDay(range.from);
+    inputs.to.value = filterBrDay(range.to);
+    panel.querySelectorAll(".dr-cal").forEach((calendar, index) => { calendar.innerHTML = calendarHtml(views[index], index); });
+    const monthMode = preset === "month";
+    panel.querySelector(".dr-cals").hidden = monthMode;
+    const picker = panel.querySelector(".dr-monthpick");
+    picker.hidden = !monthMode;
+    if (monthMode) picker.innerHTML = monthPickHtml();
+    panel.querySelectorAll("[data-preset]").forEach((button) => button.classList.toggle("on", button.dataset.preset === preset));
+  };
+  const showRange = () => {
+    if (!range.from) return;
+    const from = filterDateFromIso(range.from);
+    views[0] = new Date(from.getFullYear(), from.getMonth(), 1);
+    const to = filterDateFromIso(range.to || range.from);
+    views[1] = (to.getFullYear() * 12 + to.getMonth()) > (from.getFullYear() * 12 + from.getMonth())
+      ? new Date(to.getFullYear(), to.getMonth(), 1)
+      : new Date(from.getFullYear(), from.getMonth() + 1, 1);
+  };
+  const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
+  panel.addEventListener("mousedown", (event) => {
+    const day = event.target.closest("[data-day]");
+    const nav = event.target.closest("[data-nav]");
+    const presetButton = event.target.closest("[data-preset]");
+    const monthButton = event.target.closest("[data-month]");
+    const yearStep = event.target.closest("[data-year-step]");
+    if (day) {
+      stop(event);
+      const iso = day.dataset.day;
+      preset = "custom";
+      if (!range.from || range.to) { range.from = iso; range.to = ""; }
+      else if (iso < range.from) range.from = iso;
+      else range.to = iso;
+      draw();
+    } else if (nav) {
+      stop(event);
+      const index = Number(nav.dataset.nav);
+      views[index] = new Date(views[index].getFullYear(), views[index].getMonth() + Number(nav.dataset.step), 1);
+      draw();
+    } else if (presetButton) {
+      stop(event);
+      preset = presetButton.dataset.preset;
+      const preset_range = filterPresetRange(preset);
+      if (preset_range) { range.from = filterIsoDay(preset_range[0]); range.to = filterIsoDay(preset_range[1]); showRange(); }
+      if (preset === "month" && range.from) pickYear = filterDateFromIso(range.from).getFullYear();
+      draw();
+    } else if (monthButton) {
+      stop(event);
+      const index = Number(monthButton.dataset.month);
+      range.from = filterIsoDay(new Date(pickYear, index, 1));
+      range.to = filterIsoDay(new Date(pickYear, index + 1, 0));
+      showRange();
+      draw();
+    } else if (yearStep) {
+      stop(event);
+      pickYear += Number(yearStep.dataset.yearStep);
+      draw();
+    }
+  });
+  Object.entries(inputs).forEach(([side, input]) => {
+    input.addEventListener("input", () => {
+      const digits = input.value.replace(/\D/g, "").slice(0, 8);
+      input.value = [digits.slice(0, 2), digits.slice(2, 4), digits.slice(4)].filter(Boolean).join("/");
+    });
+    input.addEventListener("change", () => {
+      const iso = filterDayValue(input.value);
+      if (input.value && !iso) { toast("Use a data no formato dd/mm/aaaa.", true); draw(); return; }
+      range[side] = iso;
+      if (range.from && range.to && range.to < range.from) [range.from, range.to] = [range.to, range.from];
+      preset = "custom";
+      showRange();
+      draw();
+    });
+  });
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { stop(event); handler(); });
+  on(".dd-clear", () => onApply(null));
+  on(".dr-cancel", () => panel.remove());
+  on(".dd-apply", () => {
+    ["from", "to"].forEach((side) => { const iso = filterDayValue(inputs[side].value); if (iso) range[side] = iso; });
+    if (!range.from) { toast("Selecione o início do período.", true); return; }
+    const to = range.to || range.from;
+    onApply(new FilterRule("range", { from: range.from <= to ? range.from : to, to: range.from <= to ? to : range.from }));
+  });
+  draw();
+  const rect = panel.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) panel.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+  if (rect.bottom > window.innerHeight - 8) panel.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+}
+
+// Monta o conteúdo do painel de filtro (cabeçalho, corpo e rodapé) e chama
+// onApply com o novo filtro (Set, FilterRule ou null para limpar).
+function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", labelFor = (value) => (value === "" ? "(em branco)" : value), current = null, onApply }) {
+  const kind = filterColumnKind(values, key, hint);
+  if (kind === "date") { mountDateRangeFilter(panel, { title, current, onApply }); return; }
+  const selected = new Set(current instanceof FilterRule ? [] : current || []);
+  const rule = current instanceof FilterRule && current.kind === "number" ? current : null;
+  const numberRule = kind === "number" ? `<div class="dd-rule">
+      <select class="dd-rule-op"><option value="">Condição…</option>${FILTER_NUMBER_OPS.map(([id, label]) => `<option value="${id}"${rule?.op === id ? " selected" : ""}>${label}</option>`).join("")}</select>
+      <div class="dd-rule-inputs"><input class="dd-rule-a" type="number" step="any" placeholder="Valor" value="${rule ? esc(String(rule.a)) : ""}"><span class="dd-rule-and">e</span><input class="dd-rule-b" type="number" step="any" placeholder="Valor" value="${rule?.op === "between" ? esc(String(rule.b)) : ""}"></div>
+    </div>` : "";
+  panel.innerHTML = `<div class="dd-head"><span>${esc(title)}</span><span>${values.length}</span></div>${numberRule}<div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
+    <div class="dd-foot"><button class="btn dd-all" type="button">Todos</button><button class="btn danger dd-clear" type="button">Limpar</button><button class="btn primary dd-apply" type="button">Aplicar</button></div>`;
+  const list = panel.querySelector(".dd-list");
+  const search = panel.querySelector(".dd-search input");
+  const op = panel.querySelector(".dd-rule-op");
+  const syncRuleInputs = () => {
+    if (!op) return;
+    panel.querySelector(".dd-rule-inputs").hidden = !op.value;
+    panel.querySelector(".dd-rule-and").hidden = op.value !== "between";
+    panel.querySelector(".dd-rule-b").hidden = op.value !== "between";
+  };
+  const draw = () => {
+    const query = String(search?.value || "").trim().toLocaleLowerCase("pt-BR");
+    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query) || labelFor(value).toLocaleLowerCase("pt-BR").includes(query))
+      .map((value) => `<div class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(labelFor(value))}</span></div>`).join("");
+    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("mousedown", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const value = item.dataset.value;
+      if (selected.has(value)) selected.delete(value); else selected.add(value);
+      draw();
+    }));
+  };
+  draw();
+  syncRuleInputs();
+  op?.addEventListener("change", syncRuleInputs);
+  search?.addEventListener("input", draw);
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); handler(); });
+  on(".dd-all", () => {
+    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
+    draw();
+  });
+  on(".dd-clear", () => onApply(null));
+  on(".dd-apply", () => {
+    if (op?.value) {
+      const a = Number(panel.querySelector(".dd-rule-a").value);
+      const b = Number(panel.querySelector(".dd-rule-b").value);
+      const hasA = panel.querySelector(".dd-rule-a").value !== "" && Number.isFinite(a);
+      const hasB = panel.querySelector(".dd-rule-b").value !== "" && Number.isFinite(b);
+      if (!hasA || (op.value === "between" && !hasB)) { toast("Informe o valor da condição.", true); return; }
+      onApply(new FilterRule("number", { op: op.value, a, b: op.value === "between" ? b : null }));
+      return;
+    }
+    onApply(selected.size && selected.size < values.length ? new Set(selected) : null);
+  });
+  (op && rule ? op : search)?.focus();
+}
+
 function openColumnFilter(th, key) {
   document.getElementById("filter-dd")?.remove();
   const col = columns(state.tab, cache).find((item) => item.k === key);
   const allRows = cache[state.tab] || [];
   const values = [...new Set(allRows.map((r) => String(r[key] ?? "")))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   const filters = tabFilters();
-  let temp = new Set(filters[key] || []);
   const rect = th.getBoundingClientRect();
   const dd = document.createElement("div");
   dd.id = "filter-dd";
   dd.className = "filter-dd";
   dd.style.left = Math.min(rect.left, window.innerWidth - 330) + "px";
   dd.style.top = Math.min(rect.bottom + 4, window.innerHeight - 360) + "px";
-  dd.innerHTML = `
-    <div class="dd-head"><span>▼ ${esc(col?.h || key)}</span><span>${values.length} valores</span></div>
-    <div class="dd-search"><input id="filter-dd-search" placeholder="Buscar..."></div>
-    <div class="dd-list" id="filter-dd-list"></div>
-    <div class="dd-foot">
-      <button class="btn" id="filter-dd-all">Todos</button>
-      <button class="btn primary" id="filter-dd-ok">Aplicar</button>
-      <button class="btn danger" id="filter-dd-clear">Limpar</button>
-    </div>`;
   document.body.appendChild(dd);
-
-  const list = dd.querySelector("#filter-dd-list");
-  const input = dd.querySelector("#filter-dd-search");
   const labelFor = (v) => {
     const sample = allRows.find((r) => String(r[key] ?? "") === v) || {};
     return v === "" ? "(em branco)" : displayValue(sample, col, cache);
   };
-  const draw = () => {
-    const q = input.value.trim().toLowerCase();
-    list.innerHTML = values.filter((v) => !q || v.toLowerCase().includes(q) || labelFor(v).toLowerCase().includes(q))
-      .map((v) => `<div class="dd-item${temp.has(v) ? " on" : ""}" data-v="${esc(v)}">
-        <span class="dd-check">${temp.has(v) ? "✓" : ""}</span><span>${esc(labelFor(v))}</span>
-      </div>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const v = item.dataset.v;
-      if (temp.has(v)) temp.delete(v); else temp.add(v);
-      draw();
-    }));
-  };
-  draw();
-  input.addEventListener("input", draw);
-  dd.querySelector("#filter-dd-all").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    temp = temp.size === values.length ? new Set() : new Set(values);
-    draw();
-  });
-  dd.querySelector("#filter-dd-clear").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    delete filters[key]; if (state.pages[state.tab]) state.pages[state.tab] = 1; closeFloaters(); render();
-  });
-  dd.querySelector("#filter-dd-ok").addEventListener("mousedown", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    if (temp.size === 0 || temp.size === values.length) delete filters[key];
-    else filters[key] = new Set(temp);
-    if (state.pages[state.tab]) state.pages[state.tab] = 1;
-    closeFloaters(); render();
+  mountColumnFilterPanel(dd, {
+    title: `▼ ${col?.h || key}`, values, key, labelFor, current: filters[key],
+    hint: col?.num ? "number" : col?.fmt === dt ? "date" : "",
+    onApply: (rule) => {
+      if (rule) filters[key] = rule; else delete filters[key];
+      if (state.pages[state.tab]) state.pages[state.tab] = 1;
+      closeFloaters(); render();
+    }
   });
   setTimeout(() => {
     const outside = (e) => {
@@ -5570,7 +6812,6 @@ function openColumnFilter(th, key) {
     };
     document.addEventListener("mousedown", outside);
   }, 80);
-  input.focus();
 }
 
 function openColumnManager() {
@@ -5834,25 +7075,667 @@ function exportTableCSV(activeOnly) {
   toast(`CSV exportado: ${rows.length} linhas.`);
 }
 
+// ---------- Importação por planilha ----------
+// Cada módulo principal importa as próprias colunas (CSV, XLS ou XLSX) e
+// oferece uma planilha modelo com as colunas e os valores aceitos.
+const importNorm = (value) => String(value ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+const importDigits = (value) => String(value ?? "").replace(/\D/g, "");
+const importSplit = (value) => String(value ?? "").split(/[;\n]|,(?!\d)/).map((item) => item.trim()).filter(Boolean);
+
+function importDateValue(value) {
+  // Datas do Excel podem chegar alguns segundos antes da meia-noite; arredonda para o dia.
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return filterIsoDay(new Date(value.getTime() + 12 * 3600000));
+  if (typeof value === "number" && value > 20000 && value < 80000) return new Date(Math.round((value - 25569) * 86400000)).toISOString().slice(0, 10);
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  const short = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (short) {
+    const year = short[3].length === 2 ? `20${short[3]}` : short[3];
+    return `${year}-${short[2].padStart(2, "0")}-${short[1].padStart(2, "0")}`;
+  }
+  return filterDayValue(text) || undefined;
+}
+
+function importMatchOption(options, value) {
+  const wanted = importNorm(value);
+  if (!wanted) return null;
+  return options.find((option) => importNorm(option.value) === wanted || importNorm(option.label) === wanted) || undefined;
+}
+
+function importCompanyMatch(value, c = cache) {
+  const digits = importDigits(value);
+  const wanted = importNorm(value);
+  return (c.companies || []).find((company) => (digits.length === 14 && importDigits(company.tax_id) === digits)
+    || importNorm(company.trade_name) === wanted || importNorm(company.legal_name) === wanted);
+}
+
+// Especificação de importação de cada módulo.
+function importSpec(tab, c = cache) {
+  if (String(tab).startsWith("reg:")) return registrationImportSpec(tab.slice(4), c);
+  const opts = (values) => values.map((value) => ({ value, label: value }));
+  if (tab === "contacts") return {
+    title: "Pessoas",
+    columns: [
+      { key: "name", header: "Nome completo", req: true, note: "Texto" },
+      { key: "phone", header: "Telefone/celular", note: "Vários separados por ;" },
+      { key: "email", header: "Email(s)", note: "Vários separados por ;" },
+      { key: "contact_type", header: "Tipo de contato", type: "multi", options: () => opts(CONTACT_TYPE_OPTIONS) },
+      { key: "channel", header: "Canal", type: "select", options: () => opts(CONTACT_CHANNEL_OPTIONS) },
+      { key: "job_title", header: "Cargo" },
+      { key: "department", header: "Departamento" },
+      { key: "company_ids", header: "Empresa(s)", type: "companies", note: "CNPJ ou nome da empresa já cadastrada; vários separados por ;" },
+      { key: "linkedin", header: "LinkedIn" }, { key: "facebook", header: "Facebook" }, { key: "instagram", header: "Instagram" },
+      { key: "reddit", header: "Reddit" }, { key: "whatsapp", header: "WhatsApp" }, { key: "youtube", header: "YouTube" },
+      { key: "groups", header: "Grupos/comunidades", type: "free", note: "Vários separados por ;" },
+      { key: "tags", header: "Tags", type: "free", note: "Vários separados por ;" },
+      { key: "notes", header: "Observações" },
+      { key: "birth_date", header: "Data de nascimento", type: "date" },
+      { key: "cpf", header: "CPF" }
+    ],
+    existing: (body) => {
+      const name = importNorm(body.name);
+      const phone = importDigits(body.phone);
+      const emails = normalizeEmailList(body.email || "").toLowerCase().split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+      return (c.contacts || []).find((contact) => importNorm(contact.name) === name && (
+        (phone && importDigits(contact.phone).includes(phone))
+        || (emails.length && emails.some((email) => normalizeEmailList(contact.email || "").toLowerCase().includes(email)))));
+    },
+    async save(body, existing) {
+      const companyIds = normalizeIdList(body.company_ids);
+      const payload = { ...body };
+      delete payload.company_ids;
+      payload.contact_type = normalizeTextList(payload.contact_type).join("; ") || null;
+      payload.groups = normalizeTextList(payload.groups).join("; ") || null;
+      payload.tags = normalizeTextList(payload.tags);
+      if (payload.phone) payload.phone = normalizePhoneList(payload.phone);
+      if (payload.email) payload.email = normalizeEmailList(payload.email);
+      payload.company_id = companyIds[0] || existing?.company_id || null;
+      const saved = existing ? await updateRow("contacts", existing.id, payload) : await createRow("contacts", payload);
+      if (companyIds.length) await replaceContactCompanyLinks({ contactId: saved.id, relatedIds: [...new Set([...normalizeIdList(existing?.company_ids), ...companyIds])] });
+      return saved;
+    }
+  };
+  if (tab === "companies") return {
+    title: "Empresas",
+    intro: "Informe só o CNPJ e os campos editáveis. A empresa é cadastrada na hora com a tag Desatualizada e os dados da Receita são preenchidos automaticamente em segundo plano.",
+    columns: [
+      { key: "tax_id", header: "CNPJ", req: true, note: "14 dígitos, com ou sem máscara" },
+      { key: "contact_type", header: "Tipo de contato", type: "multi", options: () => opts(COMPANY_CONTACT_TYPE_OPTIONS) },
+      { key: "municipal_registration", header: "Inscrição municipal" },
+      { key: "notes", header: "Observações" }
+    ],
+    validate: (body) => importDigits(body.tax_id).length === 14 ? "" : "CNPJ precisa ter 14 dígitos",
+    existing: (body) => (c.companies || []).find((company) => importDigits(company.tax_id) === importDigits(body.tax_id)),
+    async save(body, existing) {
+      const types = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type));
+      if (companyHasDelivery(body.tax_id) && !types.includes("Cliente")) types.unshift("Cliente");
+      const editable = { contact_type: types.join("; ") || existing?.contact_type || null };
+      if (body.municipal_registration) editable.municipal_registration = body.municipal_registration;
+      if (body.notes) editable.notes = body.notes;
+      let saved;
+      if (existing) saved = await updateRow("companies", existing.tax_id, editable);
+      else {
+        const taxId = importDigits(body.tax_id).replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+        saved = await createRow("companies", { tax_id: taxId, ...editable, registry_pending: true, registry_error: null });
+      }
+      if (types.length) await syncCompanyContactTypes(saved.tax_id, existing?.contact_ids || [], types);
+      return saved;
+    }
+  };
+  if (tab === "deals") return {
+    title: "Negócios",
+    columns: [
+      { key: "title", header: "Título", req: true },
+      { key: "company_id", header: "Empresa", type: "company", note: "CNPJ ou nome; vazio = não possui empresa" },
+      { key: "contact_id", header: "Contato", type: "contact", note: "Nome ou e-mail da pessoa cadastrada" },
+      { key: "product_id", header: "Produto", type: "select", options: () => refOptions("products", c) },
+      { key: "pipeline_id", header: "Pipeline", type: "select", options: () => (c.pipelines || []).map((pipeline) => ({ value: pipeline.id, label: pipeline.name })), note: "Vazio usa o primeiro pipeline" },
+      { key: "stage", header: "Etapa", note: "Etapa do pipeline" },
+      { key: "status", header: "Status", type: "select", options: () => STATUSES.map((status) => ({ value: status, label: STATUS_LABEL[status] })), note: "Vazio = Aberto" },
+      { key: "lead_source", header: "Origem do lead", type: "select", options: () => opts(SOURCES) },
+      { key: "amount", header: "Valor (R$)", type: "number" },
+      { key: "expected_close_date", header: "Previsão", type: "date" }
+    ],
+    validate: (body) => {
+      const pipeline = (c.pipelines || []).find((item) => item.id === body.pipeline_id) || (c.pipelines || [])[0];
+      if (!pipeline) return "Cadastre um pipeline antes de importar";
+      body.pipeline_id = pipeline.id;
+      if (body.stage) {
+        const stage = (pipeline.stages || []).find((item) => importNorm(item) === importNorm(body.stage));
+        if (!stage) return `Etapa "${body.stage}" não existe no pipeline ${pipeline.name}`;
+        body.stage = stage;
+      } else body.stage = (pipeline.stages || [])[0] || null;
+      body.status = body.status || "open";
+      body.no_company = !body.company_id;
+      return "";
+    },
+    async save(body) {
+      const saved = await createRow("deals", body);
+      if (body.status === "won" && body.company_id) await createProjectFromDeal({ id: saved.id, company_id: body.company_id, contact_id: body.contact_id, product_id: body.product_id, title: body.title });
+      return saved;
+    }
+  };
+  if (tab === "projects") return {
+    title: "Entregas",
+    columns: [
+      { key: "company_id", header: "Empresa", type: "company", req: true, note: "CNPJ ou nome da empresa já cadastrada" },
+      { key: "client_name", header: "Cliente", req: true },
+      { key: "product_id", header: "Produto", type: "select", req: true, options: () => refOptions("products", c) },
+      { key: "delivery_type", header: "Tipo", type: "select", options: () => opts(["Projeto", "Imersão", "Treinamento", "Consultoria", "Evento", "Serviço recorrente", "Outro"]) },
+      { key: "group_name", header: "Grupo" },
+      { key: "status", header: "Status", type: "select", options: () => PROJECT_STATUSES.map((status) => ({ value: status, label: PROJECT_STATUS_LABEL[status] })), note: "Vazio = Ativo" },
+      { key: "substatus", header: "Substatus", type: "select", options: () => PROJECT_SUBSTATUS.map((status) => ({ value: status, label: PROJECT_SUBSTATUS_LABEL[status] })) },
+      { key: "start_date", header: "Início", type: "date" },
+      { key: "end_date", header: "Fim", type: "date", note: "Vazio usa a duração do produto" },
+      { key: "erp_platform", header: "ERP", type: "select", options: () => deliveryChannelOptions("erp") },
+      { key: "marketplace_channels", header: "Marketplaces", type: "multi", options: () => deliveryChannelOptions("marketplaces") },
+      { key: "store_platforms", header: "Lojas", type: "multi", options: () => deliveryChannelOptions("stores") },
+      { key: "freight_channels", header: "Frete", type: "multi", options: () => deliveryChannelOptions("freight") },
+      { key: "company_setup", header: "Situação da empresa", type: "select", options: () => opts(DELIVERY_COMPANY_SETUP_OPTIONS) },
+      { key: "financial_accounts", header: "Contas financeiras", type: "multi", options: () => deliveryChannelOptions("financial") }
+    ],
+    validate: (body) => {
+      body.status = body.status || "active";
+      if (body.status === "active") body.substatus = null;
+      if (body.status === "closed") body.substatus = "closed";
+      if (body.status === "inactive" && !body.substatus) return "Entrega inativa precisa de substatus (Suporte ou Encerrado)";
+      body.delivery_type = body.delivery_type || deliveryTypeForProduct(c.productById?.[body.product_id]);
+      body.start_date = body.start_date || filterIsoDay(new Date());
+      const product = c.productById?.[body.product_id];
+      if (!body.end_date && product?.duration_days) body.end_date = addDaysRoundedToMonthEnd(body.start_date, product.duration_days);
+      ["marketplace_channels", "store_platforms", "freight_channels", "financial_accounts"].forEach((key) => { body[key] = normalizeTextList(body[key]); });
+      const auto = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
+      body.freight_channels = normalizeTextList([...body.freight_channels, ...auto.freight]);
+      body.financial_accounts = normalizeTextList([...body.financial_accounts, ...auto.financial]);
+      body.name = deliveryGeneratedName(body.client_name, body.product_id);
+      return "";
+    },
+    async save(body) {
+      const saved = await createRow("projects", { ...body, source: "import" });
+      await provisionDeliveryResources(saved);
+      await ensureCompanyClientType(body.company_id);
+      return saved;
+    }
+  };
+  if (tab === "activities") return {
+    title: "Tarefas",
+    intro: "Cria tarefas do dia a dia em entregas existentes. As tarefas dos produtos continuam vindo do cadastro do produto.",
+    columns: [
+      { key: "project_id", header: "Entrega", type: "project", req: true, note: "Nome exato da entrega (EC365 | Cliente | Produto)" },
+      { key: "title", header: "Tarefa", req: true },
+      { key: "priority", header: "Prioridade", type: "select", options: () => PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Normal" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" }, { key: "type", header: "Tipo" },
+      { key: "information", header: "Informação" },
+      { key: "planned_start_date", header: "Início previsto", type: "date" },
+      { key: "planned_end_date", header: "Término previsto", type: "date" }
+    ],
+    validate: (body) => {
+      if (body.planned_start_date && body.planned_end_date && body.planned_end_date < body.planned_start_date) return "Término previsto antes do início";
+      return "";
+    },
+    async save(body) {
+      const tasks = loadProjectTasks();
+      const now = new Date().toISOString();
+      const draft = {
+        id: crypto.randomUUID(), parent_activity_id: null, ...body,
+        priority: body.priority || "normal", recurrence: "once", consider_business_days: false,
+        dependency_ids: [], assignee_ids: [], assignee_job_titles: [], document_ids: [], custom_table_ids: [], checklist: [],
+        due_date: body.planned_end_date || null, schedule_manual: Boolean(body.planned_start_date), status: "todo",
+        sort_order: Math.max(-1, ...tasks.filter((task) => task.project_id === body.project_id && !task.parent_activity_id).map((task) => Number(task.sort_order || 0))) + 1,
+        created_at: now, updated_at: now
+      };
+      const saved = isLive() ? await createRow("activities", draft) : draft;
+      tasks.push(saved);
+      if (isLive()) cache.activityRecords = tasks; else saveProjectTasks(tasks);
+      return saved;
+    }
+  };
+  return null;
+}
+
+// Importação dos submódulos de Cadastros.
+function importProductIds(value, c = cache) {
+  const ids = [];
+  for (const item of importSplit(value)) {
+    const product = (c.products || []).find((entry) => importNorm(entry.name) === importNorm(item));
+    if (!product) return { error: `Produto "${item}" não encontrado` };
+    ids.push(product.id);
+  }
+  return { value: ids };
+}
+
+function registrationImportSpec(section, c = cache) {
+  const opts = (values) => values.map((value) => ({ value, label: value }));
+  const products = { key: "product_ids", header: "Produto(s)", type: "products", req: true, note: "Nome do produto cadastrado; vários separados por ;" };
+  const initialPipelines = (c.pipelines || []).length;
+  const nextOrder = (rows, productId) => Math.max(-1, ...rows.filter((item) => item.product_id === productId).map((item) => Number(item.sort_order || 0))) + 1;
+  if (section === "products") return {
+    title: "Produtos",
+    columns: [
+      { key: "category", header: "Categoria" },
+      { key: "name", header: "Produto", req: true },
+      { key: "description", header: "Descrição" },
+      { key: "price", header: "Preço à vista (R$)", type: "number" },
+      { key: "price_installment", header: "Preço parcelado (R$)", type: "number" },
+      { key: "sales_page", header: "Página de vendas" },
+      { key: "duration_days", header: "Duração da entrega (dias)", type: "number" },
+      { key: "status", header: "Status", type: "select", options: () => opts(["Ativo", "Pausado", "Inativo"]), note: "Vazio = Ativo" }
+    ],
+    existing: (body) => (c.products || []).find((item) => importNorm(item.name) === importNorm(body.name)),
+    async save(body, existing) {
+      const payload = { ...body, status: body.status || existing?.status || "Ativo" };
+      return existing ? updateRow("products", existing.id, payload) : createRow("products", payload);
+    }
+  };
+  if (section === "pipelines") return {
+    title: "Pipelines",
+    columns: [
+      { key: "name", header: "Nome", req: true },
+      { key: "stages", header: "Etapas", type: "free", req: true, note: "Na ordem, separadas por ;. Ganho e Perdido já existem." }
+    ],
+    existing: (body) => (c.pipelines || []).find((item) => importNorm(item.name) === importNorm(body.name)),
+    validate: (body) => {
+      body.stages = body.stages.filter((stage) => !["ganho", "perdido"].includes(importNorm(stage)));
+      return body.stages.length ? "" : "Informe ao menos uma etapa";
+    },
+    async save(body, existing, context) {
+      context.pipelinesCreated = context.pipelinesCreated || 0;
+      if (!existing && initialPipelines + context.pipelinesCreated >= 5) throw new Error("Limite de cinco pipelines atingido");
+      if (existing) return updateRow("pipelines", existing.id, { stages: body.stages });
+      context.pipelinesCreated += 1;
+      return createRow("pipelines", body);
+    }
+  };
+  if (section === "users") return {
+    title: "Usuários",
+    adminOnly: true,
+    intro: "Usuários novos recebem uma senha gerada; ao final a lista de acessos é exibida para copiar. Permissões seguem o padrão do perfil.",
+    columns: [
+      { key: "full_name", header: "Nome", req: true },
+      { key: "nickname", header: "Apelido" },
+      { key: "email", header: "E-mail", req: true },
+      { key: "phone", header: "Telefone" },
+      { key: "role", header: "Perfil", type: "select", options: () => Object.entries(ROLE_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = Colaborador" },
+      { key: "function_name", header: "Função" },
+      { key: "job_title", header: "Cargo" },
+      { key: "status", header: "Status", type: "select", options: () => [{ value: "active", label: "Ativo" }, { value: "inactive", label: "Inativo" }], note: "Vazio = Ativo" }
+    ],
+    validate: (body) => { body.email = String(body.email || "").trim().toLowerCase(); return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.email) ? "" : "E-mail inválido"; },
+    existing: (body) => (c.users || []).find((item) => String(item.email || "").toLowerCase() === body.email),
+    async save(body, existing, context) {
+      const role = body.role || normalizedProfileRole(existing?.role) || "collaborator";
+      const payload = {
+        full_name: body.full_name, nickname: body.nickname || existing?.nickname || null, email: body.email,
+        phone: body.phone || existing?.phone || null, role, company_ids: normalizeTextList(existing?.company_ids),
+        function_name: body.function_name || existing?.function_name || null, job_title: body.job_title || existing?.job_title || null,
+        status: body.status || existing?.status || "active",
+        permissions: role === "admin" ? {} : existing ? normalizeUserPermissions(existing.permissions) : defaultPermissionsForRole(role)
+      };
+      const password = existing?.auth_user_id ? "" : generateStrongPassword();
+      if (isLive()) {
+        const result = await callUserAdmin("save-user", { profile_id: existing?.id || null, ...payload, ...(password ? { password } : {}) });
+        if (password) context.credentials.push({ name: payload.full_name, email: payload.email, password });
+        return fromRemoteRow("users", result.profile);
+      }
+      const saved = existing ? await updateRow("users", existing.id, payload) : await createRow("users", { ...payload, auth_user_id: crypto.randomUUID() });
+      if (password) context.credentials.push({ name: payload.full_name, email: payload.email, password });
+      return saved;
+    }
+  };
+  if (section === "activities") return {
+    title: "Tarefas (modelos)",
+    intro: "Cada linha cria a tarefa em todos os produtos informados. Sem o nome da tarefa, o nome usa a estrutura (exige Categoria, Canal, Módulo e Tipo).",
+    columns: [
+      products,
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" },
+      { key: "activity", header: "Tarefa", note: "Vazio = usar estrutura" },
+      { key: "type", header: "Tipo" },
+      { key: "priority", header: "Prioridade", type: "select", options: () => PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Normal" },
+      { key: "recurrence", header: "Recorrência", type: "select", options: () => RECURRENCE_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Única" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" },
+      { key: "start_after_days", header: "Iniciar após dependência (dias)", type: "number" },
+      { key: "consider_business_days", header: "Dias úteis", type: "select", options: () => [{ value: "sim", label: "Sim" }, { value: "nao", label: "Não" }] },
+      { key: "information", header: "Informação" }
+    ],
+    validate: (body) => !body.activity && !["category", "channel", "module", "type"].every((key) => body[key]) ? "Informe a Tarefa ou Categoria, Canal, Módulo e Tipo" : "",
+    async save(body) {
+      const rows = loadProductActivities();
+      const groupId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, template_group_id: groupId, parent_template_id: null,
+          activity: body.activity || "", category: body.category || "", channel: body.channel || "", module: body.module || "",
+          submodule: body.submodule || "", type: body.type || "", group: "", subgroup: "", sector: "", subsector: "",
+          priority: body.priority || "normal", recurrence: body.recurrence || "once",
+          target_days: body.target_days ?? null, start_after_days: body.start_after_days ?? null,
+          consider_business_days: body.consider_business_days === "sim", information: body.information || "",
+          document_ids: [], custom_table_ids: [], checklist: [], default_owner_id: null, default_assignee_ids: [], default_assignee_job_titles: [],
+          assign_to_client: false, depends_on_template_id: null, dependency_template_ids: [], objective_template_id: null,
+          sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productActivities", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productActivities = rows; else saveProductActivities(rows);
+      return saved;
+    }
+  };
+  if (section === "goals") return {
+    title: "Metas (modelos)",
+    columns: [
+      products,
+      { key: "name", header: "Meta", req: true },
+      { key: "metric", header: "Indicador", req: true },
+      { key: "comparison", header: "Comparação", type: "select", options: () => Object.entries(GOAL_COMPARISON_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = No mínimo" },
+      { key: "target_value", header: "Valor-alvo", type: "number", req: true },
+      { key: "unit", header: "Unidade" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "notes", header: "Observações" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" }
+    ],
+    async save(body) {
+      const rows = loadProductGoals();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, name: body.name, metric: body.metric, comparison: body.comparison || "at_least",
+          target_value: Number(body.target_value), unit: body.unit || "", comments: "", category: body.category || "", channel: body.channel || "",
+          notes: body.notes || "", target_days: body.target_days ?? null, default_owner_id: null, default_assignee_ids: [], assign_to_client: false,
+          dependency_goal_template_ids: [], dependency_activity_template_ids: [], sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productGoals", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productGoals = rows; else saveProductGoals(rows);
+      return saved;
+    }
+  };
+  if (section === "objectives") return {
+    title: "Objetivos (modelos)",
+    columns: [
+      products,
+      { key: "name", header: "Objetivo", req: true },
+      { key: "completion_criteria", header: "Critério de conclusão" },
+      { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "notes", header: "Observações" },
+      { key: "target_days", header: "Prazo (dias)", type: "number" }
+    ],
+    async save(body) {
+      const rows = loadProductObjectives();
+      const now = new Date().toISOString();
+      let saved = null;
+      for (const productId of body.product_ids) {
+        const draft = {
+          id: crypto.randomUUID(), product_id: productId, name: body.name, completion_criteria: body.completion_criteria || "", comments: "",
+          category: body.category || "", channel: body.channel || "", notes: body.notes || "", default_owner_id: null, default_assignee_ids: [],
+          assign_to_client: false, dependency_objective_template_ids: [], dependency_activity_template_ids: [],
+          target_days: body.target_days ?? null, sort_order: nextOrder(rows, productId), created_at: now, updated_at: now
+        };
+        saved = isLive() ? await createRow("productObjectives", draft) : draft;
+        rows.push(saved);
+      }
+      if (isLive()) cache.productObjectives = rows; else saveProductObjectives(rows);
+      return saved;
+    }
+  };
+  return null;
+}
+
+// Fila em segundo plano que busca na Receita as empresas importadas só com
+// o CNPJ (CNPJá gratuito: cerca de 5 consultas por minuto).
+const companyRegistryQueue = { running: false };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function runCompanyRegistryQueue() {
+  if (companyRegistryQueue.running || !cache || !currentUserCan("companies", "edit")) return;
+  companyRegistryQueue.running = true;
+  try {
+    for (;;) {
+      const company = (cache?.companies || []).find((item) => item.registry_pending && !item.registry_error);
+      if (!company) break;
+      const now = new Date().toISOString();
+      try {
+        const payload = await fetchCompanyRegistryData(company.tax_id);
+        delete payload.tax_id;
+        const clean = Object.fromEntries(Object.entries(payload).filter(([, value]) => value != null && value !== ""));
+        clean.state_registrations = mergeStateRegistrations(company.state_registrations, payload.state_registrations || [], clean.state || company.state).filter((item) => item.ie);
+        const saved = await updateRow("companies", company.tax_id, { ...clean, registry_pending: false, registry_error: null, registry_checked_at: now });
+        Object.assign(company, saved || clean, { registry_pending: false, registry_error: null });
+        const qsaIds = await companyQsaContactIds(company.tax_id, company.qsa).catch(() => []);
+        if (qsaIds.length) {
+          const linked = [...new Set([...normalizeIdList(company.contact_ids), ...qsaIds])];
+          await replaceContactCompanyLinks({ companyId: company.tax_id, relatedIds: linked });
+          updateCachedContactCompanyLinks({ companyId: company.tax_id, relatedIds: linked });
+          if (normalizeTextList(company.contact_type).length) await syncCompanyContactTypes(company.tax_id, linked, normalizeTextList(company.contact_type));
+        }
+      } catch (error) {
+        if (/Limite/.test(error.message)) { await sleep(60000); continue; }
+        company.registry_error = String(error.message || "Falha na consulta").slice(0, 200);
+        await updateRow("companies", company.tax_id, { registry_error: company.registry_error, registry_checked_at: now }).catch(() => null);
+      }
+      if (state.tab === "companies" && !document.querySelector("#modal-root .overlay")) render();
+      await sleep(13000);
+    }
+  } finally {
+    companyRegistryQueue.running = false;
+  }
+}
+
+const companyRegistryBadgeHtml = (company) => company?.registry_pending
+  ? `<span class="registry-badge${company.registry_error ? " error" : ""}" title="${esc(company.registry_error ? `Consulta falhou: ${company.registry_error}. Use Atualizar da Receita.` : "Importada pelo CNPJ. Os dados da Receita serão preenchidos automaticamente.")}">${company.registry_error ? "Erro na Receita" : "Desatualizada"}</span>`
+  : "";
+
+function importCellValue(column, raw, c = cache) {
+  const text = raw instanceof Date ? "" : String(raw ?? "").trim();
+  if (column.type === "date") {
+    if (raw === "" || raw == null) return { value: null };
+    const value = importDateValue(raw);
+    return value === undefined ? { error: `${column.header}: data inválida "${text}"` } : { value };
+  }
+  if (!text) return { value: column.type === "multi" || column.type === "free" || column.type === "companies" ? [] : null };
+  if (column.type === "number") {
+    const value = typeof raw === "number" ? raw : filterNumberValue(text);
+    return value == null ? { error: `${column.header}: número inválido "${text}"` } : { value };
+  }
+  if (column.type === "select") {
+    const option = importMatchOption(column.options(), text);
+    return option ? { value: option.value } : { error: `${column.header}: "${text}" não é uma opção válida` };
+  }
+  if (column.type === "multi") {
+    const options = column.options();
+    const values = [];
+    for (const item of importSplit(text)) {
+      const option = importMatchOption(options, item);
+      if (!option) return { error: `${column.header}: "${item}" não é uma opção válida` };
+      values.push(option.value);
+    }
+    return { value: values };
+  }
+  if (column.type === "free") return { value: importSplit(text) };
+  if (column.type === "products") return importProductIds(text, c);
+  if (column.type === "companies") {
+    const ids = [];
+    for (const item of importSplit(text)) {
+      const company = importCompanyMatch(item, c);
+      if (!company) return { error: `${column.header}: empresa "${item}" não encontrada` };
+      ids.push(company.tax_id);
+    }
+    return { value: ids };
+  }
+  if (column.type === "company") {
+    const company = importCompanyMatch(text, c);
+    return company ? { value: company.tax_id } : { error: `${column.header}: empresa "${text}" não encontrada` };
+  }
+  if (column.type === "contact") {
+    const wanted = importNorm(text);
+    const contact = (c.contacts || []).find((item) => importNorm(item.name) === wanted || normalizeEmailList(item.email || "").toLowerCase().split(/[;,]/).map((email) => email.trim()).includes(wanted));
+    return contact ? { value: contact.id } : { error: `${column.header}: pessoa "${text}" não encontrada` };
+  }
+  if (column.type === "project") {
+    const wanted = importNorm(text);
+    const project = (c.projects || []).find((item) => importNorm(item.name) === wanted);
+    return project ? { value: project.id } : { error: `${column.header}: entrega "${text}" não encontrada` };
+  }
+  return { value: text };
+}
+
+function downloadImportTemplate(tab) {
+  const spec = importSpec(tab);
+  const XLSXLib = globalThis.XLSX;
+  if (!spec) return;
+  if (!XLSXLib?.utils?.aoa_to_sheet || !XLSXLib.writeFile) { toast("O gerador de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true); return; }
+  const book = XLSXLib.utils.book_new();
+  const model = XLSXLib.utils.aoa_to_sheet([spec.columns.map((column) => column.header)]);
+  model["!cols"] = spec.columns.map((column) => ({ wch: Math.max(14, column.header.length + 4) }));
+  XLSXLib.utils.book_append_sheet(book, model, "Modelo");
+  const describe = (column) => {
+    if (column.options) return `Um destes: ${column.options().map((option) => option.label).join(", ")}${column.type === "multi" ? " (vários separados por ;)" : ""}`;
+    if (column.type === "date") return "Data dd/mm/aaaa";
+    if (column.type === "number") return "Número (ex.: 1500,50)";
+    return column.note || "Texto";
+  };
+  const guide = XLSXLib.utils.aoa_to_sheet([
+    [`Importação de ${spec.title} · ENTERPRISER CMS`],
+    [spec.intro || "Preencha a aba Modelo a partir da linha 2. Não altere os títulos das colunas."],
+    [],
+    ["Coluna", "Obrigatória", "Formato / valores aceitos", "Observação"],
+    ...spec.columns.map((column) => [column.header, column.req ? "Sim" : "Não", describe(column), column.options ? (column.note || "") : (column.note && column.note !== describe(column) ? column.note : "")])
+  ]);
+  guide["!cols"] = [{ wch: 26 }, { wch: 12 }, { wch: 70 }, { wch: 44 }];
+  XLSXLib.utils.book_append_sheet(book, guide, "Instruções");
+  XLSXLib.writeFile(book, `modelo_importacao_${importNorm(spec.title).replace(/\s+/g, "_")}.xlsx`);
+}
+
+async function importModuleSpreadsheet(tab, file) {
+  const spec = importSpec(tab);
+  const XLSXLib = globalThis.XLSX;
+  if (!spec) return;
+  if (!XLSXLib?.read) { toast("O leitor de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true); return; }
+  let matrix;
+  try {
+    const workbook = XLSXLib.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+    const sheetName = workbook.SheetNames.find((name) => importNorm(name) === "modelo") || workbook.SheetNames[0];
+    matrix = XLSXLib.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: true });
+  } catch (error) {
+    toast("Não foi possível ler a planilha · " + error.message, true);
+    return;
+  }
+  const headerIndex = matrix.findIndex((row) => row.some((cell) => String(cell ?? "").trim()));
+  if (headerIndex < 0) { toast("A planilha está vazia.", true); return; }
+  const headers = matrix[headerIndex].map((cell) => importNorm(cell));
+  const columnIndex = new Map(spec.columns.map((column) => [column.key, headers.findIndex((header) => header === importNorm(column.header) || header === importNorm(column.key))]));
+  const missing = spec.columns.filter((column) => column.req && columnIndex.get(column.key) < 0).map((column) => column.header);
+  if (missing.length) { toast(`Faltam colunas obrigatórias: ${missing.join(", ")}. Use a planilha modelo.`, true); return; }
+  const ignored = matrix[headerIndex].filter((cell, index) => String(cell ?? "").trim() && ![...columnIndex.values()].includes(index));
+  const rows = matrix.slice(headerIndex + 1).map((cells, offset) => ({ line: headerIndex + offset + 2, cells })).filter((row) => row.cells.some((cell) => String(cell ?? "").trim()));
+  if (!rows.length) { toast("Nenhuma linha preenchida na planilha.", true); return; }
+  const prepared = rows.map((row) => {
+    const body = {};
+    const errors = [];
+    spec.columns.forEach((column) => {
+      const index = columnIndex.get(column.key);
+      if (index < 0) return;
+      const result = importCellValue(column, row.cells[index]);
+      if (result.error) errors.push(result.error);
+      else if (result.value != null && !(Array.isArray(result.value) && !result.value.length)) body[column.key] = result.value;
+    });
+    spec.columns.filter((column) => column.req && (body[column.key] == null || body[column.key] === "")).forEach((column) => errors.push(`${column.header} é obrigatório`));
+    if (!errors.length && spec.validate) { const message = spec.validate(body); if (message) errors.push(message); }
+    const existing = !errors.length && spec.existing ? spec.existing(body) : null;
+    return { ...row, body, errors, existing };
+  });
+  openImportPreview(tab, spec, prepared, ignored);
+}
+
+function openImportPreview(tab, spec, prepared, ignored) {
+  const valid = prepared.filter((row) => !row.errors.length);
+  const updates = valid.filter((row) => row.existing).length;
+  const label = (row) => row.body.name || row.body.title || row.body.client_name || row.body.tax_id || "";
+  shell(`Importar ${spec.title}`, `<div class="import-preview">
+      <div class="import-summary">
+        <span><b>${prepared.length}</b> linha(s)</span><span class="ok"><b>${valid.length - updates}</b> nova(s)</span><span class="upd"><b>${updates}</b> atualização(ões)</span><span class="err"><b>${prepared.length - valid.length}</b> com erro</span>
+        ${ignored.length ? `<span class="muted">Colunas ignoradas: ${esc(ignored.join(", "))}</span>` : ""}
+      </div>
+      <div class="import-list">${prepared.map((row) => `<div class="import-row${row.errors.length ? " has-error" : ""}"><span class="import-line">Linha ${row.line}</span><span class="import-label">${esc(label(row))}</span><span class="import-status">${row.errors.length ? esc(row.errors.join(" · ")) : row.existing ? "Atualizar existente" : "Criar"}</span></div>`).join("")}</div>
+      <div class="import-progress" id="import-progress" hidden></div>
+    </div>
+    <div class="modal-foot"><button class="btn" id="import-cancel" type="button">Cancelar</button><button class="btn primary" id="import-confirm" type="button"${valid.length ? "" : " disabled"}>Importar ${valid.length} linha(s)</button></div>`, { cls: "wide" });
+  document.getElementById("import-cancel").addEventListener("click", closeModal);
+  document.getElementById("import-confirm").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const progress = document.getElementById("import-progress");
+    button.disabled = true;
+    document.getElementById("import-cancel").disabled = true;
+    progress.hidden = false;
+    let done = 0;
+    const failures = [];
+    const context = { credentials: [] };
+    for (const row of valid) {
+      progress.textContent = `Importando ${done + 1} de ${valid.length}…`;
+      try { await spec.save(row.body, row.existing, context); done += 1; }
+      catch (error) { failures.push(`Linha ${row.line}: ${error.message}`); }
+    }
+    closeModal();
+    toast(`${done} registro(s) importado(s) em ${spec.title}.${failures.length ? ` ${failures.length} falharam.` : ""}`, Boolean(failures.length));
+    if (failures.length) console.warn("[CMS] Falhas na importação", failures);
+    const reopenRegistrations = String(tab).startsWith("reg:") ? tab.slice(4) : null;
+    await init();
+    if (reopenRegistrations) openRegistrationsModal(reopenRegistrations);
+    if (context.credentials.length) showImportedCredentials(context.credentials);
+  });
+}
+
+function showImportedCredentials(credentials) {
+  const text = credentials.map((item) => `${item.name} · ${item.email} · ${item.password}`).join("\n");
+  const inner = `<div class="panel-list">Guarde e envie estes acessos agora; as senhas não ficam visíveis depois.</div>
+    <textarea class="import-credentials" readonly>${esc(text)}</textarea>
+    <div class="modal-foot"><button class="btn primary" id="import-credentials-copy" type="button">Copiar acessos</button></div>`;
+  if (document.getElementById("registrations-root")) nestedSidePanel("Acessos criados", inner);
+  else sidePanel("Acessos criados", inner, { closeOnOverlay: false });
+  document.getElementById("import-credentials-copy").addEventListener("click", async () => { await copyText(text); toast("Acessos copiados."); });
+}
+
+function openImportMenuItems(panel, tab, spec) {
+  panel.querySelector(".dd-import-template")?.addEventListener("click", () => { panel.remove(); downloadImportTemplate(tab); });
+  panel.querySelector(".dd-import-sheet")?.addEventListener("click", () => {
+    panel.remove();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    input.addEventListener("change", () => { if (input.files?.[0]) importModuleSpreadsheet(tab, input.files[0]); });
+    input.click();
+  });
+}
+const importMenuHtml = (canImport) => canImport ? '<div class="dd-head"><span>Importar</span><span>Planilha</span></div><button class="dd-menu-btn dd-import-sheet" type="button">Planilha (CSV, XLS, XLSX)</button><button class="dd-menu-btn dd-import-template" type="button">Baixar planilha modelo</button>' : "";
+
 function openDataMenu() {
   document.getElementById("data-dd")?.remove();
+  const tab = state.tab;
+  const spec = importSpec(tab);
+  const canImport = Boolean(spec) && currentUserCan(tab, "create");
   const panel = document.createElement("div");
   panel.id = "data-dd";
   panel.className = "data-dd";
   panel.innerHTML = `
-    <div class="dd-head"><span>Dados</span><span>CSV / WhatsApp</span></div>
+    <div class="dd-head"><span>Dados</span><span>${esc(spec?.title || (tab === "conversations" ? "Conversas" : ""))}</span></div>
     <div class="dd-head"><span>Exportar</span><span></span></div>
     <button class="dd-menu-btn" id="csv-active">CSV (Colunas Ativas)</button>
     <button class="dd-menu-btn" id="csv-all">CSV (Todas as Colunas)</button>
-    <div class="dd-head"><span>Importar</span><span></span></div>
-    <button class="dd-menu-btn" id="import-whatsapp">Conversa (.txt/.zip)</button>`;
+    ${canImport || tab === "conversations" ? '<div class="dd-head"><span>Importar</span><span></span></div>' : ""}
+    ${canImport ? '<button class="dd-menu-btn dd-import-sheet" type="button">Planilha (CSV, XLS, XLSX)</button><button class="dd-menu-btn dd-import-template" type="button">Baixar planilha modelo</button>' : ""}
+    ${tab === "conversations" ? '<button class="dd-menu-btn" id="import-whatsapp">Conversa (.txt/.zip)</button>' : ""}`;
   document.body.appendChild(panel);
   panel.querySelector("#csv-active").addEventListener("click", () => { panel.remove(); exportTableCSV(true); });
   panel.querySelector("#csv-all").addEventListener("click", () => { panel.remove(); exportTableCSV(false); });
-  panel.querySelector("#import-whatsapp").addEventListener("click", () => {
+  panel.querySelector("#import-whatsapp")?.addEventListener("click", () => {
     panel.remove();
     document.getElementById("import-file").click();
   });
+  openImportMenuItems(panel, tab, spec);
   setTimeout(() => {
     const outside = (e) => {
       if (!panel.contains(e.target) && e.target.id !== "data-btn") {
@@ -5914,17 +7797,21 @@ async function zipTextFromBuffer(buffer) {
 
 async function textFromImportFile(file) {
   const buffer = await readFileAsArrayBuffer(file);
-  if (file.name.toLowerCase().endsWith(".zip")) return zipTextFromBuffer(buffer);
+  // O compartilhamento do Android pode mandar o ZIP sem a extensão no nome:
+  // reconhece pelo conteúdo (assinatura "PK").
+  const head = new Uint8Array(buffer.slice(0, 4));
+  const isZip = head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
+  if (isZip || file.name.toLowerCase().endsWith(".zip")) return zipTextFromBuffer(buffer);
   return new TextDecoder("utf-8").decode(buffer);
 }
 
 function parseWhatsAppText(text, filename) {
-  const cleanName = filename.replace(/\.(txt|zip)$/i, "").replace(/^Conversa do WhatsApp com\s+/i, "").trim();
+  const cleanName = filename.replace(/\.(txt|zip)$/i, "").replace(/^(Conversa do WhatsApp com|WhatsApp Chat with|WhatsApp Chat -)\s+/i, "").trim();
   const fileLower = filename.toLowerCase();
   const source = fileLower.includes("reddit") ? "Reddit" : fileLower.includes("instagram") ? "Instagram" : "WhatsApp";
-  const lines = text.replace(/\r/g, "").split("\n");
+  const lines = text.replace(/\r/g, "").replace(/[\u200e\u200f\u202a-\u202e]/g, "").split("\n");
   const messages = [];
-  const re = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d{1,2}:\d{2})\s+-\s+(?:(.*?):\s)?([\s\S]*)$/;
+  const re = /^\[?(\d{1,2}\/\d{1,2}\/\d{2,4}),?\s+(\d{1,2}:\d{2})(?::\d{2})?\]?\s+(?:-\s+)?(?:(.*?):\s)?([\s\S]*)$/;
   for (const line of lines) {
     const m = line.match(re);
     if (m) {
@@ -5941,7 +7828,12 @@ function parseWhatsAppText(text, filename) {
   const contactName = cleanName || Object.keys(authorCount).sort((a, b) => authorCount[b] - authorCount[a])[0] || "Contato importado";
   const fullText = messages.map((m) => m.text).join("\n");
   const email = fullText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
-  const phone = fullText.match(/(?:\+?\d{1,3}\s?)?(?:\(?\d{2}\)?\s?)?\d{4,5}[-\s]?\d{4}/)?.[0] || "";
+  // A exportação do WhatsApp não traz o número de quem exportou nem do
+  // contato salvo; o número só aparece quando o contato não está salvo (no
+  // nome do arquivo ou como remetente).
+  const looksLikePhone = (value) => /^\+?[\d\s().-]{10,}$/.test(String(value || "").trim());
+  const phoneAuthor = Object.keys(authorCount).find(looksLikePhone);
+  const phone = looksLikePhone(cleanName) ? cleanName : phoneAuthor || "";
   const amountRaw = fullText.match(/(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}/)?.[0] || "";
   const amount = amountRaw ? Number(amountRaw.replace(/[^\d,]/g, "").replace(",", ".")) : null;
   const relevant = messages.filter((m) => m.author && !/^<M[íi]dia oculta>|Mensagem apagada$/i.test(m.text)).slice(-8);
@@ -5970,19 +7862,42 @@ function parseWhatsAppText(text, filename) {
   };
 }
 
+// Liga a conversa a uma pessoa do CMS pelo telefone (quando a exportação
+// traz o número) ou pelo nome do contato.
+function matchConversationContact(row) {
+  const contacts = cache?.contacts || [];
+  const digits = String(row.phone || "").replace(/\D/g, "").slice(-11);
+  if (digits.length >= 10) {
+    const tail = digits.slice(-10);
+    const byPhone = contacts.find((contact) => [contact.phone, contact.whatsapp].some((value) => String(value || "").split(/[;,]/).some((item) => item.replace(/\D/g, "").endsWith(tail))));
+    if (byPhone) return byPhone.id;
+  }
+  const name = conversationNorm(row.contact_name);
+  const byName = contacts.filter((contact) => conversationNorm(contact.name) === name);
+  return byName.length === 1 ? byName[0].id : null;
+}
+
 async function importWhatsAppFile(file) {
   try {
     const text = await textFromImportFile(file);
-    const row = parseWhatsAppText(text, file.name);
+    const parsed = parseWhatsAppText(text, file.name);
+    delete parsed.raw;
+    if (!parsed.messages?.length) throw new Error("nenhuma mensagem encontrada no arquivo. Use Exportar conversa do WhatsApp (.txt ou .zip).");
+    parsed.owner_id = currentProfile?.id || null;
+    parsed.conversation_key = conversationKey(parsed);
     const conversations = loadConversations();
-    conversations.unshift(row);
+    const existing = conversations.find((item) => item.owner_id === parsed.owner_id && item.source === parsed.source && conversationKey(item) === parsed.conversation_key);
+    const row = existing ? Object.assign(existing, { ...parsed, id: existing.id, contact_id: existing.contact_id || null, status: existing.status === "converted" ? "converted" : parsed.status }) : parsed;
+    if (!row.contact_id) row.contact_id = matchConversationContact(row);
+    if (!existing) conversations.unshift(row);
     saveConversations(conversations);
     state.tab = "conversations";
     state.view = "table";
     state.q = "";
     document.getElementById("search").value = "";
     render();
-    toast(`Conversa importada: ${row.contact_name}.`);
+    const linked = row.contact_id ? cache.contactById?.[row.contact_id]?.name : "";
+    toast(`${existing ? "Conversa atualizada" : "Conversa importada"}: ${row.contact_name}.${linked ? ` Vinculada a ${linked}.` : " Associe a uma pessoa para vincular ao CMS."}`);
   } catch (err) {
     toast("Erro ao importar · " + err.message, true);
   }
@@ -6002,17 +7917,24 @@ function openConversationPopup(id) {
   const messages = row.messages || [];
   // "Minhas" mensagens são reconhecidas pelo nome cadastrado em
   // Configurações → Meus dados (sem isso configurado, nada é destacado).
-  const myName = String(getCfg().myName || "").trim().toLowerCase();
+  const owner = cache?.users?.find((user) => user.id === row.owner_id);
+  const myNames = [getCfg().myName, owner?.full_name, owner?.nickname].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
   const body = messages.length
     ? messages.map((m) => {
-      const mine = myName && String(m.author || "").toLowerCase().includes(myName);
+      const author = String(m.author || "").toLowerCase();
+      const authorWords = author.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/).filter(Boolean);
+      const mine = myNames.some((name) => {
+        const nameWords = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/\s+/);
+        return author === name || author.includes(name) || (authorWords.length > 1 && authorWords.every((word) => nameWords.includes(word)));
+      });
       return `<div class="chat-msg${mine ? " mine" : ""}">
         <div class="meta">${esc(m.author || "Sistema")} · ${esc(m.at || "")}</div>
         <div class="txt">${esc(m.text || "")}</div>
       </div>`;
     }).join("")
     : `<div class="panel-list">${esc(row.raw || row.summary || "Sem conteúdo.")}</div>`;
-  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `<div class="chat-log">${body}</div>`);
+  const ownerLine = owner ? `<div class="panel-list chat-owner">Responsável <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
+  sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>`);
 }
 
 function openAssociateContactModal(ids = [...state.selectedConversations]) {
@@ -6040,7 +7962,71 @@ function openAssociateContactModal(ids = [...state.selectedConversations]) {
   });
 }
 
-async function convertImportToDeal(id) {
+// Editar conversa: pessoa vinculada e, opcionalmente, criar a negociação
+// escolhendo empresa (ou sem empresa) e produto (ou sem produto).
+function openConversationEditModal(ids, { createDeal = false } = {}) {
+  const rows = ids.map(findConversation).filter(Boolean);
+  if (!rows.length) { toast("Selecione uma conversa.", true); return; }
+  const single = rows.length === 1 ? rows[0] : null;
+  const currentContactId = single?.contact_id || "";
+  const people = [...cache.contacts].sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
+  const personOptions = `<option value="">${single ? "— Sem pessoa (cria ao gerar a negociação) —" : "— Manter a pessoa de cada conversa —"}</option>` +
+    people.map((person) => `<option value="${esc(person.id)}"${person.id === currentContactId ? " selected" : ""}>${esc(person.name)}</option>`).join("");
+  const firstCompanyOf = (contactId) => {
+    const contact = cache.contactById?.[contactId];
+    return contact ? normalizeIdList(contact.company_ids, contact.company_id)[0] || "" : "";
+  };
+  const products = (cache.products || []).filter((product) => product.status !== "Inativo");
+  const converted = rows.filter((row) => row.status === "converted").length;
+  shell(single ? `Editar conversa · ${single.contact_name || "Contato"}` : "Editar conversas", `<div class="form">
+      <div class="field full"><label>Pessoa</label><select id="conv-edit-person">${personOptions}</select></div>
+      <div class="field check full conv-check"><input type="checkbox" id="conv-edit-deal"${createDeal ? " checked" : ""}><label for="conv-edit-deal">Criar negociação</label></div>
+      <div class="field full conv-deal-field"><label>Empresa</label>${singleSearchPickerHtml("conv-edit-company", companyRefOptions(cache), firstCompanyOf(currentContactId), "Buscar por nome ou CNPJ")}</div>
+      <div class="field check full conv-check conv-deal-field"><input type="checkbox" id="conv-edit-no-company"><label for="conv-edit-no-company">Sem empresa</label></div>
+      <div class="field full conv-deal-field"><label>Produto</label><select id="conv-edit-product"><option value="">Sem produto</option>${products.map((product) => `<option value="${esc(product.id)}">${esc(product.name)}</option>`).join("")}</select></div>
+    </div>
+    <div class="panel-list" style="padding-top:0">${rows.length > 1 ? `${rows.length} conversa(s) selecionada(s). ` : ""}${converted ? `${converted} já gerou(aram) negociação. ` : ""}<span class="conv-deal-field">O negócio leva o nome do produto; sem produto, o canal e o nome do contato.</span></div>
+    <div class="modal-foot"><button class="btn" id="cancel">Cancelar</button>
+      <button class="btn primary" id="save">Salvar</button></div>`);
+  wireSingleSearchPicker("conv-edit-company");
+  const companyRoot = document.getElementById("conv-edit-company");
+  const dealBox = document.getElementById("conv-edit-deal");
+  const noCompany = document.getElementById("conv-edit-no-company");
+  const sync = () => {
+    document.querySelectorAll(".conv-deal-field").forEach((el) => { el.hidden = !dealBox.checked; });
+    companyRoot.querySelector(".single-search-input").disabled = noCompany.checked;
+  };
+  dealBox.addEventListener("change", sync);
+  noCompany.addEventListener("change", sync);
+  document.getElementById("conv-edit-person").addEventListener("change", (event) => {
+    const companyId = firstCompanyOf(event.target.value);
+    const option = companyRoot.querySelector(`.single-search-option[data-value="${CSS.escape(companyId)}"]`);
+    if (!companyId || !option) return;
+    companyRoot.querySelector(".single-search-input").value = option.dataset.label;
+    companyRoot.querySelector('input[type="hidden"]').value = companyId;
+  });
+  sync();
+  document.getElementById("cancel").addEventListener("click", closeModal);
+  document.getElementById("save").addEventListener("click", async (event) => {
+    const personId = document.getElementById("conv-edit-person").value;
+    const companyId = companyRoot.querySelector('input[type="hidden"]').value;
+    if (dealBox.checked && !noCompany.checked && !companyId) { toast("Escolha a empresa ou marque Sem empresa.", true); return; }
+    event.currentTarget.disabled = true;
+    const conversations = loadConversations();
+    if (personId || single) conversations.forEach((row) => { if (ids.includes(row.id)) row.contact_id = personId || null; });
+    saveConversations(conversations);
+    if (!dealBox.checked) {
+      closeModal();
+      render();
+      toast(rows.length > 1 ? "Conversas atualizadas." : "Conversa atualizada.");
+      return;
+    }
+    const options = { companyId: noCompany.checked ? null : companyId, noCompany: noCompany.checked, productId: document.getElementById("conv-edit-product").value || null };
+    for (const row of rows) await convertImportToDeal(row.id, options);
+  });
+}
+
+async function convertImportToDeal(id, options = null) {
   const conversations = loadConversations();
   const row = conversations.find((item) => item.id === id);
   if (!row) return;
@@ -6065,11 +8051,13 @@ async function convertImportToDeal(id) {
       });
     }
     const firstPipeline = (cache.pipelines || [])[0];
+    const product = options?.productId ? cache.productById?.[options.productId] : null;
     await createRow("deals", {
-      title: row.title || `WhatsApp - ${row.contact_name}`,
+      title: product?.name || row.title || `${row.source || "WhatsApp"} - ${contact.name || row.contact_name}`,
       contact_id: contact.id,
-      company_id: normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
-      product_id: null,
+      company_id: options ? options.companyId || null : normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
+      no_company: Boolean(options?.noCompany),
+      product_id: product?.id || null,
       owner_id: null,
       pipeline_id: firstPipeline?.id || null,
       stage: firstPipeline?.stages?.[0] || null,
@@ -6095,7 +8083,7 @@ async function convertImportToDeal(id) {
 async function createDealFromSelectedConversations() {
   const rows = selectedConversationRows();
   if (!rows.length) { toast("Selecione uma conversa.", true); return; }
-  for (const row of rows) await convertImportToDeal(row.id);
+  openConversationEditModal(rows.map((row) => row.id), { createDeal: true });
 }
 
 function render() {
@@ -6126,7 +8114,9 @@ function render() {
   viewMenuButton.hidden = isHome;
   viewMenuButton.disabled = hasConversationSelection;
   viewMenuButton.classList.toggle("active", !isHome);
-  document.getElementById("view-menu-label").textContent = activeMode.label.toLocaleUpperCase("pt-BR");
+  document.getElementById("view-menu-label").innerHTML = viewIcon(activeMode.id);
+  document.getElementById("view-menu-text").textContent = activeMode.label;
+  viewMenuButton.title = `Modo de visualização: ${activeMode.label}`;
   document.getElementById("search").disabled = isHome;
   document.getElementById("new").disabled = isHome || !currentUserCan(state.tab, "create");
   document.getElementById("cols-btn").disabled = isHome;
@@ -6278,16 +8268,24 @@ function openForm(tab, id, opts = {}) {
     const stageField = fs.find((f) => f.k === "stage");
     if (stageField) stageField.options = pipelineStageOptions(c, record?.pipeline_id);
   }
-  const inputs = fs.map((f) => {
+  const fieldHtml = (f) => {
     if (f.embedded) return "";
-    let val = record ? record[f.k] : f.def ?? "";
+    let val = record ? record[f.k] : opts.defaults?.[f.k] ?? f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
-    const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val));
+    if (tab === "projects" && record && ["financial_accounts", "freight_channels"].includes(f.k)) {
+      const auto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
+      val = normalizeTextList([...normalizeTextList(val), ...(f.k === "financial_accounts" ? auto.financial : auto.freight)]);
+    }
+    const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val) || f.receita);
     let ctrl;
     if (f.type === "multi") {
       const selected = new Set(f.textValues ? normalizeTextList(val) : normalizeIdList(val));
-      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(), Boolean(f.allowCreate));
+      const lockedValues = f.lockedValues ? f.lockedValues(record) : [];
+      lockedValues.forEach((value) => selected.add(value));
+      ctrl = multiPickerHtml(`form-${f.k}`, f.options || [], selected, f.placeholder || "Selecionar", Boolean(f.searchOnly), false, record && f.addOnly ? selected : new Set(lockedValues), Boolean(f.allowCreate));
+    } else if (f.type === "ie_list") {
+      ctrl = stateRegistrationsEditorHtml(val, record?.state);
     } else if (f.type === "search") {
       ctrl = singleSearchPickerHtml(`form-${f.k}`, f.options || [], val, f.placeholder);
     } else if (f.searchableRef) {
@@ -6308,21 +8306,27 @@ function openForm(tab, id, opts = {}) {
       const t = f.type === "number" ? "number" : f.type === "date" ? "date" : "text";
       const lockPk = id && f.k === pk(tab);
       const input = `<input type="${t}" data-k="${f.k}" value="${esc(val)}"${f.req ? " required" : ""}${(lockPk || isLocked) ? " readonly" : ""}${f.min != null ? ` min="${esc(f.min)}"` : ""}${f.step != null ? ` step="${esc(f.step)}"` : ""}${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ""}>`;
-      ctrl = f.lookup === "cnpj" && !lockPk
-        ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">Buscar dados</button></div>`
+      ctrl = f.lookup === "cnpj"
+        ? `<div class="input-action-row">${input}<button class="btn" type="button" id="lookup-cnpj">${lockPk ? "Atualizar da Receita" : "Buscar dados"}</button></div>`
         : input;
     }
     if (tab === "deals" && f.k === "company_id") {
-      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${record?.no_company ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
+      const noCompany = record ? record.no_company : opts.defaults?.no_company;
+      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${noCompany ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
     return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
-  }).join("");
+  };
+  // Entrega: ERP, canais, frete, empresa e contas financeiras ficam na aba Setup.
+  const setupKeys = new Set(["erp_platform", "marketplace_channels", "store_platforms", "freight_channels", "company_setup", "financial_accounts"]);
+  const inputs = tab === "projects"
+    ? `<div class="form-tab-panel" data-form-tab="general">${fs.filter((f) => !setupKeys.has(f.k)).map(fieldHtml).join("")}</div><div class="form-tab-panel" data-form-tab="setup" hidden><div class="panel-list form-tab-note">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</div>${fs.filter((f) => setupKeys.has(f.k)).map(fieldHtml).join("")}</div>`
+    : fs.map(fieldHtml).join("");
 
   const title = (id ? "Editar " : "Novo ") + SINGULAR[tab];
   const generatedNotice = tab === "projects"
-    ? `<div class="panel-list" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.<br><span class="muted">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</span></div>`
+    ? `<div class="form-tabs" role="tablist"><button class="form-tab active" type="button" role="tab" data-form-tab-btn="general">Dados</button><button class="form-tab" type="button" role="tab" data-form-tab-btn="setup">Setup</button></div><div class="panel-list" data-form-tab-note="general" style="padding:14px 18px 0">O nome da entrega é gerado automaticamente no padrão <b>EC365 | Cliente | Produto</b>.</div>`
     : "";
   const body = `${generatedNotice}<div class="form${tab === "projects" ? " project-form" : ""}">${inputs}</div>
     <div class="modal-foot">
@@ -6344,6 +8348,12 @@ function openForm(tab, id, opts = {}) {
 
   document.getElementById("cancel").addEventListener("click", returnToPrevious);
   document.getElementById("save").addEventListener("click", () => saveForm(tab, id, fs, opts));
+  document.querySelectorAll("#modal-root [data-form-tab-btn]").forEach((button) => button.addEventListener("click", () => {
+    const panelRoot = button.closest(".modal") || document;
+    panelRoot.querySelectorAll("[data-form-tab-btn]").forEach((item) => item.classList.toggle("active", item === button));
+    panelRoot.querySelectorAll(".form-tab-panel").forEach((panel) => { panel.hidden = panel.dataset.formTab !== button.dataset.formTabBtn; });
+    panelRoot.querySelectorAll("[data-form-tab-note]").forEach((note) => { note.hidden = note.dataset.formTabNote !== button.dataset.formTabBtn; });
+  }));
   fs.filter((field) => field.type === "multi").forEach((field) => wireMultiPicker(`form-${field.k}`));
   fs.filter((field) => field.type === "search").forEach((field) => wireSingleSearchPicker(`form-${field.k}`));
   document.querySelectorAll("#modal-root [data-search-ref]").forEach((input) => {
@@ -6357,14 +8367,17 @@ function openForm(tab, id, opts = {}) {
     input.addEventListener("input", syncValue);
     input.addEventListener("change", syncValue);
   });
-  if (tab === "companies" && !id) {
+  if (tab === "companies") {
     const form = document.querySelector("#modal-root .form");
     const cnpjInput = form?.querySelector('[data-k="tax_id"]');
     const lookupButton = document.getElementById("lookup-cnpj");
-    lookupButton?.addEventListener("click", () => lookupCompanyByCnpj(form, lookupButton));
-    cnpjInput?.addEventListener("blur", () => {
+    lastCompanyLookup = id ? taxIdDigits(id) : "";
+    companyLookupFresh = false;
+    lookupButton?.addEventListener("click", () => lookupCompanyByCnpj(form, lookupButton, Boolean(id)));
+    if (!id) cnpjInput?.addEventListener("blur", () => {
       if (cnpjInput.value.replace(/\D/g, "").length === 14) lookupCompanyByCnpj(form, lookupButton);
     });
+    wireStateRegistrationsEditor(form);
   }
 
   // Etapa depende do pipeline escolhido — repopula ao trocar.
@@ -6376,10 +8389,11 @@ function openForm(tab, id, opts = {}) {
     const contactEl = form?.querySelector('[data-k="contact_id"]');
     const pipelineEl = form?.querySelector('[data-k="pipeline_id"]');
     const stageEl = form?.querySelector('[data-k="stage"]');
+    const preferredContactId = String(record?.contact_id || opts.defaults?.contact_id || "");
     const syncDealContacts = () => {
       if (!contactEl) return;
-      const selected = String(contactEl.value || record?.contact_id || "");
-      const options = dealContactOptions(c, companyEl?.value);
+      const selected = String(contactEl.value || preferredContactId);
+      const options = dealContactOptions(c, companyEl?.value, selected);
       contactEl.innerHTML = ['<option value="">—</option>']
         .concat(options.map((option) => `<option value="${esc(option.value)}"${String(option.value) === selected ? " selected" : ""}>${esc(option.label)}</option>`)).join("");
       if (!options.some((option) => String(option.value) === selected)) contactEl.value = "";
@@ -6387,15 +8401,13 @@ function openForm(tab, id, opts = {}) {
     const syncNoCompany = () => {
       const disabled = Boolean(noCompanyEl?.checked);
       companyPicker?.classList.toggle("field-disabled", disabled);
-      contactEl?.closest(".field")?.classList.toggle("field-disabled", disabled);
       companyPicker?.querySelector(".single-search-input")?.toggleAttribute("disabled", disabled);
-      if (contactEl) contactEl.disabled = disabled;
       if (disabled) {
         if (companyEl) companyEl.value = "";
         const searchInput = companyPicker?.querySelector(".single-search-input");
         if (searchInput) searchInput.value = "";
-        if (contactEl) { contactEl.value = ""; contactEl.innerHTML = '<option value="">—</option>'; }
-      } else syncDealContacts();
+      }
+      syncDealContacts();
     };
     companyEl?.addEventListener("change", syncDealContacts);
     noCompanyEl?.addEventListener("change", syncNoCompany);
@@ -6423,9 +8435,16 @@ function openForm(tab, id, opts = {}) {
     const persistedChannels = {
       marketplaces: normalizeTextList(record?.marketplace_channels),
       stores: normalizeTextList(record?.store_platforms).length ? normalizeTextList(record.store_platforms) : normalizeTextList(record?.store_platform ? [record.store_platform] : []),
-      freight: normalizeTextList(record?.freight_channels)
+      freight: normalizeTextList(record?.freight_channels),
+      financial: normalizeTextList(record?.financial_accounts)
     };
-    let inheritedChannels = { marketplaces: [], stores: [], freight: [] };
+    if (record) {
+      const persistedAuto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
+      persistedChannels.freight = normalizeTextList([...persistedChannels.freight, ...persistedAuto.freight]);
+      persistedChannels.financial = normalizeTextList([...persistedChannels.financial, ...persistedAuto.financial]);
+    }
+    let inheritedChannels = { marketplaces: [], stores: [], freight: [], financial: [] };
+    let currentAuto = { financial: [], freight: [] };
     let inheritedErp = "";
     const replaceChannelPicker = (key, group, selected, locked) => {
       const picker = document.getElementById(`form-${key}`);
@@ -6439,17 +8458,22 @@ function openForm(tab, id, opts = {}) {
       const currentSelections = {
         marketplaces: multiPickerValues("form-marketplace_channels").filter((channel) => !inheritedChannels.marketplaces.includes(channel)),
         stores: multiPickerValues("form-store_platforms").filter((channel) => !inheritedChannels.stores.includes(channel)),
-        freight: multiPickerValues("form-freight_channels").filter((channel) => !inheritedChannels.freight.includes(channel))
+        freight: multiPickerValues("form-freight_channels").filter((channel) => !inheritedChannels.freight.includes(channel)),
+        financial: multiPickerValues("form-financial_accounts").filter((channel) => !inheritedChannels.financial.includes(channel))
       };
       inheritedChannels = {
         marketplaces: normalizeTextList(previous?.marketplace_channels),
         stores: normalizeTextList(previous?.store_platforms).length ? normalizeTextList(previous.store_platforms) : normalizeTextList(previous?.store_platform ? [previous.store_platform] : []),
-        freight: normalizeTextList(previous?.freight_channels)
+        freight: normalizeTextList(previous?.freight_channels),
+        financial: normalizeTextList(previous?.financial_accounts)
       };
       inheritedErp = previous?.erp_platform || "";
       replaceChannelPicker("marketplace_channels", "marketplaces", normalizeTextList([...currentSelections.marketplaces, ...inheritedChannels.marketplaces]), normalizeTextList([...persistedChannels.marketplaces, ...inheritedChannels.marketplaces]));
       replaceChannelPicker("store_platforms", "stores", normalizeTextList([...currentSelections.stores, ...inheritedChannels.stores]), normalizeTextList([...persistedChannels.stores, ...inheritedChannels.stores]));
       replaceChannelPicker("freight_channels", "freight", normalizeTextList([...currentSelections.freight, ...inheritedChannels.freight]), normalizeTextList([...persistedChannels.freight, ...inheritedChannels.freight]));
+      replaceChannelPicker("financial_accounts", "financial", normalizeTextList([...currentSelections.financial, ...inheritedChannels.financial]), normalizeTextList([...persistedChannels.financial, ...inheritedChannels.financial]));
+      currentAuto = { financial: [], freight: [] };
+      applyAutoSetups();
       if (erpEl) {
         const persistedErp = record?.erp_platform || "";
         const userErp = erpEl.value === previousInheritedErp && !persistedErp ? "" : erpEl.value;
@@ -6458,6 +8482,23 @@ function openForm(tab, id, opts = {}) {
         erpEl.closest(".field")?.classList.toggle("field-disabled", Boolean(persistedErp || inheritedErp));
       }
     };
+    // Mercado Livre, Nuvem Shop e Tray trazem contas financeiras e fretes automáticos.
+    function applyAutoSetups() {
+      const auto = deliveryAutoSetups(multiPickerValues("form-marketplace_channels"), multiPickerValues("form-store_platforms"));
+      [["financial_accounts", "financial"], ["freight_channels", "freight"]].forEach(([key, group]) => {
+        const fixed = new Set([...persistedChannels[group], ...inheritedChannels[group]]);
+        const dropped = currentAuto[group].filter((value) => !auto[group].includes(value) && !fixed.has(value));
+        const current = multiPickerValues(`form-${key}`);
+        const selected = normalizeTextList([...current.filter((value) => !dropped.includes(value)), ...auto[group]]);
+        const locked = normalizeTextList([...fixed, ...auto[group]]);
+        const same = selected.length === current.length && selected.every((value) => current.includes(value));
+        if (!same || dropped.length || auto[group].length !== currentAuto[group].length) replaceChannelPicker(key, group, selected, locked);
+      });
+      currentAuto = auto;
+    }
+    form?.addEventListener("multi-picker-change", (event) => {
+      if (["form-marketplace_channels", "form-store_platforms"].includes(event.target?.id)) applyAutoSetups();
+    }, true);
     const syncContinuityOptions = () => {
       if (!continuationEl) return;
       const companyCnpj = normalizeCnpj(companyEl?.value);
@@ -6498,6 +8539,7 @@ function openForm(tab, id, opts = {}) {
 }
 
 let lastCompanyLookup = "";
+let companyLookupFresh = false;
 function companyRegistryPayload(data, fallbackCnpj) {
   const address = data.address || {};
   const activity = data.mainActivity || data.company?.mainActivity;
@@ -6537,26 +8579,114 @@ async function fetchCompanyRegistryData(cnpjValue) {
   const response = await fetch(`https://open.cnpja.com/office/${cnpj}`, { headers: { Accept: "application/json" } });
   if (response.status === 429) throw new Error("Limite de consultas atingido. Aguarde alguns segundos.");
   if (!response.ok) throw new Error(`CNPJ não encontrado (${response.status})`);
-  return companyRegistryPayload(await response.json(), cnpj);
+  const payload = companyRegistryPayload(await response.json(), cnpj);
+  const registrations = await fetchStateRegistrations(cnpj);
+  if (registrations?.length) payload.state_registrations = registrations;
+  return payload;
+}
+
+// Inscrições estaduais pela API pública do CNPJ.ws (cobre parte dos
+// estados; limite de 3 consultas por minuto). Falha não impede o cadastro.
+async function fetchStateRegistrations(cnpj) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const response = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`, { headers: { Accept: "application/json" }, signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return (data?.estabelecimento?.inscricoes_estaduais || [])
+      .filter((item) => item?.inscricao_estadual && item.ativo !== false)
+      .map((item) => ({ uf: String(item.estado?.sigla || "").toUpperCase(), ie: String(item.inscricao_estadual).trim() }))
+      .filter((item) => item.uf);
+  } catch (error) {
+    return null;
+  }
+}
+
+function normalizeStateRegistrations(value) {
+  let list = value;
+  if (typeof list === "string") { try { list = JSON.parse(list); } catch (error) { list = []; } }
+  return (Array.isArray(list) ? list : [])
+    .map((item) => ({ uf: String(item?.uf || "").toUpperCase().trim(), ie: String(item?.ie || "").trim() }))
+    .filter((item) => item.uf || item.ie);
+}
+
+// Mantém a inscrição do estado da empresa na primeira posição.
+function mergeStateRegistrations(current, fetched, companyUf) {
+  const byUf = new Map();
+  normalizeStateRegistrations(current).forEach((item) => { if (item.uf) byUf.set(item.uf, item.ie); });
+  normalizeStateRegistrations(fetched).forEach((item) => { if (item.uf && item.ie) byUf.set(item.uf, item.ie); });
+  const uf = String(companyUf || "").toUpperCase();
+  const first = uf ? [{ uf, ie: byUf.get(uf) || "" }] : [];
+  return [...first, ...[...byUf.entries()].filter(([key]) => key !== uf).map(([key, ie]) => ({ uf: key, ie }))];
+}
+
+function stateRegistrationsEditorHtml(value, companyUf) {
+  const uf = String(companyUf || "").toUpperCase();
+  const list = mergeStateRegistrations(value, [], uf);
+  const rows = uf ? list : [{ uf: "", ie: "" }, ...list];
+  const ufOptions = (selected) => `<option value="">UF</option>${BR_UFS.map((item) => `<option value="${item}"${item === selected ? " selected" : ""}>${item}</option>`).join("")}`;
+  return `<div class="ie-list" id="form-state_registrations" data-company-uf="${esc(uf)}">
+    ${rows.map((item, index) => index === 0
+      ? `<div class="ie-row" data-fixed="true"><span class="ie-uf" title="Estado da empresa">${esc(item.uf || "UF")}</span><input class="ie-value" value="${esc(item.ie)}" placeholder="Inscrição estadual"><span class="ie-spacer"></span></div>`
+      : `<div class="ie-row"><select class="ie-uf-select">${ufOptions(item.uf)}</select><input class="ie-value" value="${esc(item.ie)}" placeholder="Inscrição estadual"><button class="rowbtn ie-remove" type="button" title="Remover">✕</button></div>`).join("")}
+    <button class="btn ie-add" type="button">+ Adicionar UF</button>
+  </div>`;
+}
+
+function stateRegistrationsValue(form) {
+  const root = form?.querySelector("#form-state_registrations");
+  if (!root) return [];
+  const companyUf = String(form.querySelector('[data-k="state"]')?.value || root.dataset.companyUf || "").toUpperCase();
+  const rows = [...root.querySelectorAll(".ie-row")].map((row) => ({
+    uf: row.dataset.fixed === "true" ? companyUf : String(row.querySelector(".ie-uf-select")?.value || ""),
+    ie: String(row.querySelector(".ie-value")?.value || "").trim()
+  })).filter((item) => item.uf && item.ie);
+  return mergeStateRegistrations(rows, [], companyUf).filter((item) => item.ie);
+}
+
+function wireStateRegistrationsEditor(form) {
+  const root = form?.querySelector("#form-state_registrations");
+  if (!root || root.dataset.wired) return;
+  root.dataset.wired = "1";
+  root.addEventListener("click", (event) => {
+    if (event.target.closest(".ie-remove")) { event.target.closest(".ie-row").remove(); return; }
+    if (!event.target.closest(".ie-add")) return;
+    const row = document.createElement("div");
+    row.className = "ie-row";
+    row.innerHTML = `<select class="ie-uf-select"><option value="">UF</option>${BR_UFS.map((item) => `<option value="${item}">${item}</option>`).join("")}</select><input class="ie-value" placeholder="Inscrição estadual"><button class="rowbtn ie-remove" type="button" title="Remover">✕</button>`;
+    root.insertBefore(row, root.querySelector(".ie-add"));
+    row.querySelector("select").focus();
+  });
 }
 
 function fillCompanyForm(form, companyData) {
   Object.entries(companyData).forEach(([key, value]) => {
+    if (key === "state_registrations") return;
     const field = form?.querySelector(`[data-k="${key}"]`);
     if (field && value != null && value !== "") field.value = value;
   });
+  const editor = form?.querySelector("#form-state_registrations");
+  if (editor) {
+    const current = stateRegistrationsValue(form);
+    const merged = mergeStateRegistrations(current, companyData.state_registrations || [], companyData.state || form.querySelector('[data-k="state"]')?.value);
+    editor.outerHTML = stateRegistrationsEditorHtml(merged, companyData.state || form.querySelector('[data-k="state"]')?.value);
+    wireStateRegistrationsEditor(form);
+  }
 }
 
-async function lookupCompanyByCnpj(form, button) {
+async function lookupCompanyByCnpj(form, button, force = false) {
   const input = form?.querySelector('[data-k="tax_id"]');
   const cnpj = input?.value.replace(/\D/g, "") || "";
   if (cnpj.length !== 14) { toast("Informe um CNPJ com 14 dígitos.", true); return; }
-  if (lastCompanyLookup === cnpj && form.querySelector('[data-k="legal_name"]')?.value) return;
+  if (!force && lastCompanyLookup === cnpj && form.querySelector('[data-k="legal_name"]')?.value) return;
   const originalText = button?.textContent;
   if (button) { button.disabled = true; button.textContent = "Buscando..."; }
   try {
     fillCompanyForm(form, await fetchCompanyRegistryData(cnpj));
     lastCompanyLookup = cnpj;
+    companyLookupFresh = true;
     toast("Dados da empresa preenchidos.");
   } catch (err) {
     lastCompanyLookup = "";
@@ -6579,7 +8709,11 @@ function openCompanyDetails(taxId) {
       ${companyDetailValue("CNPJ", esc(company.tax_id))}
       ${companyDetailValue("Nome empresarial", esc(company.legal_name))}
       ${companyDetailValue("Nome fantasia", esc(company.trade_name))}
+      ${company.registry_pending ? companyDetailValue("Receita", companyRegistryBadgeHtml(company)) : ""}
       ${companyDetailValue("Situação cadastral", esc(company.registration_status))}
+      ${companyDetailValue("Tipo de contato", esc(normalizeTextList(company.contact_type).join(", ")))}
+      ${companyDetailValue("Inscrições estaduais", esc(normalizeStateRegistrations(company.state_registrations).filter((item) => item.ie).map((item) => `${item.uf}: ${item.ie}`).join(" · ")))}
+      ${companyDetailValue("Inscrição municipal", esc(company.municipal_registration))}
       ${companyDetailValue("E-mail", esc(company.email))}
       ${companyDetailValue("Telefone", esc(company.phone))}
       ${companyDetailValue("Abertura", esc(dt(company.founded_at)))}
@@ -6603,7 +8737,8 @@ function openCompanyDetails(taxId) {
     try {
       const enriched = await fetchCompanyRegistryData(company.tax_id);
       delete enriched.tax_id;
-      const payload = Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== ""));
+      enriched.state_registrations = mergeStateRegistrations(company.state_registrations, enriched.state_registrations || [], enriched.state || company.state).filter((item) => item.ie);
+      const payload = { ...Object.fromEntries(Object.entries(enriched).filter(([, value]) => value != null && value !== "")), registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() };
       const saved = await updateRow("companies", company.tax_id, payload);
       upsertCachedEntity("companies", saved);
       toast("Dados da empresa atualizados.");
@@ -6744,6 +8879,50 @@ function upsertCachedEntity(tab, saved) {
   return index >= 0 ? rows[index] : saved;
 }
 
+// Replica os tipos da empresa (Cliente, Fornecedor, Parceiro) para as pessoas
+// vinculadas. A pessoa fica com os tipos de todas as suas empresas e mantém os
+// próprios tipos que não vêm da empresa (Colaborador, Network). Empresa sem
+// tipo não altera ninguém.
+async function syncCompanyContactTypes(companyId, contactIds, companyTypes) {
+  if (!companyTypes.length || !cache?.contacts) return 0;
+  let updated = 0;
+  for (const contactId of normalizeIdList(contactIds)) {
+    const contact = cache.contacts.find((item) => item.id === contactId);
+    if (!contact) continue;
+    const companyIds = [...new Set([...normalizeIdList(contact.company_ids), companyId])];
+    const fromCompanies = companyIds.flatMap((id) => id === companyId ? companyTypes : normalizeTextList(cache.companyById?.[id]?.contact_type));
+    const current = normalizeTextList(contact.contact_type);
+    const next = normalizeTextList([...current.filter((type) => !COMPANY_CONTACT_TYPE_OPTIONS.includes(type)), ...fromCompanies]);
+    const value = next.join("; ") || null;
+    if ((current.join("; ") || null) === value) continue;
+    try {
+      const saved = await updateRow("contacts", contactId, { contact_type: value });
+      contact.contact_type = saved?.contact_type ?? value;
+      updated += 1;
+    } catch (error) {
+      toast(`Erro ao atualizar o tipo de ${contact.name || "pessoa"} · ${error.message}`, true);
+    }
+  }
+  return updated;
+}
+
+// Empresa com entrega é cliente: garante o tipo Cliente e replica para as
+// pessoas vinculadas.
+async function ensureCompanyClientType(companyId) {
+  const company = (cache?.companies || []).find((item) => taxIdDigits(item.tax_id) === taxIdDigits(companyId));
+  if (!company) return;
+  const types = normalizeTextList(company.contact_type);
+  if (types.includes("Cliente")) return;
+  const next = ["Cliente", ...types.filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type))];
+  try {
+    const saved = await updateRow("companies", company.tax_id, { contact_type: next.join("; ") });
+    company.contact_type = saved?.contact_type ?? next.join("; ");
+    await syncCompanyContactTypes(company.tax_id, company.contact_ids, next);
+  } catch (error) {
+    toast("Erro ao marcar a empresa como Cliente · " + error.message, true);
+  }
+}
+
 function updateCachedContactCompanyLinks({ contactId = null, companyId = null, relatedIds = [] }) {
   if (!cache) return;
   const ids = [...new Set(normalizeIdList(relatedIds))];
@@ -6776,6 +8955,10 @@ async function saveForm(tab, id, fs, opts = {}) {
       body[f.k] = multiPickerValues(`form-${f.k}`);
       continue;
     }
+    if (f.type === "ie_list") {
+      body[f.k] = stateRegistrationsValue(form);
+      continue;
+    }
     const el = form?.querySelector(`[data-k="${f.k}"]`);
     if (!el) continue;
     let v;
@@ -6803,7 +8986,18 @@ async function saveForm(tab, id, fs, opts = {}) {
     delete body.company_ids;
     body.company_id = linkedCompanyIds[0] || null;
   }
-  if (tab === "companies") delete body.contact_ids;
+  if (tab === "companies") {
+    delete body.contact_ids;
+    const types = normalizeTextList(body.contact_type).filter((type) => COMPANY_CONTACT_TYPE_OPTIONS.includes(type));
+    if (companyHasDelivery(body.tax_id) && !types.includes("Cliente")) types.unshift("Cliente");
+    body.contact_type = types.join("; ") || null;
+    body.municipal_registration = String(body.municipal_registration || "").trim() || null;
+    if (!id && (!body.legal_name || lastCompanyLookup !== taxIdDigits(body.tax_id))) {
+      toast("Clique em Buscar dados: os dados da empresa vêm da Receita.", true);
+      return;
+    }
+    if (companyLookupFresh && lastCompanyLookup === taxIdDigits(body.tax_id) && body.legal_name) Object.assign(body, { registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() });
+  }
   if (tab === "projects") {
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
     if (body.status === "active") body.substatus = null;
@@ -6821,6 +9015,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       const previousStores = normalizeTextList(previousDelivery.store_platforms).length ? normalizeTextList(previousDelivery.store_platforms) : normalizeTextList(previousDelivery.store_platform ? [previousDelivery.store_platform] : []);
       body.store_platforms = normalizeTextList([...previousStores, ...normalizeTextList(body.store_platforms)]);
       body.freight_channels = normalizeTextList([...normalizeTextList(previousDelivery.freight_channels), ...normalizeTextList(body.freight_channels)]);
+      body.financial_accounts = normalizeTextList([...normalizeTextList(previousDelivery.financial_accounts), ...normalizeTextList(body.financial_accounts)]);
     }
     if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
     const currentStores = normalizeTextList(current?.store_platforms).length ? normalizeTextList(current.store_platforms) : normalizeTextList(current?.store_platform ? [current.store_platform] : []);
@@ -6828,6 +9023,11 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (removedStore) { toast(`A loja ${removedStore} já está ativada e não pode ser removida.`, true); return; }
     const removedMarketplace = normalizeTextList(current?.marketplace_channels).find((channel) => !normalizeTextList(body.marketplace_channels).includes(channel));
     if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
+    const autoSetups = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
+    body.freight_channels = normalizeTextList([...normalizeTextList(body.freight_channels), ...autoSetups.freight]);
+    body.financial_accounts = normalizeTextList([...normalizeTextList(body.financial_accounts), ...autoSetups.financial]);
+    const removedFinancial = normalizeTextList(current?.financial_accounts).find((channel) => !body.financial_accounts.includes(channel));
+    if (removedFinancial) { toast(`A conta financeira ${removedFinancial} já está ativada e não pode ser removida.`, true); return; }
     const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
   }
@@ -6868,6 +9068,8 @@ async function saveForm(tab, id, fs, opts = {}) {
       const qsaContactIds = await companyQsaContactIds(saved.tax_id, saved.qsa);
       linkedContactIds.push(...qsaContactIds.filter((contactId) => !linkedContactIds.includes(contactId)));
       await replaceContactCompanyLinks({ companyId: saved.tax_id, relatedIds: linkedContactIds });
+      const synced = await syncCompanyContactTypes(saved.tax_id, linkedContactIds, normalizeTextList(body.contact_type));
+      if (synced) toast(`Tipo de contato atualizado em ${synced} pessoa(s) vinculada(s).`);
     }
     if (tab === "deals" && body.status === "won" && body.company_id) {
       const dealId = effectiveId || saved?.id;
@@ -6888,6 +9090,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       render();
     }
     if (newDelivery) await provisionDeliveryResources(newDelivery);
+    if (tab === "projects" && body.company_id) await ensureCompanyClientType(body.company_id);
     void init();
   } catch (err) {
     if (saveButton) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
@@ -6968,94 +9171,177 @@ function openSettings() {
 }
 
 // ---------- Ajuda ----------
-function helpContentHtml() {
+// Mesma organização do sistema: os 6 módulos principais no cabeçalho e os
+// submódulos de Cadastros, Ferramentas e Social na barra de ferramentas.
+// Cada página tem apresentação e seções com passo a passo, recursos e dicas.
+const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
+const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
+const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
+const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
+  cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
+const HELP_PAGES = {
+  home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
+    lead: "O CMS reúne relacionamento comercial (CRM), gestão das entregas e tarefas (PM), processos (BPM) e ferramentas do escritório. Escolha acima um dos módulos principais ou, na barra, um submódulo de Cadastros, Ferramentas ou Social.",
+    sections: [
+      { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
+        cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
+      { title: "Cabeçalho e rodapé", cards: [["↻ Atualizar", "Ao lado do sino. Pisca e mostra quantas alterações outros usuários fizeram; clique para trazer os dados novos sem recarregar a página. Comentários chegam sozinhos no painel aberto."], ["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
+      { title: "Tabelas e visualizações", lead: "Todas as tabelas seguem a mesma barra: <b>≡ Agrupar · ⊞ Colunas · Visualização ▾ · Matriz · Dashboard · ⬆⬇ Dados</b>. O que não se aplica fica desativado.",
+        cards: [...HELP_TABLE_SECTION.cards, ["▸ Expandir", "A coluna após a seleção abre subtarefas e grupos; o ▸ do cabeçalho expande ou recolhe tudo."], ["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard, conforme o módulo. Em telas menores os botões viram ícones."]] },
+      { title: "Tablet e celular", steps: ["Instale o app pela tela inicial para usar em tela cheia.", "Segure o dedo no título da coluna para filtrar.", "Faça pinça para dar zoom no mapa mental e no fluxo BPMN."] },
+      { title: "Administração", cards: [["LOG", "Somente administradores, no rodapé. Chamadas ao banco desta sessão (método, recurso, status, tempo e erro) e erros de todos os usuários, com busca e filtro \"Só erros\"."], ["Atualizações", "Resumo das novidades da versão, no rodapé."]],
+        tips: ["Se algo não aparecer depois de uma atualização, recarregue a página (Ctrl+Shift+R) ou feche e abra o app instalado."] }
+    ] },
+  contacts: { kicker: "Módulo", title: "Pessoas", path: ["Cabeçalho", "Pessoas"],
+    lead: "Cadastro único dos contatos — clientes, leads, fornecedores e parceiros — vinculados a uma ou mais empresas.",
+    sections: [
+      { title: "Cadastrar uma pessoa", steps: ["Clique no <b>+</b> da barra.", "Preencha o nome e ao menos um telefone ou e-mail.", "Vincule uma ou mais empresas, o tipo de contato e o canal de origem.", "Complete cargo, departamento, redes sociais, grupos, tags, CPF, nascimento e observações e salve."],
+        cards: [["Padronização", "Telefones e e-mails são padronizados ao salvar."], ["Sem duplicados", "Mesmo nome com o mesmo telefone ou e-mail atualiza o contato existente."], ["Colunas fixas", "Nome e telefone ficam fixos ao rolar a tabela."]] },
+      HELP_TABLE_SECTION,
+      { title: "Importar contatos", cards: [["Planilha", "Em ⬆⬇ Dados baixe a planilha modelo, preencha e importe. Pessoas com o mesmo nome e telefone ou e-mail são atualizadas; empresas são vinculadas pelo CNPJ ou nome."], ["Google Contatos", "Na extensão Chrome, em Integrações › Google Contatos, conecte a conta, ajuste o mapeamento de campos e importe."], ["Pelas conversas", "Em Conversas, associe a conversa a uma pessoa existente."]] }
+    ] },
+  companies: { kicker: "Módulo", title: "Empresas", path: ["Cabeçalho", "Empresas"],
+    lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
+    sections: [
+      { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b>: razão social, nome fantasia, contato, abertura, situação, capital social, atividades, endereço e QSA vêm da Receita e não podem ser editados.", "Confira as inscrições estaduais (a primeira é a do estado da empresa; adicione outras UFs) e a inscrição municipal.", "Escolha o tipo de contato, as pessoas vinculadas e as observações e salve. Para corrigir dados, use <b>Atualizar da Receita</b>."],
+        cards: [["Importar planilha", "Em ⬆⬇ Dados baixe o modelo e informe só CNPJ, tipo de contato, inscrição municipal e observações. A empresa entra na hora com a tag <b>Desatualizada</b> e o CMS busca os dados da Receita em segundo plano (cerca de 5 por minuto). Se a consulta falhar aparece <b>Erro na Receita</b>: use Atualizar da Receita."], ["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
+      HELP_TABLE_SECTION
+    ] },
+  conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
+    lead: "Histórico das conversas de WhatsApp e Reddit Chat, importado ou capturado pela extensão, ligado às pessoas e aos negócios.",
+    sections: [
+      { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b> (sem mídia).", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha <b>Conversa (.txt/.zip)</b>.", "Selecione o arquivo .txt ou .zip.", "O CMS liga a conversa à pessoa com o mesmo nome ou telefone; se não achar, associe manualmente."] },
+      { title: "Pelo celular (Android)", steps: ["Instale o app ENTERPRISER pelo Chrome (Adicionar à tela inicial).", "No WhatsApp, abra a conversa e use <b>Mais › Exportar conversa › Sem mídia</b>.", "Na lista de compartilhamento escolha <b>ENTERPRISER</b>.", "O CMS abre e importa a conversa direto no módulo Conversas."], lead: "No iPhone o compartilhamento direto não é suportado pelo sistema: salve o .zip em Arquivos e importe pelo menu Dados." },
+      { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Responsável", "É o usuário que subiu a conversa; cada um tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
+      { title: "Trabalhar as conversas", cards: [["Ler", "Clique na conversa para abrir as mensagens."], ["Associar contato", "Selecione uma ou várias conversas e ligue a uma pessoa."], ["Editar e criar negociação", "No lápis da conversa (ou em Criar negociação, com várias selecionadas) escolha a pessoa, a empresa ou Sem empresa e o produto ou Sem produto. O negócio leva o nome do produto."]] },
+      { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
+    ] },
+  deals: { kicker: "Módulo", title: "Negócios", path: ["Cabeçalho", "Negócios"],
+    lead: "Oportunidades comerciais em pipelines com etapas, valor e previsão de fechamento.",
+    sections: [
+      { title: "Cadastrar um negócio", steps: ["Clique no <b>+</b>.", "Escolha a empresa (ou \"Não possui empresa\") e o contato.", "Escolha produto, pipeline, etapa e origem do lead.", "Informe valor e previsão de fechamento e salve."] },
+      { title: "Quadro do pipeline", steps: ["Escolha <b>Quadro</b> na visualização.", "Arraste os cartões entre as etapas.", "Solte em <b>Ganho</b> ou <b>Perdido</b> para fechar."] },
+      { title: "Ganho vira entrega", lead: "Quando o negócio é ganho, o CMS cria automaticamente a <b>Entrega</b> do cliente com o produto vendido, já com as tarefas, objetivos e metas do produto.",
+        tips: ["Pipelines e etapas são configurados em Cadastros › Pipeline."] }
+    ] },
+  projects: { kicker: "Módulo", title: "Entregas", path: ["Cabeçalho", "Entregas", "👁 abrir"],
+    lead: "A entrega é o projeto ou serviço pós-venda do cliente, no padrão <b>EC365 | Cliente | Produto</b>. Abra pelo ícone de olho para trabalhar nas abas Tarefas, Objetivos, Metas e Dados.",
+    sections: [
+      { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
+      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Cada canal ativado libera as tarefas daquele Canal e não pode ser desativado depois de salvo.",
+        cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
+      { title: "Aba Tarefas", lead: "Tarefas do produto e do dia a dia com subtarefas, checklist, responsáveis (colaboradores e Cliente), dependências, referências a documentos e tabelas, comentários e status.",
+        cards: [["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard."], ["Prazos", "Cada tarefa tem duração e <b>Iniciar após dependência (dias)</b>. Quando a anterior termina, as dependentes são recalculadas pela data real ou prevista, com dias úteis e recorrência."]],
+        tips: ["Datas editadas à mão não são recalculadas, e dependências circulares são bloqueadas."] },
+      { title: "Abas Objetivos e Metas", cards: [["Objetivos", "Critério de conclusão, Categoria, Canal, responsável, prazo e dependências. O progresso vem das tarefas vinculadas."], ["Metas", "Indicador, comparação (no mínimo, no máximo, exato), valor atual, alvo, Categoria, Canal e prazo. Atualize o valor atual direto na tabela."], ["Dashboard", "Atingimento médio, atingidas, atrasadas e bloqueadas, lista de KPIs e quadro OKR."], ["OKR", "Objetivos (O) e metas (KR) com a mesma Categoria e Canal formam um cartão com o progresso geral."]] },
+      { title: "Aba Dados", lead: "Faturamento mensal do negócio por canal durante a entrega e o histórico das entregas de continuidade." }
+    ] },
+  activities: { kicker: "Módulo", title: "Tarefas", path: ["Cabeçalho", "Tarefas"],
+    lead: "Todas as tarefas de todas as entregas em um só lugar, com cliente, entrega, origem, prioridade, estrutura, datas, status, prazo e comentários.",
+    sections: [
+      { title: "Acompanhar", steps: ["Filtre por cliente, status, prioridade ou responsável.", "Altere o status direto na linha.", "Clique no lápis para abrir a tarefa no formulário da entrega."] },
+      { title: "Agrupar e editar em massa", cards: [["≡ Agrupar por cliente", "Um grupo por cliente com a contagem; use ▸ para abrir um ou todos."], ["Edição em massa", "Neste módulo altera <b>Status</b> e <b>Prioridade</b>. Marque as tarefas, clique em ✎ em AÇÕES e escolha o valor."]] }
+    ] },
+  "reg-products": { kicker: "Cadastros", title: "Produtos", path: ["Rodapé", "Cadastros", "Produtos"],
+    lead: "Categoria, nome, descrição, preços, página de vendas, duração e status. O produto carrega a estrutura que a entrega herda na venda.",
+    sections: [{ title: "Montar um produto", steps: ["Clique no <b>+</b> e preencha os dados e a duração.", "Clique no olho para abrir a estrutura do produto.", "Vincule tarefas, objetivos e metas.", "Ao ganhar um negócio com o produto, a entrega nasce com essa estrutura."] }] },
+  "reg-pipelines": { kicker: "Cadastros", title: "Pipeline", path: ["Rodapé", "Cadastros", "Pipeline"],
+    lead: "Até cinco fluxos comerciais, cada um com suas etapas. Ganho e Perdido existem sempre.",
+    sections: [{ title: "Criar um pipeline", steps: ["Clique no <b>+</b>.", "Dê o nome e adicione as etapas na ordem.", "Salve e use o pipeline nos negócios."] }] },
+  "reg-users": { kicker: "Cadastros", title: "Usuários", path: ["Rodapé", "Cadastros", "Usuários"],
+    lead: "Nome, apelido, e-mail, telefone, perfil, função, cargo, status, acesso ao login e permissões.",
+    sections: [{ title: "Cadastrar e liberar acesso", steps: ["Clique no <b>+</b> e preencha os dados.", "Escolha o perfil: Administrador, Colaborador, Desenvolvedor, Cliente ou Fornecedor.", "Libere o acesso ao login.", "Marque por módulo: ver, criar, editar, clonar, excluir e operar."] }] },
+  "reg-activities": { kicker: "Cadastros", title: "Tarefas", path: ["Rodapé", "Cadastros", "Tarefas"],
+    lead: "Modelos de tarefa. A mesma tarefa pode valer para vários produtos e, ao salvar, as entregas desses produtos são sincronizadas.",
+    sections: [
+      { title: "Cadastrar um modelo", steps: ["Escolha os produtos.", "Monte o nome com <b>Usar estrutura</b>: Categoria | Canal | Módulo | Submódulo | Tarefa | Tipo.", "Defina prioridade, recorrência, dias úteis, prazo e iniciar após dependência.", "Adicione checklist, objetivo, responsáveis padrão, dependências e subtarefas."],
+        tips: ["Usar estrutura exige Categoria, Canal, Módulo e Tipo. A coluna Tarefa fica fixa ao rolar."] },
+      HELP_MIND_MAP_SECTION
+    ] },
+  "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
+    lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+  "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
+    lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+  "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
+    lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
+    sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
+  "tool-emails": { kicker: "Ferramentas", title: "Emails", path: ["Rodapé", "Ferramentas", "Emails"],
+    lead: "Contas criadas automaticamente para as entregas no domínio <b>@ecommerce365.com.br</b>.",
+    sections: [{ title: "Usar", cards: [["Senha", "Pode ser revelada ou copiada. Fica criptografada no banco."], ["Busca", "Filtre por entrega, cliente ou endereço."]] }] },
+  "tool-processes": { kicker: "Ferramentas", title: "Processos", path: ["Rodapé", "Ferramentas", "Processos"],
+    lead: "Biblioteca de procedimentos com Categoria, Canal, Módulo, Submódulo, tags e etapas, desenhada como fluxo BPMN.",
+    sections: [
+      { title: "Cadastrar as etapas", steps: ["Preencha Categoria, Canal, Módulo e Submódulo.", "Adicione as etapas e escolha o elemento: <b>Tarefa</b>, <b>Decisão</b> ou <b>Fim</b>.", "Defina o responsável (cargo, Cliente ou Sistema) e a próxima etapa.", "Nas decisões, rotule as saídas (ex.: Sim → 4, Não → 2)."],
+        tips: ["Escolher uma etapa anterior como próxima cria um retrabalho (loop)."] },
+      { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "No botão à direita do painel: Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["Card da etapa", "Sistema na vertical à esquerda, módulo/submódulo acima do nome. ⓘ (ao lado das raias) mostra também os detalhes da etapa no próprio card."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
+    ] },
+  "tool-documents": { kicker: "Ferramentas", title: "Documentação", path: ["Rodapé", "Ferramentas", "Documentação"],
+    lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
+    sections: [{ title: "Criar um documento", steps: ["Informe Categoria, Canal, Módulo, Submódulo e Tipo.", "O nome é montado sozinho: <b>CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | TIPO</b>.", "Monte os slides com os blocos.", "Use ≡ para agrupar por Categoria + Canal + Módulo."] }] },
+  "tool-tables": { kicker: "Ferramentas", title: "Tabelas", path: ["Rodapé", "Ferramentas", "Tabelas"],
+    lead: "Tabelas personalizadas com abas, que podem ser referenciadas nas tarefas.",
+    sections: [
+      { title: "Estrutura e nome", steps: ["Na barra da tabela preencha Categoria, Canal, Módulo, Submódulo e Nome.", "Marque <b>Usar como nome do arquivo</b> para o nome virar CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | NOME.", "Salve."] },
+      { title: "Colunas", cards: [["Menu da coluna", "Clique no <b>⋮</b> ou com o botão direito no título: congelar, ordenar, filtrar, ajustar largura, inserir à esquerda/direita e excluir."], ["Congelar", "Congela da primeira coluna até a escolhida; elas ficam fixas ao rolar para a direita (📌)."], ["Dimensionar", "Arraste a borda direita do título. Duplo clique ajusta ao conteúdo."], ["Excluir", "Pede confirmação no próprio menu e só é definitivo ao salvar a tabela."]] },
+      { title: "Importar", steps: ["Clique em <b>⬆⬇ Dados</b>.", "Escolha um CSV, XLS ou XLSX (administradores)."] }
+    ] },
+  social: { kicker: "Rodapé", title: "Social", path: ["Rodapé", "Social"],
+    lead: "Abre na Home com os perfis configurados em Integrações: Facebook, Instagram, LinkedIn, Reddit, TikTok Shop e YouTube.",
+    sections: [{ title: "Redes", lead: "Cada rede tem sua aba com a tabela do módulo, colunas, filtros e exportação de dados." }] }
+};
+const HELP_PAGE_BY_MAIN = { contacts: "contacts", companies: "companies", conversations: "conversations", deals: "deals", projects: "projects", activities: "activities" };
+let helpPageId = "home";
+
+function helpSectionHtml(section) {
   const platformText = IS_EXTENSION_CONTEXT
-    ? "Você está usando a extensão Chrome, que acrescenta captura de WhatsApp Web e Reddit Chat e importação do Google Contatos."
-    : "Você está usando a versão web. Captura automática de WhatsApp Web e Reddit Chat e importação do Google Contatos permanecem exclusivas da extensão Chrome.";
-  return `<div class="help-content">
-    <div class="help-intro"><strong>ENTERPRISER • CMS</strong><span>Manual das funções disponíveis</span></div>
-    <p>O CMS reúne relacionamento comercial, vendas e execução das entregas. ${platformText}</p>
-    <nav class="help-index" aria-label="Índice da ajuda">
-      <a href="#help-start">Acesso e navegação</a><a href="#help-modules">Módulos</a><a href="#help-tables">Tabelas e filtros</a>
-      <a href="#help-sales">Vendas</a><a href="#help-catalog">Cadastros</a><a href="#help-deliveries">Entregas</a>
-      <a href="#help-conversations">Conversas</a><a href="#help-tools">Ferramentas</a><a href="#help-admin">Administração</a>
-    </nav>
-
-    <section class="help-section" id="help-start"><h4>Acesso e navegação</h4>
-      <div class="help-columns"><div><b>Login e dados</b><p>Na web, o acesso usa a conta do Supabase fornecida pelo administrador. Apenas perfis ativos entram no CMS. O tema claro ou escuro fica salvo neste navegador.</p></div>
-      <div><b>Cabeçalho e rodapé</b><p>O logo retorna à Home. Os módulos ficam no centro; à direita estão notificações, chat interno, integrações, tema, configurações e sair. No rodapé ficam LOG, AJUDA, CADASTROS, FERRAMENTAS, SOCIAL e ATUALIZAÇÕES.</p></div></div>
-      <p class="help-note">Notificações ainda não possuem automação ativa. O LOG aparece apenas para administradores.</p>
-    </section>
-
-    <section class="help-section" id="help-modules"><h4>Módulos principais</h4><ul>
-      <li><b>Home:</b> totais de pessoas, empresas, negócios, produtos e entregas, além de tarefas pendentes, atrasadas e próximas.</li>
-      <li><b>Pessoas:</b> contatos, telefones, e-mails, múltiplas empresas vinculadas, cargo, canal, CPF, nascimento, redes sociais e grupos.</li>
-      <li><b>Empresas:</b> CNPJ, razão social, nome fantasia, múltiplas pessoas vinculadas, endereço, situação cadastral, atividades e observações. A consulta pelo CNPJ preenche dados públicos disponíveis.</li>
-      <li><b>Conversas:</b> histórico importado ou capturado, associação a pessoas e conversão individual ou em lote para negócio.</li>
-      <li><b>Negócios:</b> empresa, contato, produto, responsável, pipeline, etapa, origem, valor, previsão e situação aberto, ganho ou perdido.</li>
-      <li><b>Entregas:</b> projetos e serviços pós-venda com cliente, produto, período, status, tarefas, objetivos e metas.</li>
-      <li><b>Tarefas:</b> visão consolidada de todas as entregas com origem, prioridade, dependências, checklist, objetivo, responsáveis, datas, status, prazo calculado e comentários por usuário.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-tables"><h4>Tabelas, busca e filtros</h4><ul>
-      <li>A busca central filtra imediatamente os registros da tela atual.</li>
-      <li>Clique no título de uma coluna para ordenar; use <b>Ctrl+clique</b> no título para escolher valores de filtro.</li>
-      <li>Filtros ativos aparecem na faixa acima da tabela, na ordem das colunas. Clique no × de uma badge para removê-la ou use <b>Limpar tudo</b>.</li>
-      <li>O botão <b>⊞</b> permite mostrar, ocultar e arrastar colunas. A preferência fica salva neste navegador.</li>
-      <li>O botão <b>⬆⬇</b> exporta CSV usando colunas visíveis ou todas as colunas e abre a importação de conversas quando disponível.</li>
-      <li>As tabelas longas têm paginação e rolagem horizontal. Em módulos compatíveis, o menu de visualização oferece Tabela, Quadro, Calendário ou Gantt.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-sales"><h4>Negócios e pipelines</h4>
-      <p>Cadastre até cinco pipelines, cada um com nome e etapas próprias, em <b>Cadastros → Pipeline</b>. No Quadro de Negócios, arraste cartões entre etapas, Ganho e Perdido.</p>
-      <p><b>Negócio ganho:</b> ao marcar um negócio como ganho, o CMS cria a Entrega vinculada ao cliente e ao produto. O nome, período e tipo são formados a partir dos dados comerciais e do produto.</p>
-      <p><b>Automação do produto:</b> tarefas, objetivos e metas configurados no produto são copiados para a nova entrega, preservando responsáveis, recorrências, checklists e dependências.</p>
-    </section>
-
-    <section class="help-section" id="help-catalog"><h4>Cadastros</h4><ul>
-      <li><b>Produtos:</b> categoria, descrição, preços, página de vendas, duração e status. O ícone de configuração abre Tarefas, Objetivos e Metas do produto.</li>
-      <li><b>Tarefas do produto:</b> grupo, setor, canal, tipo, prioridade, informação, recorrência, checklist, objetivo, responsáveis e dependências. É possível ordenar, clonar e reaproveitar tarefas prontas.</li>
-      <li><b>Objetivos:</b> critério de conclusão, prazo sugerido, responsável e dependência de outros objetivos e/ou tarefas.</li>
-      <li><b>Metas:</b> indicador, comparação, valor-alvo, unidade, prazo, responsável e dependência de outras metas e/ou tarefas.</li>
-      <li><b>Pipeline:</b> criação e edição dos fluxos comerciais e suas etapas.</li>
-      <li><b>Usuários:</b> nome, e-mail, telefone, perfil, função, cargo, status e acesso ao login.</li>
-    </ul><p class="help-note">Dependências cíclicas são bloqueadas. Uma tarefa, objetivo ou meta dependente só avança quando os itens anteriores forem concluídos.</p></section>
-
-    <section class="help-section" id="help-deliveries"><h4>Detalhes da entrega</h4>
-      <p>Abra uma entrega para acessar as abas <b>Tarefas</b>, <b>Objetivos</b> e <b>Metas</b>. Todas possuem busca, seleção de colunas e os modos Tabela, Matriz e Dashboard.</p><ul>
-      <li><b>Tarefas:</b> crie tarefas do dia a dia, altere status e datas, acompanhe checklists, comentários, responsáveis e bloqueios. Clique em Comentários para registrar várias mensagens identificadas pelo usuário.</li>
-      <li><b>Objetivos:</b> acompanhe progresso calculado pelas tarefas vinculadas, responsável, prazo, dependências e status.</li>
-      <li><b>Metas:</b> atualize valor atual, indicador, valor-alvo, prazo, dependências e status. Metas atingidas podem ser concluídas.</li>
-      <li><b>Matriz:</b> distribui itens por Em aberto, Em andamento, Atendido e Cancelado. <b>Dashboard:</b> resume andamento, atendidos, atrasados e bloqueados.</li>
-    </ul></section>
-
-    <section class="help-section" id="help-conversations"><h4>Conversas e integrações</h4>
-      <p>Na web, importe arquivos <b>.txt</b> ou <b>.zip</b> exportados do WhatsApp. Abra o histórico dentro do CMS, associe a uma pessoa ou selecione várias conversas para criar uma negociação em lote.</p>
-      <p>Na extensão Chrome, WhatsApp Web e Reddit Chat podem alimentar a fila automaticamente. Google Contatos permite selecionar pessoas, criar ou atualizar contatos e criar empresas identificadas pelos dados do Google.</p>
-      <p>O painel Integrações mostra o que está ativo e o que permanece em desenvolvimento. O Chat do cabeçalho permite conversas internas entre usuários ativos do CMS.</p>
-    </section>
-
-    <section class="help-section" id="help-tools"><h4>Ferramentas</h4><ul>
-      <li><b>Arquivos:</b> catálogo por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data. A busca principal localiza empresas por nome ou CNPJ.</li>
-      <li><b>E-mails:</b> ao criar uma entrega, o CMS cria automaticamente na HostGator uma conta formada pela raiz do CNPJ em <b>@ecommerce365.com.br</b>. A senha pode ser revelada ou copiada nesta tela.</li>
-      <li><b>Processos:</b> biblioteca de treinamento organizada por nome, categoria e tags. Cada etapa registra sistema, módulo, submódulo, grupo, tipo, URL e detalhes. O botão de fluxo agrupa as etapas visualmente por módulo, submódulo e grupo.</li>
-      <li><b>Documentação:</b> apresentações textuais em slides, com título, páginas, negrito, itálico, cores e alinhamento. Os slides podem ser separados em grupos recolhíveis e os grupos podem ser reordenados por arraste ou pelas setas.</li>
-      <li>Busca, classificação, filtros e seleção de colunas funcionam nas tabelas de Arquivos, E-mails, Processos e Documentação.</li>
-    </ul><p class="help-note"><b>Segurança:</b> as credenciais de e-mail são compartilhadas entre os usuários ativos do CMS e a senha permanece criptografada no Supabase. Arquivos, processos e documentos podem ser consultados por usuários ativos e alterados apenas por administradores.</p></section>
-
-    <section class="help-section" id="help-admin"><h4>Administração e suporte</h4><ul>
-      <li><b>LOG:</b> administradores consultam as alterações recentes registradas nas principais entidades.</li>
-      <li><b>Usuários:</b> o administrador cria ou atualiza acessos, define perfil e pode inativar colaboradores.</li>
-      <li><b>Configurações:</b> guarda identificação usada em conversas e a conexão Supabase. URL e chave vazias ativam os dados de demonstração.</li>
-      <li><b>Atualizações:</b> mostra um resumo da versão instalada.</li>
-      <li><b>Sair:</b> encerra a sessão local do usuário.</li>
-    </ul><p class="help-note">Na versão web não existe tela obrigatória de aceite. O consentimento permanece na extensão por causa das funções de captura automática.</p></section>
-  </div>`;
+    ? "Você está na extensão Chrome, com captura de WhatsApp Web e Reddit Chat e importação do Google Contatos."
+    : "Você está na versão web. A captura de WhatsApp Web e Reddit Chat e a importação do Google Contatos são exclusivas da extensão Chrome.";
+  return `<section class="help-block">
+    <h4>${esc(section.title)}</h4>${section.lead ? `<p class="help-block-lead">${section.lead}</p>` : ""}
+    ${section.steps?.length ? `<ol class="help-steps">${section.steps.map((step) => `<li>${step}</li>`).join("")}</ol>` : ""}
+    ${section.cards?.length ? `<div class="help-cards">${section.cards.map(([title, text]) => `<div class="help-card"><b>${title}</b><p>${text === "PLATFORM_TEXT" ? platformText : text}</p></div>`).join("")}</div>` : ""}
+    ${section.tips?.length ? `<div class="help-tips">${section.tips.map((tip) => `<p><span>Dica</span>${tip}</p>`).join("")}</div>` : ""}
+  </section>`;
 }
-function openHelpModal() {
-  shell("Ajuda · Como usar o ENTERPRISER • CMS", `${helpContentHtml()}
-    <div class="modal-foot"><button class="btn" id="cancel">Fechar</button></div>`, { cls: "full" });
-  document.getElementById("cancel").addEventListener("click", closeModal);
+
+function renderHelpSection() {
+  const root = document.getElementById("help-root");
+  if (!root) return;
+  const page = HELP_PAGES[helpPageId] || HELP_PAGES.home;
+  document.querySelectorAll("[data-help-page]").forEach((button) => button.classList.toggle("active", button.dataset.helpPage === helpPageId));
+  root.querySelector(".help-body").innerHTML = `<article class="help-page">
+    <div class="help-hero">
+      <div><span class="help-kicker">${esc(page.kicker)}</span><h2>${esc(page.title)}</h2><p>${page.lead}</p></div>
+      <div class="help-path"><span>Onde encontrar</span><div>${page.path.map((item) => `<b>${esc(item)}</b>`).join("<i>›</i>")}</div></div>
+    </div>
+    ${page.sections.map(helpSectionHtml).join("")}
+  </article>`;
+  root.querySelector(".help-body").scrollTop = 0;
+}
+
+function openHelpModal(pageId = HELP_PAGE_BY_MAIN[state.tab] || "home") {
+  helpPageId = HELP_PAGES[pageId] ? pageId : "home";
+  const headerCenter = `<div class="modal-header-tabs help-header-tabs" role="tablist" aria-label="Módulos">
+    ${HELP_HEADER_SLOTS.map(([id, label]) => `<button class="modal-header-tab" data-help-page="${id}" role="tab">${label}</button>`).join("")}
+  </div>`;
+  shell("Ajuda", `<div id="help-root" class="help-root">
+      <div class="help-toolbar">
+        <button class="registration-toolbar-title help-home-btn" data-help-page="home" type="button" title="Visão geral da ajuda">Ajuda</button>
+        <div class="help-subtabs" role="tablist" aria-label="Submódulos">${HELP_TOOLBAR_SLOTS.map(([id, label]) => `<button class="help-subtab" data-help-page="${id}" role="tab">${label}</button>`).join("")}</div>
+      </div>
+      <div class="help-body"></div>
+    </div>`, {
+    cls: "full registrations-modal",
+    headerCenter,
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
+  });
+  document.querySelectorAll("[data-help-page]").forEach((button) => button.addEventListener("click", () => {
+    helpPageId = button.dataset.helpPage;
+    renderHelpSection();
+  }));
+  renderHelpSection();
 }
 
 // ---------- Pipelines (fluxos de negociação) ----------
@@ -7110,7 +9396,7 @@ function renderPipelineDrawer() {
       renderRegistrationsSection();
     }
   });
-  document.getElementById("pipeline-name")?.focus();
+  document.getElementById("pipeline-name")?.focus({ preventScroll: true });
 }
 function renderPipelinesModal() {
   const el = document.getElementById("pm-body");
@@ -7517,7 +9803,8 @@ function openRegistrationsModal(section = "products") {
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Cadastros</em></span>'
+    headerActions: liveRefreshButtonHtml(),
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-registration-tab]").forEach((button) => button.addEventListener("click", () => {
     document.getElementById("registration-filter-dd")?.remove();
@@ -7532,23 +9819,93 @@ function registrationProductName(productId) {
   return cache.productById?.[productId]?.name || cache.products.find((product) => product.id === productId)?.name || "Produto não encontrado";
 }
 
-function registrationTaskHierarchy(items) {
+const REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER = {
+  scope: "registration",
+  groupId: (item) => item.template_group_id || item.id,
+  parent: (item, items) => productTemplateParent(item, items),
+  dependencies: (item) => normalizeIdList(item.dependency_template_ids, item.depends_on_template_id),
+  subtitle: (node) => [...new Set(node.linked.map((item) => registrationProductName(item.product_id)))].join(", ") || "Sem produto",
+  searchText: (item) => registrationProductName(item.product_id),
+  editClass: "reg-template-edit",
+  editAttrs: (item) => `data-id="${esc(item.id)}" data-product="${esc(item.product_id)}"`
+};
+const DELIVERY_MIND_MAP_TASK_ADAPTER = {
+  scope: "delivery",
+  groupId: (item) => item.id,
+  parent: (item, items) => item.parent_activity_id ? items.find((candidate) => candidate.id === item.parent_activity_id) || null : null,
+  dependencies: (item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id),
+  subtitle: (node) => {
+    const status = TASK_STATUS.find((entry) => entry.id === (node.item.status || "todo"))?.label || "Em aberto";
+    const due = node.item.due_date || node.item.planned_end_date;
+    return due ? `${status} · ${dt(due)}` : status;
+  },
+  searchText: () => "",
+  editClass: "delivery-mind-task-open",
+  editAttrs: (item) => `data-id="${esc(item.id)}"`
+};
+
+const mindMapTitle = (adapter, item) => (adapter?.title || activityDisplayName)(item);
+const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }, { key: "channel", empty: "Sem canal" }];
+const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (item.status || "todo"))?.label || "Em aberto";
+const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
+  scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
+  title: (item) => item.name || "Objetivo",
+  groupId: (item) => item.id,
+  parent: () => null,
+  dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => registrationProductName(node.item.product_id),
+  searchText: (item) => [registrationProductName(item.product_id), item.channel, item.completion_criteria, item.comments, item.notes].join(" "),
+  editClass: "reg-template-edit",
+  editAttrs: (item) => `data-id="${esc(item.id)}" data-product="${esc(item.product_id)}"`
+};
+const REGISTRATION_MIND_MAP_GOAL_ADAPTER = {
+  ...REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER,
+  scope: "registration-goals", rootLabel: "Metas", countLabel: "meta(s)", addTitle: "Adicionar meta",
+  title: (item) => item.name || "Meta",
+  dependencies: (item) => normalizeIdList(item.dependency_goal_template_ids),
+  subtitle: (node) => `${registrationProductName(node.item.product_id)} · ${node.item.metric || "Sem indicador"}`,
+  searchText: (item) => [registrationProductName(item.product_id), item.metric, item.unit, item.comments, item.notes].join(" ")
+};
+const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
+  scope: "delivery-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos",
+  title: (item) => item.name || "Objetivo",
+  groupId: (item) => item.id,
+  parent: () => null,
+  dependencies: (item) => normalizeIdList(item.dependency_objective_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => node.item.due_date ? `${mindMapStatusLabel(node.item)} · ${dt(node.item.due_date)}` : mindMapStatusLabel(node.item),
+  searchText: (item) => [item.completion_criteria, item.comments, item.notes].join(" "),
+  editClass: "",
+  editAttrs: () => ""
+};
+const DELIVERY_MIND_MAP_GOAL_ADAPTER = {
+  ...DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER,
+  scope: "delivery-goals", rootLabel: "Metas",
+  title: (item) => item.name || "Meta",
+  dependencies: (item) => normalizeIdList(item.dependency_goal_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
+  subtitle: (node) => `${Number(node.item.current_value || 0).toLocaleString("pt-BR")} / ${Number(node.item.target_value || 0).toLocaleString("pt-BR")} ${node.item.unit || ""}`.trim() + ` · ${mindMapStatusLabel(node.item)}`,
+  searchText: (item) => [item.metric, item.unit, item.comments, item.notes].join(" ")
+};
+
+function registrationTaskHierarchy(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
   const groups = new Map();
   items.forEach((item) => {
-    const id = item.template_group_id || item.id;
+    const id = adapter.groupId(item);
     if (!groups.has(id)) groups.set(id, []);
     groups.get(id).push(item);
   });
   const nodes = [...groups.entries()].map(([id, linked]) => {
     const item = linked[0];
-    const parent = linked.map((candidate) => productTemplateParent(candidate, items)).find(Boolean);
-    return { id, linked, item, parentId: parent ? (parent.template_group_id || parent.id) : null, dependencies: new Set() };
+    const parent = linked.map((candidate) => adapter.parent(candidate, items)).find(Boolean);
+    return { id, linked, item, parentId: parent ? adapter.groupId(parent) : null, dependencies: new Set() };
   });
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const groupIdByTemplateId = new Map();
   nodes.forEach((node) => node.linked.forEach((item) => groupIdByTemplateId.set(item.id, node.id)));
   nodes.forEach((node) => node.linked.forEach((item) =>
-    normalizeIdList(item.dependency_template_ids, item.depends_on_template_id).forEach((id) => {
+    adapter.dependencies(item).forEach((id) => {
       const dependencyGroupId = groupIdByTemplateId.get(id);
       if (dependencyGroupId && dependencyGroupId !== node.id) node.dependencies.add(dependencyGroupId);
     })));
@@ -7560,7 +9917,7 @@ function registrationTaskHierarchy(items) {
   });
   const roots = nodes.filter((node) => !node.parentId || !nodeById.has(node.parentId));
   const compare = (a, b) => Number(a.item.sort_order || 0) - Number(b.item.sort_order || 0)
-    || activityDisplayName(a.item).localeCompare(activityDisplayName(b.item), "pt-BR", { sensitivity: "base" });
+    || mindMapTitle(adapter, a.item).localeCompare(mindMapTitle(adapter, b.item), "pt-BR", { sensitivity: "base" });
   const remaining = new Map(roots.map((node) => [node.id, node]));
   const ordered = [];
   while (remaining.size) {
@@ -7572,85 +9929,416 @@ function registrationTaskHierarchy(items) {
   return { ordered, children, nodeById };
 }
 
-function registrationMindMapTaskHtml(node, hierarchy, orderById, looseReason = "") {
-  const products = [...new Set(node.linked.map((item) => registrationProductName(item.product_id)))];
-  const dependencyNames = [...node.dependencies].map((id) => hierarchy.nodeById.get(id)?.item).filter(Boolean).map(activityDisplayName);
+function registrationMindMapTaskHtml(node, hierarchy, orderById, adapter) {
+  const dependencyNames = [
+    ...[...node.dependencies].map((id) => hierarchy.nodeById.get(id)?.item).filter(Boolean).map((item) => mindMapTitle(adapter, item)),
+    ...(adapter.extraDependencyNames?.(node.item) || [])
+  ];
   const subtasks = hierarchy.children.get(node.id) || [];
   const order = orderById.get(node.id) || 0;
-  return `<article class="registration-mind-task${looseReason ? " is-loose" : ""}">
-    <button class="registration-mind-task-main reg-template-edit" type="button" data-id="${esc(node.item.id)}" data-product="${esc(node.item.product_id)}">
+  const depsAttr = (entry) => esc([...entry.dependencies].join(","));
+  return `<article class="registration-mind-task${node.item.status === "done" ? " is-done" : ""}" data-node-id="${esc(node.id)}" data-deps="${depsAttr(node)}">
+    <button class="registration-mind-task-main ${adapter.editClass || "is-static"}" type="button" ${adapter.editAttrs(node.item)}${adapter.editClass ? "" : ' tabindex="-1"'}>
       <span class="registration-mind-order">${String(order).padStart(2, "0")}</span>
-      <span class="registration-mind-task-copy"><strong>${esc(activityDisplayName(node.item))}</strong><small>${esc(products.join(", ") || "Sem produto")}</small></span>
-      ${looseReason ? `<span class="registration-mind-warning">${esc(looseReason)}</span>` : ""}
+      <span class="registration-mind-task-copy"><strong>${esc(mindMapTitle(adapter, node.item))}</strong><small>${esc(adapter.subtitle(node))}</small></span>
     </button>
     ${dependencyNames.length ? `<div class="registration-mind-dependency"><span>Após</span>${dependencyNames.map((name) => `<b>${esc(name)}</b>`).join("")}</div>` : ""}
-    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="reg-template-edit" type="button" data-id="${esc(subtask.item.id)}" data-product="${esc(subtask.item.product_id)}"><span>${order}.${index + 1}</span><strong>${esc(activityDisplayName(subtask.item))}</strong></button>`).join("")}</div>` : ""}
+    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${esc(mindMapTitle(adapter, subtask.item))}</strong></button>`).join("")}</div>` : ""}
   </article>`;
 }
 
-function registrationMindMapCategoryHtml(groupKey, categoryLabel, nodes, hierarchy, orderById) {
-  const categoryKey = `${groupKey}::${categoryLabel.toLocaleLowerCase("pt-BR")}`;
-  const collapsed = registrationMindMapCollapsedCategories.has(categoryKey);
-  return `<section class="registration-mind-category${collapsed ? " is-collapsed" : ""}">
-    <button class="registration-mind-category-toggle" type="button" data-category-key="${esc(categoryKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(categoryLabel)}</strong><small>${nodes.length}</small></button>
-    <div class="registration-mind-tasks"${collapsed ? " hidden" : ""}>${nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById)).join("")}</div>
+function registrationMindMapBuckets(nodes, orderById, level, levels = REGISTRATION_MIND_MAP_LEVELS) {
+  const { key, empty } = levels[level];
+  const buckets = new Map();
+  nodes.forEach((node) => {
+    const label = String(node.item[key] || "").trim();
+    const bucketKey = label.toLocaleLowerCase("pt-BR");
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, { key: bucketKey, label: label || empty, empty: !label, nodes: [], firstOrder: Infinity });
+    const bucket = buckets.get(bucketKey);
+    bucket.nodes.push(node);
+    bucket.firstOrder = Math.min(bucket.firstOrder, orderById.get(node.id) || 0);
+  });
+  return [...buckets.values()].sort((a, b) => a.firstOrder - b.firstOrder);
+}
+
+function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orderById, adapter) {
+  const branchKey = `${parentKey}::${bucket.key}`;
+  const collapsed = !bucket.empty && registrationMindMapCollapsedBranches.has(branchKey);
+  const levels = adapter.levels || REGISTRATION_MIND_MAP_LEVELS;
+  const leaf = level === levels.length - 1;
+  const content = leaf
+    ? `<div class="registration-mind-tasks">${bucket.nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById, adapter)).join("")}</div>`
+    : registrationMindMapBuckets(bucket.nodes, orderById, level + 1, levels).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById, adapter)).join("");
+  const head = bucket.empty
+    ? '<span class="registration-mind-pass" aria-hidden="true"></span>'
+    : `<button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(bucket.label)}</strong><small>${bucket.nodes.length}</small></button>`;
+  return `<section class="registration-mind-branch level-${level}${bucket.empty ? " is-pass" : ""}${collapsed ? " is-collapsed" : ""}">
+    ${head}
+    <div class="registration-mind-children${leaf ? " is-leaf" : ""}"${collapsed ? " hidden" : ""}>${content}</div>
   </section>`;
 }
 
-function registrationTaskMindMapHtml(items) {
-  const state = registrationTableState();
-  const hierarchy = registrationTaskHierarchy(items);
+const mindMapPendingScroll = new Map();
+function mindMapExpandAllButtonHtml(allExpanded) {
+  const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
+  return `<button class="view registration-mind-expand-all" type="button" title="${label}" aria-label="${label}" data-expanded="${allExpanded}">${allExpanded ? "⊟" : "⊞"}</button>`;
+}
+
+function updateMindMapExpandAllButton(root) {
+  const button = root.querySelector(".registration-mind-expand-all");
+  if (!button) return;
+  const allExpanded = !root.querySelector(".registration-mind-branch.is-collapsed");
+  const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
+  button.textContent = allExpanded ? "⊟" : "⊞";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.dataset.expanded = String(allExpanded);
+}
+
+function centerMindMap(shell) {
+  const scroller = shell?.querySelector(".registration-mindmap-scroll");
+  const rootNode = shell?.querySelector(".registration-mindmap-root");
+  if (!scroller || !rootNode) return;
+  const frame = scroller.getBoundingClientRect();
+  const node = rootNode.getBoundingClientRect();
+  if (shell.classList.contains("is-vertical")) {
+    scroller.scrollTop = 0;
+    scroller.scrollLeft += (node.left + node.width / 2) - (frame.left + scroller.clientWidth / 2);
+  } else {
+    scroller.scrollLeft = 0;
+    scroller.scrollTop += (node.top + node.height / 2) - (frame.top + scroller.clientHeight / 2);
+  }
+}
+
+function setMindMapBranchCollapsed(button, collapsed) {
+  const branch = button.closest(".registration-mind-branch");
+  const children = branch?.querySelector(":scope > .registration-mind-children");
+  if (!children) return;
+  children.hidden = collapsed;
+  branch.classList.toggle("is-collapsed", collapsed);
+  button.querySelector("span").textContent = collapsed ? "▸" : "▾";
+  if (collapsed) registrationMindMapCollapsedBranches.add(button.dataset.branchKey);
+  else registrationMindMapCollapsedBranches.delete(button.dataset.branchKey);
+}
+
+function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = adapter.scope) {
+  const hierarchy = registrationTaskHierarchy(items, adapter);
   const orderById = new Map(hierarchy.ordered.map((node, index) => [node.id, index + 1]));
-  const query = String(state.search || "").trim().toLocaleLowerCase("pt-BR");
+  const query = String(search || "").trim().toLocaleLowerCase("pt-BR");
   const nodes = hierarchy.ordered.filter((node) => {
     if (!query) return true;
     const children = hierarchy.children.get(node.id) || [];
     const text = [...node.linked, ...children.flatMap((child) => child.linked)].flatMap((item) => [
-      activityDisplayName(item), item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, registrationProductName(item.product_id)
+      mindMapTitle(adapter, item), item.category, item.group, item.subgroup, item.sector, item.subsector, item.module, item.submodule, item.channel, item.type, item.information, adapter.searchText(item)
     ]).join(" ").toLocaleLowerCase("pt-BR");
     return text.includes(query);
   });
-  const completeGroups = new Map();
-  const loose = [];
-  nodes.forEach((node) => {
-    const group = String(node.item.group || "").trim();
-    const category = String(node.item.subgroup || "").trim();
-    if (!group || !category) {
-      loose.push({ node, reason: !group && !category ? "Sem grupo e subgrupo" : !group ? "Sem grupo" : "Sem subgrupo" });
-      return;
-    }
-    const groupKey = group.toLocaleLowerCase("pt-BR");
-    if (!completeGroups.has(groupKey)) completeGroups.set(groupKey, { label: group, categories: new Map(), firstOrder: orderById.get(node.id) });
-    const bucket = completeGroups.get(groupKey);
-    const categoryKey = category.toLocaleLowerCase("pt-BR");
-    if (!bucket.categories.has(categoryKey)) bucket.categories.set(categoryKey, { label: category, nodes: [] });
-    bucket.categories.get(categoryKey).nodes.push(node);
-    bucket.firstOrder = Math.min(bucket.firstOrder, orderById.get(node.id));
+  const branches = registrationMindMapBuckets(nodes, orderById, 0, adapter.levels || REGISTRATION_MIND_MAP_LEVELS).map((bucket) => registrationMindMapBranchHtml(bucket, scopeKey, 0, hierarchy, orderById, adapter)).join("");
+  const map = branches || `<div class="empty">${query ? "Nenhum item corresponde à busca." : "Nenhum item para exibir."}</div>`;
+  const vertical = registrationMindMapOrientation === "vertical";
+  const fullscreen = registrationMindMapFullscreen;
+  const previousScroll = document.querySelector(`.registration-mindmap-shell[data-scope="${CSS.escape(scopeKey)}"] .registration-mindmap-scroll`);
+  mindMapPendingScroll.set(scopeKey, previousScroll ? {
+    left: previousScroll.scrollLeft,
+    top: previousScroll.scrollTop,
+    vertical: previousScroll.closest(".registration-mindmap-shell").classList.contains("is-vertical")
+  } : null);
+  const anyCollapsed = branches.includes(" is-collapsed\"");
+  const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
+  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
+    <div class="registration-mind-controls" role="group" aria-label="Controles do mapa">${mindMapExpandAllButtonHtml(!anyCollapsed)}<button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
+    <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
+    <div class="registration-mindmap-root"><strong>${esc(adapter.rootLabel || "Tarefas")}</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
+  </div></div></div>` };
+}
+
+// Aplica no mapa mental os mesmos filtros de coluna da tabela (lidos da tabela recém-montada).
+function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
+  const state = registrationTableState();
+  const table = root.querySelector("table");
+  const active = Object.entries(state.filters || {}).filter(([, values]) => values?.size);
+  const labels = new Map();
+  [...(table?.querySelectorAll("thead th") || [])].forEach((header, index) => {
+    if (header.textContent.trim().toLocaleUpperCase("pt-BR") !== "AÇÕES") labels.set(`c${index}`, { index, label: header.textContent.trim() });
   });
-  const branches = [...completeGroups.entries()].sort((a, b) => a[1].firstOrder - b[1].firstOrder).map(([groupKey, group]) => {
-    const collapsed = registrationMindMapCollapsedGroups.has(groupKey);
-    const categories = [...group.categories.values()].sort((a, b) => Math.min(...a.nodes.map((node) => orderById.get(node.id))) - Math.min(...b.nodes.map((node) => orderById.get(node.id))));
-    return `<section class="registration-mind-group${collapsed ? " is-collapsed" : ""}">
-      <button class="registration-mind-group-toggle" type="button" data-group-key="${esc(groupKey)}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(group.label)}</strong><small>${categories.reduce((sum, category) => sum + category.nodes.length, 0)}</small></button>
-      <div class="registration-mind-categories"${collapsed ? " hidden" : ""}>${categories.map((category) => registrationMindMapCategoryHtml(groupKey, category.label, category.nodes, hierarchy, orderById)).join("")}</div>
-    </section>`;
-  }).join("");
-  const looseBranch = loose.length ? `<section class="registration-mind-group registration-mind-loose">
-    <button class="registration-mind-group-toggle" type="button" data-group-key="__loose"><span>${registrationMindMapCollapsedGroups.has("__loose") ? "▸" : "▾"}</span><strong>Sem hierarquia</strong><small>${loose.length}</small></button>
-    <div class="registration-mind-categories"${registrationMindMapCollapsedGroups.has("__loose") ? " hidden" : ""}><section class="registration-mind-category"><div class="registration-mind-tasks">${loose.map(({ node, reason }) => registrationMindMapTaskHtml(node, hierarchy, orderById, reason)).join("")}</div></section></div>
-  </section>` : "";
-  const map = (branches || looseBranch) ? `${branches}${looseBranch}` : '<div class="empty">Nenhuma tarefa corresponde à busca.</div>';
+  const filters = active.map(([key, values]) => ({ key, values, label: labels.get(key)?.label || "Coluna" }));
+  if (!table || !active.length) return [items, adapter, filters];
+  const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty") && !row.classList.contains("registration-subtask-row"));
+  const passing = rows.filter((row) => active.every(([key, selected]) => {
+    const index = labels.get(key)?.index;
+    return selected.has((index == null ? null : row.children[index])?.textContent.trim() || "—");
+  }));
+  if (kind === "activities") {
+    const groups = new Set(passing.map((row) => row.dataset.taskGroup).filter(Boolean));
+    return [items.filter((item) => {
+      if (groups.has(item.template_group_id || item.id)) return true;
+      const parent = productTemplateParent(item, items);
+      return Boolean(parent && groups.has(parent.template_group_id || parent.id));
+    }), adapter, filters];
+  }
+  const ids = new Set(passing.map((row) => row.querySelector("[data-id]")?.dataset.id).filter(Boolean));
+  return [items.filter((item) => ids.has(item.id)), adapter, filters];
+}
+
+function mindMapFilterStripHtml(filters, badgeClass = "mind-filter-badge", clearClass = "mind-filter-clear-all") {
+  if (!filters?.length) return "";
+  return `<div class="registration-filter-strip"><div class="registration-filter-badges">${filters.map((filter) =>
+    `<button class="registration-filter-badge ${badgeClass}" data-key="${esc(filter.key)}" title="Limpar filtro"><span>${esc(filter.label)}: ${esc([...filter.values].join(", "))}</span><b>×</b></button>`).join("")}</div><button class="filter-clear-all ${clearClass}" type="button"${filters.length < 2 ? " hidden" : ""}><span aria-hidden="true">×</span> Limpar tudo</button></div>`;
+}
+
+function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, filters = []) {
+  const state = registrationTableState();
+  const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="muted">${nodes.length} tarefa(s) no mapa</span></div>
-    <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="Adicionar tarefa">+</button></div>
-    <div class="registration-toolbar-right"><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>MAPA MENTAL</span><span class="chevron">▾</span></button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
-  </div><div class="registration-mindmap-shell"><div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas">
-    <div class="registration-mindmap-root"><strong>Tarefas</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
-  </div></div></div>`;
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
+    <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+  </div>${mindMapFilterStripHtml(filters)}${map.html}`;
+}
+
+let registrationMindMapGlobalWired = false;
+function drawRegistrationMindMapLinks(root) {
+  const canvas = root?.querySelector(".registration-mindmap-canvas");
+  const svg = canvas?.querySelector(":scope > .registration-mind-links");
+  if (!canvas || !svg) return;
+  const base = canvas.getBoundingClientRect();
+  const scale = Number(canvas.style.zoom) || 1;
+  const visible = new Map();
+  canvas.querySelectorAll("[data-node-id]").forEach((element) => {
+    if (element.offsetParent !== null) visible.set(element.dataset.nodeId, element);
+  });
+  const box = (element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: (rect.left - base.left) / scale, right: (rect.right - base.left) / scale, y: (rect.top - base.top + rect.height / 2) / scale };
+  };
+  const paths = [];
+  visible.forEach((target, targetId) => {
+    String(target.dataset.deps || "").split(",").filter(Boolean).forEach((sourceId) => {
+      const source = visible.get(sourceId);
+      if (!source || source === target) return;
+      const from = box(source);
+      const to = box(target);
+      let d;
+      if (Math.abs(from.left - to.left) < 24) {
+        const edge = Math.max(from.right, to.right);
+        const bulge = 26 + Math.min(70, Math.abs(to.y - from.y) * 0.12);
+        d = `M${from.right},${from.y} C${edge + bulge},${from.y} ${edge + bulge},${to.y} ${to.right + 6},${to.y}`;
+      } else if (to.left > from.left) {
+        const mid = (from.right + to.left) / 2;
+        d = `M${from.right},${from.y} C${mid},${from.y} ${mid},${to.y} ${to.left - 6},${to.y}`;
+      } else {
+        const mid = (from.left + to.right) / 2;
+        d = `M${from.left},${from.y} C${mid},${from.y} ${mid},${to.y} ${to.right + 6},${to.y}`;
+      }
+      paths.push(`<path d="${d}" data-from="${esc(sourceId)}" data-to="${esc(targetId)}" marker-end="url(#registration-mind-arrow)"></path>`);
+    });
+  });
+  svg.setAttribute("width", canvas.scrollWidth);
+  svg.setAttribute("height", canvas.scrollHeight);
+  svg.innerHTML = `<defs><marker id="registration-mind-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${paths.join("")}`;
+}
+
+function redrawAllMindMapLinks() {
+  document.querySelectorAll(".registration-mindmap-shell").forEach((shell) => drawRegistrationMindMapLinks(shell));
+}
+
+function setMindMapFullscreen(on, touchBrowser = true) {
+  registrationMindMapFullscreen = on;
+  const label = on ? "Sair da tela cheia (Esc)" : "Tela cheia";
+  document.querySelectorAll(".registration-mindmap-shell").forEach((shell) => {
+    shell.classList.toggle("is-fullscreen", on);
+    const button = shell.querySelector(".registration-mind-fullscreen");
+    if (!button) return;
+    button.textContent = on ? "✕" : "⛶";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  });
+  if (touchBrowser) {
+    try {
+      if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.()?.catch(() => {});
+      else if (!on && document.fullscreenElement) document.exitFullscreen?.()?.catch(() => {});
+    } catch {}
+  }
+  requestAnimationFrame(redrawAllMindMapLinks);
+}
+
+function wireMindMapPan(scroller) {
+  if (!scroller) return;
+  let drag = null;
+  let suppressClick = false;
+  const setZoom = (next, clientX, clientY) => {
+    const canvas = scroller.querySelector(".registration-mindmap-canvas");
+    if (!canvas) return;
+    const [min, max] = REGISTRATION_MIND_MAP_ZOOM_LIMITS;
+    const zoom = Math.min(max, Math.max(min, Math.round(next * 100) / 100));
+    const previous = Number(canvas.style.zoom) || 1;
+    if (zoom === previous) return;
+    const rect = scroller.getBoundingClientRect();
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    const contentX = (scroller.scrollLeft + x) / previous;
+    const contentY = (scroller.scrollTop + y) / previous;
+    registrationMindMapZoom = zoom;
+    canvas.style.zoom = zoom;
+    scroller.scrollLeft = contentX * zoom - x;
+    scroller.scrollTop = contentY * zoom - y;
+    const label = scroller.closest(".registration-mindmap-shell")?.querySelector(".registration-mind-zoom");
+    if (label) {
+      label.textContent = `${Math.round(zoom * 100)}%`;
+      label.setAttribute("aria-label", `Zoom ${Math.round(zoom * 100)}%, clique para voltar a 100%`);
+    }
+    if (drag) Object.assign(drag, { x: drag.lastX ?? drag.x, y: drag.lastY ?? drag.y, left: scroller.scrollLeft, top: scroller.scrollTop });
+    drawRegistrationMindMapLinks(scroller.closest(".registration-mindmap-shell"));
+  };
+  scroller.addEventListener("pointerdown", (event) => { if (event.button === 0 && event.pointerType !== "touch") registrationMindMapPointerPressed = true; }, true);
+  if (!registrationMindMapPointerWired) {
+    registrationMindMapPointerWired = true;
+    const release = () => { registrationMindMapPointerPressed = false; };
+    window.addEventListener("pointerup", release, true);
+    window.addEventListener("pointercancel", release, true);
+  }
+  scroller.addEventListener("wheel", (event) => {
+    const holding = registrationMindMapPointerPressed || Boolean(event.buttons & 1);
+    if (!(event.ctrlKey || event.metaKey || holding)) return;
+    event.preventDefault();
+    if (holding) suppressClick = true;
+    setZoom(registrationMindMapZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX, event.clientY);
+  }, { passive: false });
+  scroller.closest(".registration-mindmap-shell")?.querySelector(".registration-mind-zoom")?.addEventListener("click", () => setZoom(1));
+  let pinch = null;
+  const touchDistance = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  scroller.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2) return;
+    pinch = { distance: touchDistance(event.touches) || 1, zoom: registrationMindMapZoom };
+    event.preventDefault();
+  }, { passive: false });
+  scroller.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) return;
+    event.preventDefault();
+    const [a, b] = event.touches;
+    setZoom(pinch.zoom * (touchDistance(event.touches) / pinch.distance), (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+  }, { passive: false });
+  const endPinch = (event) => {
+    if (!pinch || event.touches.length >= 2) return;
+    pinch = null;
+    suppressClick = true;
+  };
+  scroller.addEventListener("touchend", endPinch);
+  scroller.addEventListener("touchcancel", endPinch);
+  scroller.addEventListener("pointerdown", (event) => {
+    suppressClick = false;
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (event.target.closest(".registration-mind-controls")) return;
+    if (!registrationMindMapHandMode && event.target.closest("button, a, input, select, textarea, .registration-mind-task")) return;
+    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId, moved: false };
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) {
+      drag.moved = true;
+      scroller.setPointerCapture?.(drag.id);
+      scroller.classList.add("is-panning");
+    }
+    scroller.scrollLeft = drag.left - dx;
+    scroller.scrollTop = drag.top - dy;
+    event.preventDefault();
+  });
+  const end = (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    suppressClick = suppressClick || drag.moved;
+    if (drag.moved) scroller.releasePointerCapture?.(drag.id);
+    scroller.classList.remove("is-panning");
+    drag = null;
+  };
+  scroller.addEventListener("pointerup", end);
+  scroller.addEventListener("pointercancel", end);
+  scroller.addEventListener("click", (event) => {
+    if (!suppressClick) return;
+    suppressClick = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+}
+
+function wireMindMap(root, rerender) {
+  root.querySelectorAll(".registration-mind-controls [data-orientation]").forEach((button) => button.addEventListener("click", () => {
+    if (registrationMindMapOrientation === button.dataset.orientation) return;
+    registrationMindMapOrientation = button.dataset.orientation;
+    try { localStorage.setItem("registrationMindMapOrientation", registrationMindMapOrientation); } catch {}
+    rerender();
+  }));
+  root.querySelector(".registration-mind-fullscreen")?.addEventListener("click", () => setMindMapFullscreen(!registrationMindMapFullscreen));
+  root.querySelector(".registration-mind-hand")?.addEventListener("click", (event) => {
+    registrationMindMapHandMode = !registrationMindMapHandMode;
+    const button = event.currentTarget;
+    button.classList.toggle("active", registrationMindMapHandMode);
+    button.setAttribute("aria-pressed", String(registrationMindMapHandMode));
+    root.querySelector(".registration-mindmap-shell")?.classList.toggle("is-hand", registrationMindMapHandMode);
+  });
+  wireMindMapPan(root.querySelector(".registration-mindmap-scroll"));
+  root.querySelectorAll(".registration-mind-toggle").forEach((button) => button.addEventListener("click", () => {
+    const children = button.closest(".registration-mind-branch")?.querySelector(":scope > .registration-mind-children");
+    if (!children) return;
+    setMindMapBranchCollapsed(button, !children.hidden);
+    updateMindMapExpandAllButton(root);
+    drawRegistrationMindMapLinks(root);
+  }));
+  root.querySelector(".registration-mind-expand-all")?.addEventListener("click", (event) => {
+    const collapse = event.currentTarget.dataset.expanded === "true";
+    root.querySelectorAll(".registration-mind-toggle").forEach((button) => setMindMapBranchCollapsed(button, collapse));
+    updateMindMapExpandAllButton(root);
+    drawRegistrationMindMapLinks(root);
+    centerMindMap(root.querySelector(".registration-mindmap-shell"));
+  });
+  const canvas = root.querySelector(".registration-mindmap-canvas");
+  canvas?.addEventListener("mouseover", (event) => {
+    const id = event.target.closest("[data-node-id]")?.dataset.nodeId;
+    canvas.querySelectorAll(".registration-mind-links path[data-from]").forEach((path) =>
+      path.classList.toggle("is-active", Boolean(id) && (path.dataset.from === id || path.dataset.to === id)));
+  });
+  canvas?.addEventListener("mouseleave", () => canvas.querySelectorAll(".registration-mind-links path.is-active").forEach((path) => path.classList.remove("is-active")));
+  const shell = root.querySelector(".registration-mindmap-shell");
+  const savedScroll = shell ? mindMapPendingScroll.get(shell.dataset.scope) : null;
+  if (shell) mindMapPendingScroll.delete(shell.dataset.scope);
+  requestAnimationFrame(() => {
+    drawRegistrationMindMapLinks(root);
+    const scroller = shell?.querySelector(".registration-mindmap-scroll");
+    if (!scroller) return;
+    if (savedScroll && savedScroll.vertical === shell.classList.contains("is-vertical")) {
+      scroller.scrollLeft = savedScroll.left;
+      scroller.scrollTop = savedScroll.top;
+    } else centerMindMap(shell);
+  });
+  if (registrationMindMapGlobalWired) return;
+  registrationMindMapGlobalWired = true;
+  window.addEventListener("resize", redrawAllMindMapLinks);
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && registrationMindMapFullscreen) setMindMapFullscreen(false, false);
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !registrationMindMapFullscreen) return;
+    if (document.querySelector("#ov .activity-form-overlay")) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    setMindMapFullscreen(false);
+  }, true);
 }
 
 function wireRegistrationMindMap(root) {
   const state = registrationTableState();
+  root.querySelectorAll(".mind-filter-badge").forEach((badge) => badge.addEventListener("click", () => {
+    delete state.filters[badge.dataset.key];
+    renderRegistrationsSection();
+  }));
+  root.querySelector(".mind-filter-clear-all")?.addEventListener("click", () => {
+    state.filters = {};
+    renderRegistrationsSection();
+  });
   root.querySelector(".registration-mind-search")?.addEventListener("input", (event) => {
     state.search = event.target.value;
     renderRegistrationsSection();
@@ -7662,24 +10350,7 @@ function wireRegistrationMindMap(root) {
     event.stopPropagation();
     openRegistrationViewMenu();
   });
-  root.querySelectorAll(".registration-mind-group-toggle").forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.groupKey;
-    const branch = button.closest(".registration-mind-group")?.querySelector(":scope > .registration-mind-categories");
-    if (!branch) return;
-    branch.hidden = !branch.hidden;
-    button.querySelector("span").textContent = branch.hidden ? "▸" : "▾";
-    if (branch.hidden) registrationMindMapCollapsedGroups.add(key);
-    else registrationMindMapCollapsedGroups.delete(key);
-  }));
-  root.querySelectorAll(".registration-mind-category-toggle").forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.categoryKey;
-    const tasks = button.closest(".registration-mind-category")?.querySelector(":scope > .registration-mind-tasks");
-    if (!tasks) return;
-    tasks.hidden = !tasks.hidden;
-    button.querySelector("span").textContent = tasks.hidden ? "▸" : "▾";
-    if (tasks.hidden) registrationMindMapCollapsedCategories.add(key);
-    else registrationMindMapCollapsedCategories.delete(key);
-  }));
+  wireMindMap(root, renderRegistrationsSection);
 }
 
 function openRegistrationViewMenu() {
@@ -7721,6 +10392,7 @@ function renderRegistrationsSection() {
   const root = document.getElementById("registrations-root");
   if (!root) return;
   const section = registrationsState.section;
+  preserveHorizontalTableScroll(root, `registrations:${section}:${registrationTableState().view || "table"}`);
   const permissionModule = REGISTRATION_PERMISSION_MODULE[section];
   if (!currentUserCan(permissionModule, "view")) {
     root.innerHTML = '<div class="empty">Você não possui acesso a este cadastro.</div>';
@@ -7787,9 +10459,7 @@ function renderRegistrationsSection() {
   if (section === "activities") {
     const items = loadProductActivities();
     const tableState = registrationTableState();
-    if (tableState.view === "mindmap") {
-      root.innerHTML = registrationTaskMindMapHtml(items);
-    } else {
+    {
     const groups = new Map();
     items.forEach((item) => {
       const key = item.template_group_id || item.id;
@@ -7828,7 +10498,7 @@ function renderRegistrationsSection() {
       const childRows = children.map((child) => {
         const childDetails = summary(child);
         const checklist = normalizeChecklist(child.item.checklist);
-        return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
+        return `<tr class="registration-subtask-row" data-parent-group="${esc(group.id)}" data-expand-parent="${esc(group.id)}" data-id="${esc(child.item.id)}"${expanded ? "" : " hidden"}>
           <td>—</td>
           <td>${esc(childDetails.products)}</td>
           <td>Cadastro</td>
@@ -7842,6 +10512,7 @@ function renderRegistrationsSection() {
           <td>${esc(child.item.subsector || "—")}</td>
           <td>${esc(child.item.module || "—")}</td>
           <td>${esc(child.item.submodule || "—")}</td>
+          <td>${esc(child.item.category || "—")}</td>
           <td>${esc(child.item.channel || "—")}</td>
           <td>${esc(child.item.type || "—")}</td>
           <td>${esc(RECURRENCE_LABEL[child.item.recurrence] || "Única")}</td>
@@ -7858,13 +10529,14 @@ function renderRegistrationsSection() {
           })}</td>
         </tr>`;
       }).join("");
-      return `<tr data-task-group="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr data-task-group="${esc(group.id)}" data-expand-id="${esc(group.id)}"><td>—</td><td>${esc(details.products)}</td><td>Cadastro</td><td><span class="registration-task-name">${children.length ? `<button class="registration-task-toggle" data-group="${esc(group.id)}" title="${expanded ? "Recolher" : "Expandir"} subtarefas">${expanded ? "▾" : "▸"}</button>` : '<span class="registration-task-toggle-spacer"></span>'}<strong>${esc(activityDisplayName(item))}</strong><span class="registration-subtask-count">${children.length || ""}</span><span hidden>${esc(childNames)}</span></span></td><td>${priorityBadge(item.priority)}</td><td class="compact-multi-cell">${stackedCell(details.dependencies)}</td><td>${esc(item.information || "—")}</td><td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>${children.length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td><td>${esc(details.objectives)}</td><td class="compact-multi-cell">${stackedCell(details.owners)}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>Modelo</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td>—</td><td class="act table-actions-cell">${tableActionButtons({
         open: children.length ? { className: "reg-template-open", attrs: { "data-group": group.id }, title: expanded ? "Recolher subtarefas" : "Abrir subtarefas" } : null,
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar tarefa" },
         clone: { className: "reg-template-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar tarefa" }
       })}</td></tr>${childRows}`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 29, "Tarefa");
+    root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 30, "Tarefa");
+    if (tableState.view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
     const items = loadProductGoals();
@@ -7874,12 +10546,13 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
         clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 9);
+    root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -7888,12 +10561,13 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
         clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
       })}</td></tr>`;
     }).join("");
-    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Critério de conclusão</th><th>Comentários</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 8);
+    root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
+    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -7937,8 +10611,14 @@ function renderRegistrationsSection() {
     productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "objectives" };
     openProductObjectiveDrawer(null, button.dataset.id);
   }));
-  if (section === "activities" && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
+  if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
   wireRegistrationTable();
+}
+
+// Dashboard de metas e objetivos fica só dentro da entrega (ícone de olho),
+// onde há dados reais; em Cadastros o botão segue o padrão, desativado.
+function registrationDashboardButtonHtml() {
+  return `<button class="view" type="button" title="Dashboard (disponível dentro da entrega)" aria-label="Dashboard" disabled>${viewButtonInner("dashboard")}</button>`;
 }
 
 function registrationTableState() {
@@ -7946,7 +10626,7 @@ function registrationTableState() {
     registrationsState.tables[registrationsState.section] = { sortKey: null, sortDir: 1, filters: {}, search: "", page: 1, pageSize: 50, view: "table" };
   }
   const state = registrationsState.tables[registrationsState.section];
-  if (!state.view) state.view = "table";
+  if (!state.view || state.view === "dashboard") state.view = "table";
   return state;
 }
 
@@ -7997,6 +10677,11 @@ function wireRegistrationTable() {
     });
   });
   if (registrationsState.section === "activities") {
+    const taskHeader = headers.find((header) => header.dataset.registrationLabel === "Tarefa");
+    if (taskHeader) {
+      taskHeader.classList.add("registration-task-sticky");
+      registrationTableRows(table, true).forEach((row) => registrationCell(row, taskHeader.dataset.registrationKey)?.classList.add("registration-task-sticky"));
+    }
     const prefs = secondaryColumnPrefs("registrations:activities");
     let changed = false;
     ["c0", "c1"].forEach((key) => {
@@ -8022,6 +10707,7 @@ function setupRegistrationToolbar(root, table) {
   center.className = "registration-toolbar-center";
   const right = document.createElement("div");
   right.className = "registration-toolbar-right";
+  if (toolbar.closest("#registrations-root")) left.insertAdjacentHTML("beforeend", '<span class="registration-toolbar-title">Cadastros</span>');
   if (count) left.appendChild(count);
   center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
   if (addButton) {
@@ -8031,11 +10717,15 @@ function setupRegistrationToolbar(root, table) {
     addButton.title = originalLabel ? `Adicionar ${originalLabel.toLocaleLowerCase("pt-BR")}` : "Adicionar";
     center.appendChild(addButton);
   }
-  const viewControl = registrationsState.section === "activities"
-    ? '<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização"><span>TABELA</span><span class="chevron">▾</span></button>'
-    : '<button class="view active" type="button">Tabela</button>';
-  right.innerHTML = `<button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button>`;
+  const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
+    ? `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`
+    : `<button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`;
+  right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
+  right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openRegistrationDataMenu(event.currentTarget, table);
+  });
   const filterStrip = document.createElement("div");
   filterStrip.className = "registration-filter-strip";
   filterStrip.innerHTML = `<div class="registration-filter-badges"></div><button class="filter-clear-all registration-filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button>`;
@@ -8061,6 +10751,55 @@ function registrationColumnDefinitions(table) {
     .sort((a, b) => Number(a.k.slice(1)) - Number(b.k.slice(1)));
 }
 
+function exportRegistrationCSV(table, visibleOnly) {
+  const tableState = registrationTableState();
+  const query = String(tableState.search || "").toLocaleLowerCase("pt-BR");
+  const isShown = (element) => element && !element.hidden && getComputedStyle(element).display !== "none";
+  const headers = [...table.querySelectorAll("thead th")].map((th, index) => ({ th, index }))
+    .filter(({ th }) => !th.classList.contains("table-actions-head") && !th.classList.contains("select-head") && !th.classList.contains("expand-head")
+      && th.textContent.replace(/[▲▼]/g, "").trim() && (!visibleOnly || isShown(th)));
+  const rows = registrationTableRows(table, true).filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
+    && Object.entries(tableState.filters || {}).every(([key, selected]) => !selected?.size || selected.has(registrationCell(row, key)?.textContent.trim() || "—")))
+    .map((row) => headers.map(({ index }) => String(row.children[index]?.textContent || "").replace(/\s+/g, " ").trim()));
+  const columns = headers.map(({ th }, position) => ({ k: position, h: th.dataset.registrationLabel || th.textContent.replace(/[▲▼]/g, "").trim(), csv: (_value, row) => row[position] ?? "" }));
+  const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+  downloadCSV(columns, rows, `enterpriser_cadastros_${registrationsState.section}_${visibleOnly ? "colunas_visiveis" : "todas_colunas"}_${stamp}.csv`);
+  toast(`CSV exportado: ${rows.length} linha(s).`);
+}
+
+function openRegistrationDataMenu(anchor, table) {
+  document.getElementById("registration-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "registration-data-dd";
+  panel.className = "data-dd";
+  const importTab = `reg:${registrationsState.section}`;
+  const spec = importSpec(importTab);
+  const permissionModule = { products: "products", pipelines: "pipelines", users: "users", activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates" }[registrationsState.section];
+  const canImport = Boolean(spec) && (spec.adminOnly ? currentUserIsAdmin() : currentUserCan(permissionModule, "create"));
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>${esc(spec?.title || "Cadastros")}</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn registration-export-visible" type="button">Exportar colunas visíveis</button>
+    <button class="dd-menu-btn registration-export-all" type="button">Exportar todas as colunas</button>
+    ${importMenuHtml(canImport)}`;
+  document.body.appendChild(panel);
+  openImportMenuItems(panel, importTab, spec);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  panel.querySelector(".registration-export-visible").addEventListener("click", () => { panel.remove(); exportRegistrationCSV(table, true); });
+  panel.querySelector(".registration-export-all").addEventListener("click", () => { panel.remove(); exportRegistrationCSV(table, false); });
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
+}
+
 function registrationCell(row, key) {
   return row.querySelector(`td[data-registration-key="${CSS.escape(key)}"]`);
 }
@@ -8075,16 +10814,12 @@ function applyRegistrationColumnPreferences(table) {
   const headerByKey = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
   const fixedHeaders = [...headRow.cells].filter((cell) => !cell.dataset.registrationKey);
   ordered.forEach((col) => headRow.appendChild(headerByKey[col.k]));
-  const selectionHeader = fixedHeaders.find((cell) => cell.classList.contains("select-head"));
-  if (selectionHeader) headRow.insertBefore(selectionHeader, headRow.firstChild);
-  fixedHeaders.filter((cell) => cell !== selectionHeader).forEach((cell) => headRow.appendChild(cell));
+  orderLeadingTableCells(headRow, fixedHeaders);
   registrationTableRows(table, true).forEach((row) => {
     const cellByKey = Object.fromEntries([...row.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
     const fixedCells = [...row.cells].filter((cell) => !cell.dataset.registrationKey);
     ordered.forEach((col) => { if (cellByKey[col.k]) row.appendChild(cellByKey[col.k]); });
-    const selectionCell = fixedCells.find((cell) => cell.classList.contains("select-cell"));
-    if (selectionCell) row.insertBefore(selectionCell, row.firstChild);
-    fixedCells.filter((cell) => cell !== selectionCell).forEach((cell) => row.appendChild(cell));
+    orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
     const visible = prefs[col.k] !== false;
@@ -8202,43 +10937,22 @@ function openRegistrationColumnFilter(header, table, key) {
   const tableState = registrationTableState();
   const values = [...new Set(registrationTableRows(table).map((row) => registrationCell(row, key)?.textContent.trim() || "—"))]
     .sort((a, b) => a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" }));
-  const selected = new Set(tableState.filters[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "registration-filter-dd";
   panel.className = "filter-dd";
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 330))}px`;
   panel.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - 360)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(header.dataset.registrationLabel)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn reg-filter-all">Todos</button><button class="btn danger reg-filter-clear">Limpar</button><button class="btn primary reg-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".reg-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear();
-    else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${header.dataset.registrationLabel || key}`, values, key, current: tableState.filters[key],
+    onApply: (rule) => {
+      if (rule) tableState.filters[key] = rule; else delete tableState.filters[key];
+      tableState.page = 1;
+      panel.remove();
+      applyRegistrationTableState(table);
+    }
   });
-  panel.querySelector(".reg-filter-clear").addEventListener("click", () => { selected.clear(); delete tableState.filters[key]; tableState.page = 1; panel.remove(); applyRegistrationTableState(table); });
-  panel.querySelector(".reg-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) tableState.filters[key] = selected;
-    else delete tableState.filters[key];
-    tableState.page = 1;
-    panel.remove();
-    applyRegistrationTableState(table);
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -8901,16 +11615,19 @@ const TOOL_COLUMN_DEFS = {
   ],
   emails: [{ k: "cnpj", h: "CNPJ" }, { k: "client", h: "Cliente" }, { k: "email", h: "Email" }, { k: "password", h: "Senha" }, { k: "tags", h: "Tags" }],
   processes: [
-    { k: "title", h: "Nome do processo" }, { k: "category", h: "Categoria" },
+    { k: "title", h: "Nome do processo" }, { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" },
     { k: "tags", h: "Tags" }, { k: "steps", h: "Etapas" }
   ],
   documents: [
     { k: "title", h: "Nome" }, { k: "document_type", h: "Tipo" },
-    { k: "category", h: "Categoria" }, { k: "system_name", h: "Sistema" },
-    { k: "module_name", h: "Módulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
+    { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" }, { k: "tags", h: "Tags" }, { k: "updated_at", h: "Atualizado em" }
   ],
   tables: [
-    { k: "name", h: "Nome" }, { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
+    { k: "name", h: "Nome" }, { k: "category", h: "Categoria" }, { k: "system_name", h: "Canal" },
+    { k: "module_name", h: "Módulo" }, { k: "submodule_name", h: "Submódulo" },
+    { k: "sheet_count", h: "Abas" }, { k: "column_count", h: "Colunas" },
     { k: "row_count", h: "Linhas" }, { k: "updated_at", h: "Atualizado em" }
   ]
 };
@@ -9025,7 +11742,7 @@ function openToolsModal(section = "files") {
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b><em>Ferramentas</em></span>'
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-tools-tab]").forEach((button) => button.addEventListener("click", () => {
     toolsState.section = button.dataset.toolsTab;
@@ -9084,9 +11801,9 @@ function toolEmailValue(account, key) {
 
 function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlaceholder = "Buscar...") {
   return `<div class="tools-toolbar">
-    <div class="registration-toolbar-left"><span class="muted">${count} item(ns)</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Ferramentas</span><span class="muted">${count} item(ns)</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
   </div>`;
 }
 
@@ -9233,6 +11950,7 @@ async function importCustomTableFile(file) {
 function renderToolsSection() {
   const root = document.getElementById("tools-root");
   if (!root) return;
+  preserveHorizontalTableScroll(root, `tools:${toolsState.section}`);
   hydrateToolsSessionCache(toolsState.section);
   if (toolsState.section === "emails") renderToolEmails(root);
   else if (toolsState.section === "processes") renderToolProcesses(root);
@@ -9280,13 +11998,7 @@ function openSocialModal(section = "home") {
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     cls: "full registrations-modal",
     headerCenter,
-    titleHtml: '<button class="registration-brand social-home-button" id="social-home-button" type="button" title="Ir para a Home Social">ENTERPRISER <b>• CMS</b><em>Social</em></button>'
-  });
-  document.getElementById("social-home-button").addEventListener("click", () => {
-    socialState.section = "home";
-    socialState.search = "";
-    document.querySelectorAll("[data-social-tab]").forEach((tab) => tab.classList.remove("active"));
-    renderSocialSection();
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-social-tab]").forEach((button) => button.addEventListener("click", () => {
     socialState.section = button.dataset.socialTab;
@@ -9314,22 +12026,61 @@ function renderSocialHome(root) {
   }
 }
 
+function openSocialDataMenu(anchor) {
+  document.getElementById("social-data-dd")?.remove();
+  const panel = document.createElement("div");
+  panel.id = "social-data-dd";
+  panel.className = "data-dd";
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Social</span></div>
+    <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
+    <button class="dd-menu-btn social-export-visible" type="button">Exportar colunas visíveis</button>
+    <button class="dd-menu-btn social-export-all" type="button">Exportar todas as colunas</button>`;
+  document.body.appendChild(panel);
+  const rect = anchor.getBoundingClientRect();
+  panel.style.right = "auto";
+  panel.style.left = `${Math.max(8, Math.min(rect.right - 230, window.innerWidth - 238))}px`;
+  panel.style.top = `${rect.bottom + 4}px`;
+  const exportCsv = (visibleOnly) => {
+    panel.remove();
+    const columns = (visibleOnly ? visibleSocialColumns() : SOCIAL_COLUMN_DEFS).map((column) => ({ ...column, csv: (_value, row) => row?.[column.k] ?? "" }));
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    downloadCSV(columns, [], `enterpriser_social_${socialState.section}_${visibleOnly ? "colunas_visiveis" : "todas_colunas"}_${stamp}.csv`);
+    toast("CSV exportado: 0 linha(s).");
+  };
+  panel.querySelector(".social-export-visible").addEventListener("click", () => exportCsv(true));
+  panel.querySelector(".social-export-all").addEventListener("click", () => exportCsv(false));
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && event.target !== anchor) {
+        panel.remove();
+        document.removeEventListener("mousedown", outside);
+      }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 80);
+}
+
 function renderSocialSection() {
   const root = document.getElementById("social-root");
   if (!root) return;
+  preserveHorizontalTableScroll(root, `social:${socialState.section}`);
   if (socialState.section === "home") { renderSocialHome(root); return; }
   const columns = visibleSocialColumns();
   const tableState = socialTableState();
   root.innerHTML = `<div class="tools-toolbar">
-      <div class="registration-toolbar-left"><span class="muted">0 item(ns)</span></div>
+      <div class="registration-toolbar-left"><span class="registration-toolbar-title">Social</span><span class="muted">0 item(ns)</span></div>
       <div class="registration-toolbar-center"><input class="search registration-toolbar-search social-search" placeholder="Buscar..." value="${esc(socialState.search)}"><button class="btn primary plus" type="button" disabled title="Cadastro será definido">+</button></div>
-      <div class="registration-toolbar-right"><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="view active" type="button">Tabela</button><button class="view" type="button" disabled>Matriz</button><button class="view" type="button" disabled>Dashboard</button></div>
+      <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn social-data-btn" type="button" title="Dados">⬆⬇</button></div>
     </div>
     <div class="registration-filter-strip tools-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-social-key="${esc(column.k)}" title="Clique para ordenar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody><tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum registro em ${esc(SOCIAL_MODULE_LABELS[socialState.section])}.</td></tr></tbody></table></div>
     <div class="table-pagination tools-pagination"><span>0 registros</span><div><button class="btn" disabled>‹</button><span>Página 1 de 1</span><button class="btn" disabled>›</button></div></div>`;
   root.querySelector(".social-search")?.addEventListener("input", (event) => {
     socialState.search = event.target.value;
+  });
+  root.querySelector(".social-data-btn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openSocialDataMenu(event.currentTarget);
   });
   root.querySelector(".social-cols-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -9565,7 +12316,16 @@ function normalizeProcessSteps(value) {
     group: String(step?.group || "").trim(),
     type: String(step?.type || "").trim(),
     url: String(step?.url || "").trim(),
-    details: String(step?.details || step?.instruction || "").trim()
+    details: String(step?.details || step?.instruction || "").trim(),
+    element: PROCESS_ELEMENTS[step?.element] ? step.element : "task",
+    label: String(step?.label || "").trim(),
+    responsible: String(step?.responsible || "").trim(),
+    next: String(step?.next || "").trim(),
+    outcomes: (Array.isArray(step?.outcomes) ? step.outcomes : []).map((outcome) => ({
+      id: String(outcome?.id || crypto.randomUUID()),
+      label: String(outcome?.label || "").trim(),
+      target: String(outcome?.target || "").trim()
+    }))
   })) : [];
 }
 
@@ -9637,7 +12397,7 @@ function renderToolProcesses(root) {
     const stepValues = normalizeProcessSteps(process.steps).flatMap((step) =>
       [step.system, step.module, step.submodule, step.group, step.type, step.url, step.details]
     );
-    const searchable = [process.title, process.category, ...normalizeTextList(process.tags), ...stepValues];
+    const searchable = [process.title, process.category, process.system_name, process.module_name, process.submodule_name, ...normalizeTextList(process.tags), ...stepValues];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolProcessValue(process, key))
@@ -9739,11 +12499,12 @@ const DOCUMENT_TYPE_LABELS = {
 function documentGeneratedTitle(documentItem) {
   const type = DOCUMENT_TYPE_LABELS[documentItem.document_type] || DOCUMENT_TYPE_LABELS.documentation;
   return [
-    type,
     documentItem.category || "Sem categoria",
     documentItem.system_name || "ENTERPRISER CMS",
-    documentItem.module_name || "Geral"
-  ].map((value) => String(value).trim().toLocaleUpperCase("pt-BR")).join("_");
+    documentItem.module_name || "Geral",
+    documentItem.submodule_name,
+    type
+  ].map((value) => String(value || "").trim()).filter(Boolean).map((value) => value.toLocaleUpperCase("pt-BR")).join(" | ");
 }
 
 function normalizeDocumentBlock(block, fallbackHtml = "") {
@@ -9854,7 +12615,7 @@ function renderToolDocuments(root) {
   const query = toolsState.search.trim().toLocaleLowerCase("pt-BR");
   const tableState = toolTableState("documents");
   const documents = allDocuments.filter((documentItem) => {
-    const searchable = [toolDocumentValue(documentItem, "title"), documentItem.system_name, documentItem.module_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
+    const searchable = [toolDocumentValue(documentItem, "title"), documentItem.system_name, documentItem.module_name, documentItem.submodule_name, toolDocumentValue(documentItem, "document_type"), documentItem.category, documentItem.content, documentSlideText(documentItem.slides), ...normalizeTextList(documentItem.tags)];
     const matchesSearch = !query || searchable.some((value) => String(value || "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(tableState.filters).every(([key, selected]) =>
       !selected?.size || selected.has(toolDocumentValue(documentItem, key))
@@ -9865,9 +12626,28 @@ function renderToolDocuments(root) {
       toolDocumentValue(b, tableState.sortKey), "pt-BR", { numeric: true, sensitivity: "base" }
     ) * tableState.sortDir);
   }
+  const grouped = Boolean(toolsState.groupDocuments);
+  const groupKey = (documentItem) => [documentItem.category, documentItem.system_name || "ENTERPRISER CMS", documentItem.module_name]
+    .map((value) => String(value || "—").trim().toLocaleUpperCase("pt-BR")).join(" | ");
+  if (grouped) {
+    const order = new Map();
+    documents.forEach((documentItem) => { const key = groupKey(documentItem); if (!order.has(key)) order.set(key, order.size); });
+    documents.sort((a, b) => order.get(groupKey(a)) - order.get(groupKey(b)));
+  }
+  const groupCounts = documents.reduce((counts, documentItem) => counts.set(groupKey(documentItem), (counts.get(groupKey(documentItem)) || 0) + 1), new Map());
   const page = paginateToolRows(documents, "documents");
   const columns = visibleToolColumns("documents");
-  const rows = page.rows.length ? page.rows.map((documentItem) => `<tr data-id="${esc(documentItem.id)}">
+  let previousGroup = null;
+  const rows = page.rows.length ? page.rows.map((documentItem) => {
+    const key = groupKey(documentItem);
+    const groupId = `doc-group:${key}`;
+    const header = grouped && key !== previousGroup
+      ? `<tr class="client-group-row tool-group-row" data-group-row="true" data-expand-id="${esc(groupId)}">${columns.map((col, index) => index === 0
+        ? `<td><button class="client-group-toggle tool-group-toggle" type="button" title="Expandir/recolher ${esc(key)}"><strong>${esc(key)}</strong><span class="registration-subtask-count">${groupCounts.get(key) || 0}</span></button></td>`
+        : "<td></td>").join("")}<td class="table-actions-cell"></td></tr>`
+      : "";
+    previousGroup = key;
+    return header + `<tr data-id="${esc(documentItem.id)}"${grouped ? ` data-expand-parent="${esc(groupId)}" hidden` : ""}>
     ${columns.map((col) => {
       if (col.k === "title") return `<td><button class="process-open-link tool-document-open" data-id="${esc(documentItem.id)}">${esc(toolDocumentValue(documentItem, "title"))}</button></td>`;
       if (col.k === "tags") return `<td><span class="tool-tags">${normalizeTextList(documentItem.tags).map((tag) => `<span class="tool-tag">${esc(tag)}</span>`).join("") || '<span class="muted">—</span>'}</span></td>`;
@@ -9879,12 +12659,26 @@ function renderToolDocuments(root) {
       clone: { className: "tool-document-clone", attrs: { "data-id": documentItem.id }, title: "Clonar documentação", enabled: currentUserCan("documents", "clone") },
       delete: { className: "tool-document-delete", attrs: { "data-id": documentItem.id }, title: "Excluir documentação", enabled: currentUserCan("documents", "delete") }
     })}</td>
-  </tr>`).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
+  </tr>`;
+  }).join("") : `<tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhuma documentação cadastrada.</td></tr>`;
   root.innerHTML = `${toolsToolbarHtml(documents.length, "Adicionar documentação", "tool-document-add", currentUserCan("documents", "create"))}${toolFilterStrip("documents", tableState, { loading: remoteToolDocumentsLoading, error: remoteToolDocumentsError })}<div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((col) => `<th data-tool-key="${esc(col.k)}" title="Clique para ordenar. Ctrl+clique para filtrar.">${esc(col.h)}${tableState.sortKey === col.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody>${rows}</tbody></table></div>${toolsPaginationHtml(documents.length, "documents")}`;
   wireToolsToolbar(root);
   wireToolsPagination(root, "documents");
   wireToolsLoadRetry(root, "documents");
   wireSecondaryTableSelection(root.querySelector("table"), "tools:documents");
+  const groupButton = root.querySelector(".table-group-btn");
+  if (groupButton) {
+    groupButton.disabled = false;
+    groupButton.title = grouped ? "Desagrupar" : "Agrupar por Categoria, Canal e Módulo";
+    groupButton.setAttribute("aria-pressed", String(grouped));
+    groupButton.classList.toggle("active", grouped);
+    groupButton.addEventListener("click", () => {
+      toolsState.groupDocuments = !toolsState.groupDocuments;
+      renderToolsSection();
+    });
+  }
+  root.querySelectorAll(".tool-group-toggle").forEach((button) => button.addEventListener("click", () =>
+    button.closest("tr")?.querySelector(":scope > .expand-cell .table-row-expand")?.click()));
   document.getElementById("tool-document-add")?.addEventListener("click", () => openToolDocumentForm());
   root.querySelectorAll(".tool-document-open").forEach((button) => button.addEventListener("click", () => openToolDocument(button.dataset.id)));
   root.querySelectorAll(".tool-document-edit").forEach((button) => button.addEventListener("click", () => openToolDocumentForm(button.dataset.id)));
@@ -9903,16 +12697,31 @@ function renderToolDocuments(root) {
   root.querySelector(".tool-filter-clear-all")?.addEventListener("click", () => { tableState.filters = {}; renderToolsSection(); });
 }
 
+const CUSTOM_TABLE_DEFAULT_WIDTH = 190;
+const CUSTOM_TABLE_MIN_WIDTH = 80;
+const CUSTOM_TABLE_MAX_WIDTH = 800;
+const CUSTOM_TABLE_INDEX_WIDTH = 44;
+const customTableColumnWidth = (column) => column?.width || CUSTOM_TABLE_DEFAULT_WIDTH;
+// Nome do arquivo montado pela estrutura: CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | NOME.
+function customTableStructuredName(table) {
+  return [table.category, table.system_name, table.module_name, table.submodule_name, table.base_name]
+    .map((value) => String(value || "").trim()).filter(Boolean).map((value) => value.toLocaleUpperCase("pt-BR")).join(" | ");
+}
+
 function normalizeCustomTableColumns(value) {
   let columns = value;
   if (typeof columns === "string") {
     try { columns = JSON.parse(columns); } catch (e) { columns = []; }
   }
   if (!Array.isArray(columns) || !columns.length) columns = [{ name: "Coluna 1" }];
-  return columns.map((column, index) => ({
-    id: String(column?.id || crypto.randomUUID()),
-    name: String(column?.name || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`
-  }));
+  return columns.map((column, index) => {
+    const width = Number(column?.width);
+    return {
+      id: String(column?.id || crypto.randomUUID()),
+      name: String(column?.name || `Coluna ${index + 1}`).trim() || `Coluna ${index + 1}`,
+      ...(Number.isFinite(width) && width > 0 ? { width: Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, width))) } : {})
+    };
+  });
 }
 
 function normalizeCustomTableRows(value, columns) {
@@ -9944,7 +12753,8 @@ function normalizeCustomTableSheets(value, fallbackColumns, fallbackRows) {
       id: String(sheet?.id || crypto.randomUUID()),
       name: String(sheet?.name || `Planilha ${index + 1}`).trim() || `Planilha ${index + 1}`,
       columns,
-      rows: normalizeCustomTableRows(sheet?.rows, columns)
+      rows: normalizeCustomTableRows(sheet?.rows, columns),
+      frozen: Math.max(0, Math.min(columns.length, Math.floor(Number(sheet?.frozen) || 0)))
     };
   });
 }
@@ -9952,9 +12762,12 @@ function normalizeCustomTableSheets(value, fallbackColumns, fallbackRows) {
 function normalizeCustomTable(item = {}) {
   const legacyColumns = normalizeCustomTableColumns(item.columns);
   const sheets = normalizeCustomTableSheets(item.sheets, legacyColumns, item.rows);
+  const name = String(item.name || "Nova tabela").trim() || "Nova tabela";
   return {
     ...item,
-    name: String(item.name || "Nova tabela").trim() || "Nova tabela",
+    name,
+    base_name: String(item.base_name || "").trim() || (item.use_structured_name ? "" : name),
+    use_structured_name: Boolean(item.use_structured_name),
     sheets,
     columns: sheets[0].columns,
     rows: sheets[0].rows
@@ -10069,7 +12882,12 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
   const view = { sortKey: null, sortDir: 1, filters: {} };
   const content = `<div class="custom-table-editor${readOnly ? " is-readonly" : ""}">
     <div class="custom-table-editor-toolbar">
-      <input id="custom-table-name" value="${esc(draft.name)}" placeholder="Nome da tabela"${readOnly ? " disabled" : ""}>
+      <div class="custom-table-meta">
+        ${[["category", "Categoria"], ["system_name", "Canal"], ["module_name", "Módulo"], ["submodule_name", "Submódulo"]].map(([key, label]) => `<input class="custom-table-meta-input" data-meta="${key}" value="${esc(draft[key] || "")}" placeholder="${label}" title="${label}" list="custom-table-meta-${key}"${readOnly ? " disabled" : ""}><datalist id="custom-table-meta-${key}">${[...new Set(toolCustomTableRows().map((item) => String(item[key] || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR")).map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>`).join("")}
+        <input id="custom-table-name" class="custom-table-name-input" value="${esc(draft.base_name || draft.name)}" placeholder="Nome" title="Nome"${readOnly ? " disabled" : ""}>
+        <label class="custom-table-structured" title="O nome do arquivo passa a ser Categoria | Canal | Módulo | Submódulo | Nome"><input type="checkbox" id="custom-table-structured"${draft.use_structured_name ? " checked" : ""}${readOnly ? " disabled" : ""}><span>Usar como nome do arquivo</span></label>
+      </div>
+      <span id="custom-table-file-name" class="custom-table-file-name"></span>
       <span id="custom-table-summary" class="muted"></span>
       ${readOnly ? "" : '<button class="btn" id="custom-table-add-column" type="button">+ Coluna</button><button class="btn primary" id="custom-table-add-row" type="button">+ Linha</button>'}
     </div>
@@ -10078,6 +12896,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     <div class="custom-table-sheet-tabs"><div id="custom-table-sheet-list"></div>${readOnly ? "" : '<button class="custom-table-add-sheet" id="custom-table-add-sheet" type="button" title="Adicionar aba">+</button>'}</div>
   </div><div class="modal-foot"><button class="btn" id="custom-table-cancel">${readOnly ? "Fechar" : "Cancelar"}</button>${readOnly ? "" : '<button class="btn primary" id="custom-table-save">Salvar</button>'}</div>`;
   const closePanel = nestedCenterModal(readOnly ? `Tabela · ${draft.name}` : (id ? "Editar tabela" : "Nova tabela"), content, { cls: "full custom-table-editor-modal", closeOnOverlay: true });
+  document.querySelectorAll(".custom-table-meta-input, #custom-table-name, #custom-table-structured").forEach((input) => input.addEventListener(input.type === "checkbox" ? "change" : "input", () => updateFileName()));
 
   const resetSheetView = () => {
     view.sortKey = null;
@@ -10120,7 +12939,6 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     const values = [...new Set(activeSheet().rows.map((row) => String(row.cells[column.id] || "")))].sort((a, b) =>
       a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
     );
-    let selected = new Set(view.filters[column.id] || []);
     const rect = header.getBoundingClientRect();
     const panel = document.createElement("div");
     panel.id = "custom-table-filter-dd";
@@ -10128,40 +12946,16 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 300))}px`;
     panel.style.top = `${rect.bottom + 4}px`;
     panel.style.maxHeight = `${Math.max(220, window.innerHeight - rect.bottom - 20)}px`;
-    panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(column.name)}</span><span>${values.length}</span></div>
-      <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-      <div class="dd-foot"><button class="btn custom-table-filter-all">Todos</button><button class="btn danger custom-table-filter-clear">Limpar</button><button class="btn primary custom-table-filter-apply">Aplicar</button></div>`;
     document.body.appendChild(panel);
-    const list = panel.querySelector(".dd-list");
-    const draw = () => {
-      const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-      list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) =>
-        `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value || "(vazio)")}</span></label>`
-      ).join("");
-      list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-        const value = item.dataset.value;
-        if (selected.has(value)) selected.delete(value); else selected.add(value);
-        draw();
-      }));
-    };
-    draw();
-    panel.querySelector("input").addEventListener("input", draw);
-    panel.querySelector(".custom-table-filter-all").addEventListener("click", () => {
-      if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-      draw();
+    mountColumnFilterPanel(panel, {
+      title: `Filtrar · ${column.name}`, values, key: column.name || "", current: view.filters[column.id],
+      labelFor: (value) => value || "(vazio)",
+      onApply: (rule) => {
+        if (rule) view.filters[column.id] = rule; else delete view.filters[column.id];
+        panel.remove();
+        renderGrid();
+      }
     });
-    panel.querySelector(".custom-table-filter-clear").addEventListener("click", () => {
-      delete view.filters[column.id];
-      panel.remove();
-      renderGrid();
-    });
-    panel.querySelector(".custom-table-filter-apply").addEventListener("click", () => {
-      if (selected.size && selected.size < values.length) view.filters[column.id] = selected;
-      else delete view.filters[column.id];
-      panel.remove();
-      renderGrid();
-    });
-    panel.querySelector("input").focus();
     setTimeout(() => {
       const outside = (event) => {
         if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -10171,6 +12965,144 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       };
       document.addEventListener("mousedown", outside);
     }, 50);
+  };
+
+  const updateFileName = () => {
+    const meta = Object.fromEntries([...document.querySelectorAll(".custom-table-meta-input")].map((input) => [input.dataset.meta, input.value]));
+    const base = document.getElementById("custom-table-name")?.value || "";
+    const structured = document.getElementById("custom-table-structured")?.checked;
+    const label = document.getElementById("custom-table-file-name");
+    if (!label) return;
+    const fileName = structured ? customTableStructuredName({ ...meta, base_name: base }) : base.trim();
+    label.textContent = fileName ? `Arquivo: ${fileName}` : "";
+    label.title = fileName;
+  };
+
+  const deleteColumn = (columnId) => {
+    const sheet = activeSheet();
+    if (sheet.columns.length === 1) { toast("A aba precisa ter ao menos uma coluna.", true); return; }
+    const index = sheet.columns.findIndex((column) => column.id === columnId);
+    sheet.columns = sheet.columns.filter((column) => column.id !== columnId);
+    sheet.rows.forEach((row) => delete row.cells[columnId]);
+    if (index >= 0 && index < sheet.frozen) sheet.frozen -= 1;
+    delete view.filters[columnId];
+    if (view.sortKey === columnId) view.sortKey = null;
+    renderGrid();
+  };
+
+  const insertColumn = (columnId, offset) => {
+    const sheet = activeSheet();
+    const index = sheet.columns.findIndex((column) => column.id === columnId);
+    const name = window.prompt("Nome da nova coluna:", `Coluna ${sheet.columns.length + 1}`)?.trim();
+    if (!name) return;
+    const column = { id: crypto.randomUUID(), name };
+    const at = Math.max(0, index + offset);
+    sheet.columns.splice(at, 0, column);
+    sheet.rows.forEach((row) => { row.cells[column.id] = ""; });
+    if (at < sheet.frozen) sheet.frozen += 1;
+    renderGrid();
+  };
+
+  const autoFitColumn = (columnId) => {
+    const sheet = activeSheet();
+    const column = sheet.columns.find((item) => item.id === columnId);
+    if (!column) return;
+    const canvas = autoFitColumn.canvas || (autoFitColumn.canvas = document.createElement("canvas"));
+    const context = canvas.getContext("2d");
+    context.font = "13px system-ui, sans-serif";
+    const widest = Math.max(context.measureText(String(column.name || "").toLocaleUpperCase("pt-BR")).width + 70,
+      ...sheet.rows.map((row) => context.measureText(String(row.cells[columnId] || "")).width + 26));
+    column.width = Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, widest)));
+    renderGrid();
+  };
+
+  const startColumnResize = (event, columnId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sheet = activeSheet();
+    const column = sheet.columns.find((item) => item.id === columnId);
+    const col = document.querySelector(`#custom-table-grid-wrap col[data-col-id="${CSS.escape(columnId)}"]`);
+    const table = document.querySelector("#custom-table-grid-wrap .custom-table-grid");
+    if (!column || !col || !table) return;
+    const startX = event.clientX;
+    const startWidth = customTableColumnWidth(column);
+    const startTable = table.offsetWidth;
+    document.body.classList.add("ct-resizing");
+    const move = (moveEvent) => {
+      if (Math.abs(moveEvent.clientX - startX) < 2) return;
+      const width = Math.round(Math.min(CUSTOM_TABLE_MAX_WIDTH, Math.max(CUSTOM_TABLE_MIN_WIDTH, startWidth + moveEvent.clientX - startX)));
+      column.width = width;
+      col.style.width = `${width}px`;
+      table.style.width = `${startTable + width - startWidth}px`;
+    };
+    const up = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.body.classList.remove("ct-resizing");
+      if (customTableColumnWidth(column) !== startWidth) renderGrid();
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+  };
+
+  // Menu da coluna (⋮ ou botão direito): congelar, ordenar, filtrar,
+  // dimensionar, inserir e excluir com confirmação.
+  const openColumnMenu = (anchor, column, point = null) => {
+    document.getElementById("custom-table-column-menu")?.remove();
+    const sheet = activeSheet();
+    const index = sheet.columns.findIndex((item) => item.id === column.id);
+    const frozenHere = index < sheet.frozen;
+    const menu = document.createElement("div");
+    menu.id = "custom-table-column-menu";
+    menu.className = "ct-menu";
+    const items = [
+      [frozenHere ? "unfreeze" : "freeze", frozenHere ? "Descongelar colunas" : `Congelar até esta coluna (${index + 1})`],
+      ["sort-asc", "Ordenar A → Z"],
+      ["sort-desc", "Ordenar Z → A"],
+      ["filter", "Filtrar…"],
+      ["fit", "Ajustar largura ao conteúdo"],
+      ["reset-width", "Largura padrão"],
+      ...(readOnly ? [] : [["insert-left", "Inserir coluna à esquerda"], ["insert-right", "Inserir coluna à direita"], ["delete", "Excluir coluna…", "danger"]])
+    ];
+    const drawItems = () => {
+      menu.innerHTML = `<div class="ct-menu-head">${esc(column.name)}</div>${items.map(([action, label, tone]) => `<button type="button" class="ct-menu-item${tone ? ` ${tone}` : ""}" data-action="${action}">${label}</button>`).join("")}`;
+    };
+    const drawConfirm = () => {
+      const filled = sheet.rows.filter((row) => String(row.cells[column.id] || "").trim()).length;
+      menu.innerHTML = `<div class="ct-menu-head">Excluir coluna</div>
+        <p class="ct-menu-confirm">Excluir a coluna <b>${esc(column.name)}</b>?${filled ? ` ${filled} célula(s) preenchida(s) serão apagadas.` : ""} Só é definitivo ao salvar a tabela.</p>
+        <div class="ct-menu-actions"><button type="button" class="btn" data-action="cancel">Cancelar</button><button type="button" class="btn danger" data-action="confirm-delete">Excluir</button></div>`;
+    };
+    drawItems();
+    document.body.appendChild(menu);
+    const rect = anchor.getBoundingClientRect();
+    const place = () => {
+      const box = menu.getBoundingClientRect();
+      const x = point ? point.x : rect.right - box.width;
+      const y = point ? point.y : rect.bottom + 4;
+      menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - box.width - 8))}px`;
+      menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - box.height - 8))}px`;
+    };
+    place();
+    const close = () => { menu.remove(); document.removeEventListener("mousedown", outside, true); };
+    const outside = (event) => { if (!menu.contains(event.target)) close(); };
+    setTimeout(() => document.addEventListener("mousedown", outside, true), 0);
+    menu.addEventListener("click", (event) => {
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (!action) return;
+      if (action === "delete") { drawConfirm(); place(); return; }
+      if (action === "cancel") { drawItems(); place(); return; }
+      close();
+      if (action === "freeze") { sheet.frozen = index + 1; renderGrid(); }
+      else if (action === "unfreeze") { sheet.frozen = 0; renderGrid(); }
+      else if (action === "sort-asc" || action === "sort-desc") { view.sortKey = column.id; view.sortDir = action === "sort-asc" ? 1 : -1; renderGrid(); }
+      else if (action === "filter") { const header = document.querySelector(`#custom-table-grid-wrap th[data-custom-table-key="${CSS.escape(column.id)}"]`); if (header) openColumnFilter(header, column); }
+      else if (action === "fit") autoFitColumn(column.id);
+      else if (action === "reset-width") { delete column.width; renderGrid(); }
+      else if (action === "insert-left") insertColumn(column.id, 0);
+      else if (action === "insert-right") insertColumn(column.id, 1);
+      else if (action === "confirm-delete") deleteColumn(column.id);
+    });
   };
 
   const renderGrid = () => {
@@ -10201,13 +13133,20 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
       renderGrid();
     };
     const wrap = document.getElementById("custom-table-grid-wrap");
-    wrap.innerHTML = `<table class="custom-table-grid"><thead>
-      <tr><th class="custom-table-index-cell">#</th>${sheet.columns.map((column) => `<th data-custom-table-key="${esc(column.id)}" title="Clique para ordenar. Ctrl+clique para filtrar.">
-        <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span>${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-column" data-column-id="${esc(column.id)}" title="Excluir coluna">×</button>`}</div>
+    const frozenLeft = [];
+    sheet.columns.reduce((left, column, index) => { frozenLeft[index] = left; return left + customTableColumnWidth(column); }, CUSTOM_TABLE_INDEX_WIDTH);
+    const cellAttrs = (index) => index < sheet.frozen
+      ? ` class="ct-frozen${index === sheet.frozen - 1 ? " ct-frozen-edge" : ""}" style="left:${frozenLeft[index]}px"`
+      : "";
+    const tableWidth = CUSTOM_TABLE_INDEX_WIDTH + 34 + sheet.columns.reduce((total, column) => total + customTableColumnWidth(column), 0);
+    wrap.innerHTML = `<table class="custom-table-grid" style="width:${tableWidth}px"><colgroup><col style="width:${CUSTOM_TABLE_INDEX_WIDTH}px">${sheet.columns.map((column) => `<col data-col-id="${esc(column.id)}" style="width:${customTableColumnWidth(column)}px">`).join("")}<col style="width:34px"></colgroup><thead>
+      <tr><th class="custom-table-index-cell">#</th>${sheet.columns.map((column, index) => `<th data-custom-table-key="${esc(column.id)}"${cellAttrs(index)} title="Clique para ordenar. Ctrl+clique para filtrar. Botão direito ou ⋮ para opções.">
+        <div class="custom-table-column-head">${readOnly ? `<span class="custom-table-column-label">${esc(column.name)}</span>` : `<input value="${esc(column.name)}" data-column-name="${esc(column.id)}">`}<span class="arrow">${index < sheet.frozen ? '<span class="ct-pin" title="Coluna congelada">📌</span>' : ""}${view.sortKey === column.id ? (view.sortDir > 0 ? "▲" : "▼") : ""}</span><button class="tool-icon-btn ct-col-menu-btn" data-column-id="${esc(column.id)}" type="button" title="Opções da coluna">⋮</button></div>
+        <span class="ct-resize" data-column-id="${esc(column.id)}" title="Arraste para dimensionar. Duplo clique ajusta ao conteúdo."></span>
       </th>`).join("")}<th class="custom-table-row-action"></th></tr>
     </thead><tbody>${visibleRows.length ? visibleRows.map((row) => {
       const originalIndex = sheet.rows.findIndex((item) => item.id === row.id);
-      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${sheet.columns.map((column) => `<td><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
+      return `<tr><td class="custom-table-index-cell">${originalIndex + 1}</td>${sheet.columns.map((column, index) => `<td${cellAttrs(index)}><input data-row-id="${esc(row.id)}" data-cell-column="${esc(column.id)}" value="${esc(row.cells[column.id] || "")}"${readOnly ? " readonly" : ""}></td>`).join("")}<td class="custom-table-row-action">${readOnly ? "" : `<button class="tool-icon-btn custom-table-delete-row" data-row-id="${esc(row.id)}" title="Excluir linha">×</button>`}</td></tr>`;
     }).join("") : `<tr><td colspan="${sheet.columns.length + 2}" class="tool-empty">Nenhuma linha para exibir.</td></tr>`}</tbody></table>`;
     wrap.querySelectorAll("[data-column-name]").forEach((input) => input.addEventListener("input", () => {
       const column = sheet.columns.find((item) => item.id === input.dataset.columnName);
@@ -10226,21 +13165,25 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
         openColumnFilter(header, column);
         return;
       }
+      if (event.target.closest(".ct-resize")) return;
+      if (event.target.closest(".ct-col-menu-btn")) { event.stopPropagation(); openColumnMenu(event.target.closest(".ct-col-menu-btn"), column); return; }
       if (!readOnly && event.target.closest("input,button")) return;
       if (view.sortKey !== columnId) { view.sortKey = columnId; view.sortDir = 1; }
       else if (view.sortDir === 1) view.sortDir = -1;
       else { view.sortKey = null; view.sortDir = 1; }
       renderGrid();
     }));
-    wrap.querySelectorAll(".custom-table-delete-column").forEach((button) => button.addEventListener("click", () => {
-      if (sheet.columns.length === 1) { toast("A aba precisa ter ao menos uma coluna.", true); return; }
-      const columnId = button.dataset.columnId;
-      sheet.columns = sheet.columns.filter((column) => column.id !== columnId);
-      sheet.rows.forEach((row) => delete row.cells[columnId]);
-      delete view.filters[columnId];
-      if (view.sortKey === columnId) view.sortKey = null;
-      renderGrid();
+    wrap.querySelectorAll("th[data-custom-table-key]").forEach((header) => header.addEventListener("contextmenu", (event) => {
+      const column = sheet.columns.find((item) => item.id === header.dataset.customTableKey);
+      if (!column) return;
+      event.preventDefault();
+      openColumnMenu(header, column, { x: event.clientX, y: event.clientY });
     }));
+    wrap.querySelectorAll(".ct-resize").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => startColumnResize(event, handle.dataset.columnId));
+      handle.addEventListener("dblclick", (event) => { event.stopPropagation(); autoFitColumn(handle.dataset.columnId); });
+      handle.addEventListener("click", (event) => event.stopPropagation());
+    });
     wrap.querySelectorAll(".custom-table-delete-row").forEach((button) => button.addEventListener("click", () => {
       sheet.rows = sheet.rows.filter((row) => row.id !== button.dataset.rowId);
       renderGrid();
@@ -10276,7 +13219,10 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     renderGrid();
   });
   document.getElementById("custom-table-save")?.addEventListener("click", async () => {
-    draft.name = document.getElementById("custom-table-name").value.trim();
+    document.querySelectorAll(".custom-table-meta-input").forEach((input) => { draft[input.dataset.meta] = input.value.trim() || null; });
+    draft.base_name = document.getElementById("custom-table-name").value.trim();
+    draft.use_structured_name = Boolean(document.getElementById("custom-table-structured")?.checked);
+    draft.name = draft.use_structured_name ? customTableStructuredName(draft) : draft.base_name;
     draft.sheets.forEach((sheet) => {
       sheet.name = sheet.name.trim();
       sheet.columns.forEach((column) => { column.name = column.name.trim(); });
@@ -10293,7 +13239,11 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     button.disabled = true;
     button.textContent = "Salvando...";
     const firstSheet = draft.sheets[0];
-    const body = { name: draft.name, sheets: draft.sheets, columns: firstSheet.columns, rows: firstSheet.rows, updated_at: new Date().toISOString() };
+    const body = {
+      name: draft.name, base_name: draft.base_name, use_structured_name: draft.use_structured_name,
+      category: draft.category || null, system_name: draft.system_name || null, module_name: draft.module_name || null, submodule_name: draft.submodule_name || null,
+      sheets: draft.sheets, columns: firstSheet.columns, rows: firstSheet.rows, updated_at: new Date().toISOString()
+    };
     try {
       let saved;
       if (isLive()) saved = id ? await updateRow("customTables", id, body) : await createRow("customTables", body);
@@ -10315,6 +13265,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
     }
   });
   renderGrid();
+  updateFileName();
 }
 
 async function cloneToolCustomTable(id) {
@@ -10323,14 +13274,20 @@ async function cloneToolCustomTable(id) {
   if (!source) return;
   const sheets = source.sheets.map((sourceSheet) => {
     const idMap = new Map(sourceSheet.columns.map((column) => [column.id, crypto.randomUUID()]));
-    const columns = sourceSheet.columns.map((column) => ({ id: idMap.get(column.id), name: column.name }));
+    const columns = sourceSheet.columns.map((column) => ({ ...column, id: idMap.get(column.id) }));
     const rows = sourceSheet.rows.map((row) => ({
       id: crypto.randomUUID(),
       cells: Object.fromEntries(sourceSheet.columns.map((column) => [idMap.get(column.id), row.cells[column.id] || ""]))
     }));
-    return { id: crypto.randomUUID(), name: sourceSheet.name, columns, rows };
+    return { id: crypto.randomUUID(), name: sourceSheet.name, columns, rows, frozen: sourceSheet.frozen || 0 };
   });
-  const body = { name: `${source.name} - Cópia`, sheets, columns: sheets[0].columns, rows: sheets[0].rows, updated_at: new Date().toISOString() };
+  const baseName = `${source.base_name || source.name} - Cópia`;
+  const meta = { category: source.category || null, system_name: source.system_name || null, module_name: source.module_name || null, submodule_name: source.submodule_name || null };
+  const body = {
+    ...meta, base_name: baseName, use_structured_name: Boolean(source.use_structured_name),
+    name: source.use_structured_name ? customTableStructuredName({ ...meta, base_name: baseName }) : baseName,
+    sheets, columns: sheets[0].columns, rows: sheets[0].rows, updated_at: new Date().toISOString()
+  };
   try {
     let saved;
     if (isLive()) saved = await createRow("customTables", body);
@@ -10760,8 +13717,9 @@ function openToolDocumentForm(id = null) {
     <div class="document-editor-info">
       <select id="tool-document-type" title="Tipo de documentação">${typeOptions}</select>
       <input id="tool-document-category" value="${esc(current.category || "")}" placeholder="Categoria">
-      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CMS")}" placeholder="Sistema">
-      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo">
+      <input id="tool-document-system" value="${esc(current.system_name || "ENTERPRISER CMS")}" placeholder="Canal" title="Canal">
+      <input id="tool-document-module" value="${esc(current.module_name || "")}" placeholder="Módulo" title="Módulo">
+      <input id="tool-document-submodule" value="${esc(current.submodule_name || "")}" placeholder="Submódulo" title="Submódulo">
       <input id="tool-document-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Tags">
     </div>
     <div class="document-editor-toolbar" role="toolbar" aria-label="Formatação e blocos">
@@ -10963,10 +13921,11 @@ async function saveDocumentationEditor() {
     document_type: document.getElementById("tool-document-type").value,
     category: document.getElementById("tool-document-category").value.trim(),
     system_name: document.getElementById("tool-document-system").value.trim(),
-    module_name: document.getElementById("tool-document-module").value.trim()
+    module_name: document.getElementById("tool-document-module").value.trim(),
+    submodule_name: document.getElementById("tool-document-submodule").value.trim()
   };
   if (!metadata.category || !metadata.system_name || !metadata.module_name || !contentValue) {
-    toast("Preencha tipo, categoria, sistema, módulo e conteúdo.", true);
+    toast("Preencha tipo, categoria, canal, módulo e conteúdo.", true);
     return;
   }
   const button = document.getElementById("tool-document-save");
@@ -10976,6 +13935,7 @@ async function saveDocumentationEditor() {
     title: documentGeneratedTitle(metadata),
     system_name: metadata.system_name,
     module_name: metadata.module_name,
+    submodule_name: metadata.submodule_name || null,
     document_type: metadata.document_type,
     category: metadata.category,
     tags: normalizeTextList(document.getElementById("tool-document-tags").value),
@@ -11207,6 +14167,7 @@ async function cloneToolDocument(id) {
     title: documentGeneratedTitle(source),
     system_name: source.system_name || "ENTERPRISER CMS",
     module_name: source.module_name || null,
+    submodule_name: source.submodule_name || null,
     document_type: source.document_type || "documentation",
     category: source.category || null,
     tags: normalizeTextList(source.tags),
@@ -11281,115 +14242,613 @@ function openToolProcess(id) {
   document.getElementById("tool-process-detail-edit")?.addEventListener("click", () => { closePanel(); openToolProcessForm(id); });
 }
 
+const PROCESS_ELEMENTS = { task: "Tarefa", decision: "Decisão", end: "Fim" };
+const PROCESS_LANE_OPTIONS = [["responsible", "Responsável"], ["system", "Sistema"], ["module", "Módulo"]];
+const BPMN = { laneHead: 150, levelW: 130, levelH: 40, colW: 250, rowH: 140, laneW: 236, rankH: 150, taskW: 196, taskH: 92, diamond: 96, event: 46, pad: 24 };
+const BPMN_COMPACT = { rowH: 140, rankH: 150, taskH: 92 };
+const BPMN_DETAILED = { rowH: 196, rankH: 206, taskH: 148 };
+let processFlowShowDetails = (() => { try { return localStorage.getItem("processFlowShowDetails") === "1"; } catch { return false; } })();
+Object.assign(BPMN, processFlowShowDetails ? BPMN_DETAILED : BPMN_COMPACT);
+let processFlowLaneBy = (() => { try { return localStorage.getItem("processFlowLaneBy") || "responsible"; } catch { return "responsible"; } })();
+let processFlowOrientation = (() => { try { return localStorage.getItem("processFlowOrientation") || "vertical"; } catch { return "vertical"; } })();
+let processFlowZoom = 1;
+let processFlowHandMode = false;
+
+function processStepTitle(step, index) {
+  if (step.label) return step.label;
+  if (step.element === "end") return "Fim";
+  return [step.system, step.module, step.submodule].filter(Boolean).join(" · ") || `Etapa ${index + 1}`;
+}
+
+function processFlowGraph(steps) {
+  const nodes = [{ id: "__start", kind: "start" }];
+  steps.forEach((step, index) => nodes.push({ id: step.id, kind: step.element || "task", step, index }));
+  const known = new Set(steps.map((step) => step.id));
+  const edges = [];
+  let needsEnd = false;
+  const nextOf = (index) => {
+    if (index + 1 < steps.length) return steps[index + 1].id;
+    needsEnd = true;
+    return "__end";
+  };
+  if (steps.length) edges.push({ from: "__start", to: steps[0].id });
+  else { needsEnd = true; edges.push({ from: "__start", to: "__end" }); }
+  steps.forEach((step, index) => {
+    if (step.element === "end") return;
+    if (step.element === "decision" && step.outcomes?.length) {
+      step.outcomes.forEach((outcome, outcomeIndex) => edges.push({ from: step.id, to: known.has(outcome.target) ? outcome.target : nextOf(index), label: outcome.label, exit: outcomeIndex }));
+      return;
+    }
+    edges.push({ from: step.id, to: known.has(step.next) ? step.next : nextOf(index) });
+  });
+  if (needsEnd) nodes.push({ id: "__end", kind: "end", implicit: true, index: steps.length });
+  return { nodes, edges };
+}
+
+function processFlowLaneOf(step, laneBy) {
+  if (laneBy === "module") {
+    const module = String(step?.module || "").trim();
+    const submodule = String(step?.submodule || "").trim();
+    if (!module && !submodule) return null;
+    return { key: `${module || "Sem módulo"}\u0001${submodule || "Sem submódulo"}`, group: module || "Sem módulo", name: submodule || "Sem submódulo" };
+  }
+  const value = String((laneBy === "system" ? step?.system : step?.responsible) || "").trim();
+  return value ? { key: value, group: null, name: value } : null;
+}
+
+function processFlowLayout(steps, laneBy, orientation = processFlowOrientation) {
+  const graph = processFlowGraph(steps);
+  const vertical = orientation === "vertical";
+  const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
+  const emptyLane = laneBy === "system" ? "Sem sistema" : laneBy === "module" ? null : "Sem responsável";
+  const fallbackLane = laneBy === "module"
+    ? { key: "Sem módulo\u0001Sem submódulo", group: "Sem módulo", name: "Sem submódulo" }
+    : { key: emptyLane, group: null, name: emptyLane };
+  const laneOf = new Map();
+  let previousLane = null;
+  graph.nodes.forEach((node) => {
+    let source = node.step;
+    if (node.kind === "start") source = steps[0];
+    if (node.implicit) source = steps[steps.length - 1];
+    let lane = processFlowLaneOf(source, laneBy);
+    if (!lane) lane = node.kind !== "task" && previousLane ? previousLane : fallbackLane;
+    laneOf.set(node.id, lane);
+    if (node.kind !== "start") previousLane = lane;
+  });
+  const lanes = [];
+  [...laneOf.values()].forEach((lane) => { if (!lanes.some((item) => item.key === lane.key)) lanes.push(lane); });
+  if (laneBy === "module") {
+    const groupOrder = [];
+    lanes.forEach((lane) => { if (!groupOrder.includes(lane.group)) groupOrder.push(lane.group); });
+    lanes.sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group));
+  }
+  const rank = new Map();
+  graph.nodes.forEach((node, index) => {
+    if (node.kind === "start") { rank.set(node.id, 0); return; }
+    const incoming = graph.edges.filter((edge) => edge.to === node.id && order.get(edge.from) < index && rank.has(edge.from));
+    rank.set(node.id, incoming.length ? Math.max(...incoming.map((edge) => rank.get(edge.from) + 1)) : (rank.get(graph.nodes[index - 1].id) || 0) + 1);
+  });
+  const slots = new Map();
+  const slotOf = new Map();
+  graph.nodes.forEach((node) => {
+    const key = `${laneOf.get(node.id).key}|${rank.get(node.id)}`;
+    const slot = slots.get(key) || 0;
+    slots.set(key, slot + 1);
+    slotOf.set(node.id, slot);
+  });
+  const levels = laneBy === "module" ? 2 : 1;
+  const laneUnit = vertical ? BPMN.laneW : BPMN.rowH;
+  const head = vertical ? levels * BPMN.levelH : (levels === 2 ? 2 * BPMN.levelW : BPMN.laneHead);
+  const laneSpan = new Map(lanes.map((lane) => [lane.key, Math.max(1, ...[...slots.entries()].filter(([key]) => key.startsWith(`${lane.key}|`)).map(([, count]) => count)) * laneUnit]));
+  const laneStart = new Map();
+  let offset = vertical ? 0 : 0;
+  lanes.forEach((lane) => { laneStart.set(lane.key, offset); offset += laneSpan.get(lane.key); });
+  const maxRank = Math.max(...rank.values());
+  const size = (node) => node.kind === "task" ? [BPMN.taskW, BPMN.taskH] : node.kind === "decision" ? [BPMN.diamond, BPMN.diamond] : [BPMN.event, BPMN.event];
+  const boxes = new Map(graph.nodes.map((node) => {
+    const [w, h] = size(node);
+    const lane = laneOf.get(node.id);
+    const along = laneStart.get(lane.key) + slotOf.get(node.id) * laneUnit;
+    const x = vertical ? along + (BPMN.laneW - w) / 2 : head + rank.get(node.id) * BPMN.colW + (BPMN.colW - w) / 2;
+    const y = vertical ? head + rank.get(node.id) * BPMN.rankH + (BPMN.rankH - h) / 2 : along + (BPMN.rowH - h) / 2;
+    return [node.id, { x, y, w, h, kind: node.kind }];
+  }));
+  const width = vertical ? offset : head + (maxRank + 1) * BPMN.colW + BPMN.pad;
+  const height = vertical ? head + (maxRank + 1) * BPMN.rankH + BPMN.pad : offset;
+  return { graph, lanes, laneStart, laneSpan, boxes, column: rank, width, height, head, levels, vertical };
+}
+
+function processFlowEntryPoint(box, side) {
+  if (box.kind === "decision") {
+    if (side === "right") return [box.x + box.w * 0.78, box.y + box.h * 0.28];
+    return [box.x + box.w * 0.72, box.y + box.h * 0.78];
+  }
+  if (side === "right") return [box.x + box.w, box.y + box.h * 0.3];
+  return [box.x + box.w * 0.72, box.y + box.h];
+}
+
+function processFlowEdgePath(edge, layout) {
+  const from = layout.boxes.get(edge.from);
+  const to = layout.boxes.get(edge.to);
+  if (!from || !to) return null;
+  const forward = layout.column.get(edge.to) > layout.column.get(edge.from);
+  const exit = edge.exit || 0;
+  if (layout.vertical) {
+    let x1 = from.x + from.w / 2;
+    let y1 = from.y + from.h;
+    if (exit === 1) { x1 = from.x + from.w; y1 = from.y + from.h / 2; }
+    if (exit === 2) { x1 = from.x; y1 = from.y + from.h / 2; }
+    if (forward) {
+      const x2 = to.x + to.w / 2;
+      const y2 = to.y;
+      if (exit === 1 || exit === 2) return { d: `M${x1},${y1} H${x2} V${y2 - 4}`, labelAt: [exit === 1 ? x1 + 6 : x1 - 30, y1 - 6] };
+      const mid = y1 + Math.min(40, (y2 - y1) / 2);
+      return { d: Math.abs(x1 - x2) < 1 ? `M${x1},${y1} V${y2 - 4}` : `M${x1},${y1} V${mid} H${x2} V${y2 - 4}`, labelAt: [x1 + 6, y1 + 14] };
+    }
+    const sx = exit === 2 ? from.x : from.x + from.w;
+    const sy = from.y + from.h / 2;
+    const [tx, ty] = processFlowEntryPoint(to, "right");
+    const side = exit === 2 ? Math.min(from.x, to.x) - 18 - exit * 8 : Math.max(from.x + from.w, to.x + to.w) + 18 + exit * 8;
+    return { d: `M${sx},${sy} H${side} V${ty} H${tx + 4}`, labelAt: [sx + (exit === 2 ? -30 : 6), sy - 6] };
+  }
+  let x1 = from.x + from.w;
+  let y1 = from.y + from.h / 2;
+  if (exit === 1) { x1 = from.x + from.w / 2; y1 = from.y + from.h; }
+  if (exit === 2) { x1 = from.x + from.w / 2; y1 = from.y; }
+  const x2 = to.x;
+  const y2 = to.y + to.h / 2;
+  if (forward) {
+    if (exit === 1 || exit === 2) return { d: `M${x1},${y1} V${y2} H${x2 - 4}`, labelAt: [x1 + 6, exit === 1 ? y1 + 14 : y1 - 6] };
+    const mid = x1 + Math.min(40, (x2 - x1) / 2);
+    return { d: Math.abs(y1 - y2) < 1 ? `M${x1},${y1} H${x2 - 4}` : `M${x1},${y1} H${mid} V${y2} H${x2 - 4}`, labelAt: [x1 + 6, y1 - 6] };
+  }
+  const sx = exit === 2 ? x1 : from.x + from.w / 2;
+  const sy = exit === 2 ? y1 : from.y + from.h;
+  const [tx, ty] = processFlowEntryPoint(to, "bottom");
+  const d = exit === 2
+    ? `M${sx},${sy} V${Math.min(from.y, to.y) - 18} H${tx} V${to.y - 4}`
+    : `M${sx},${sy} V${Math.max(from.y + from.h, to.y + to.h) + 18 + exit * 8} H${tx} V${ty + 4}`;
+  return { d, labelAt: [sx + 6, exit === 2 ? sy - 6 : sy + 14] };
+}
+
+function processFlowHeadsHtml(layout) {
+  const { vertical, lanes, laneStart, laneSpan, head, levels } = layout;
+  const cell = (start, span, level, text, cls) => {
+    const style = vertical
+      ? `left:${start}px;width:${span}px;top:${level * BPMN.levelH}px;height:${BPMN.levelH}px`
+      : `top:${start}px;height:${span}px;left:${level * BPMN.levelW}px;width:${levels === 2 ? BPMN.levelW : BPMN.laneHead}px`;
+    return `<div class="bpmn-lane-head${cls ? ` ${cls}` : ""}" style="${style}"><span>${esc(text)}</span></div>`;
+  };
+  let cells = "";
+  if (levels === 2) {
+    const groups = [];
+    lanes.forEach((lane) => {
+      const last = groups[groups.length - 1];
+      if (last && last.group === lane.group) last.span += laneSpan.get(lane.key);
+      else groups.push({ group: lane.group, start: laneStart.get(lane.key), span: laneSpan.get(lane.key) });
+    });
+    cells += groups.map((group) => cell(group.start, group.span, 0, group.group, "is-group")).join("");
+    cells += lanes.map((lane) => cell(laneStart.get(lane.key), laneSpan.get(lane.key), 1, lane.name)).join("");
+  } else cells = lanes.map((lane) => cell(laneStart.get(lane.key), laneSpan.get(lane.key), 0, lane.name)).join("");
+  const style = vertical ? `width:${layout.width}px;height:${head}px` : `width:${head}px;height:${layout.height}px`;
+  return `<div class="bpmn-heads${vertical ? " is-vertical" : ""}" style="${style}">${cells}</div>`;
+}
+
+function processFlowCanvasHtml(process, steps) {
+  const layout = processFlowLayout(steps, processFlowLaneBy, processFlowOrientation);
+  const bands = layout.lanes.map((lane) => {
+    const start = layout.laneStart.get(lane.key);
+    const span = layout.laneSpan.get(lane.key);
+    const style = layout.vertical ? `left:${start}px;width:${span}px;top:0;bottom:0` : `top:${start}px;height:${span}px;left:0;right:0`;
+    return `<div class="bpmn-lane${layout.vertical ? " is-vertical" : ""}" style="${style}"></div>`;
+  }).join("");
+  const edges = layout.graph.edges.map((edge) => {
+    const path = processFlowEdgePath(edge, layout);
+    if (!path) return "";
+    return `<path class="bpmn-edge" d="${path.d}" marker-end="url(#bpmn-arrow)"></path>${edge.label ? `<text class="bpmn-edge-label" x="${path.labelAt[0]}" y="${path.labelAt[1]}">${esc(edge.label)}</text>` : ""}`;
+  }).join("");
+  const nodes = layout.graph.nodes.map((node) => {
+    const box = layout.boxes.get(node.id);
+    const style = `left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px`;
+    const labelStyle = layout.vertical
+      ? `left:${box.x + box.w + 8}px;top:${box.y + box.h / 2 - 7}px;text-align:left`
+      : `left:${box.x - 27}px;top:${box.y + box.h + 4}px`;
+    if (node.kind === "start") return `<div class="bpmn-node bpmn-event bpmn-start" style="${style}" title="Início"></div><span class="bpmn-event-label" style="${labelStyle}">Início</span>`;
+    const step = node.step;
+    if (node.kind === "end") {
+      const label = node.implicit ? "Fim" : processStepTitle(step, node.index);
+      return `<button class="bpmn-node bpmn-event bpmn-end" type="button" style="${style}" ${node.implicit ? "disabled" : `data-step="${esc(step.id)}"`} title="${esc(label)}"></button><span class="bpmn-event-label" style="${labelStyle}">${esc(label)}</span>`;
+    }
+    if (node.kind === "decision") return `<button class="bpmn-node bpmn-decision" type="button" style="${style}" data-step="${esc(step.id)}" title="${esc(step.label)}"><span class="bpmn-diamond" aria-hidden="true"></span><span class="bpmn-decision-text">${esc(step.label || "Decisão")}</span><span class="bpmn-number">${node.index + 1}</span></button>`;
+    // Card: sistema na vertical à esquerda, módulo/submódulo acima do nome e,
+    // com ⓘ ativo, só os detalhes da etapa a mais.
+    const path = [step.module, step.submodule].filter(Boolean).join(" / ");
+    const title = step.label || step.submodule || step.module || processStepTitle(step, node.index);
+    const details = processFlowShowDetails && step.details ? `<span class="bpmn-task-notes">${esc(step.details)}</span>` : "";
+    return `<button class="bpmn-node bpmn-task${step.system ? " has-system" : ""}${processFlowShowDetails ? " is-detailed" : ""}" type="button" style="${style}" data-step="${esc(step.id)}">${step.system ? `<span class="bpmn-task-system" title="Sistema">${esc(step.system)}</span>` : ""}<span class="bpmn-number">${node.index + 1}</span>${path && path !== title ? `<small class="bpmn-task-path">${esc(path)}</small>` : ""}<strong>${esc(title)}</strong>${details}${step.responsible && processFlowLaneBy !== "responsible" ? `<em>${esc(step.responsible)}</em>` : ""}</button>`;
+  }).join("");
+  return `<div class="bpmn-canvas${layout.vertical ? " is-vertical" : ""}" style="width:${layout.width}px;height:${layout.height}px;zoom:${processFlowZoom}">${processFlowHeadsHtml(layout)}${bands}<svg class="bpmn-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true"><defs><marker id="bpmn-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z"></path></marker></defs>${edges}</svg>${nodes}</div>`;
+}
+
+function processFlowDetailHtml(process, step, index) {
+  if (!step) return "";
+  const reference = safeHttpUrl(step.url);
+  const rows = [
+    ["Elemento", PROCESS_ELEMENTS[step.element] || "Tarefa"], ["Responsável", step.responsible], ["Sistema", step.system],
+    ["Módulo", step.module], ["Submódulo", step.submodule], ["Grupo", step.group], ["Tipo", step.type]
+  ].filter(([, value]) => value);
+  const steps = normalizeProcessSteps(process.steps);
+  const outcomes = (step.outcomes || []).map((outcome) => {
+    const targetIndex = steps.findIndex((item) => item.id === outcome.target);
+    return `<li><b>${esc(outcome.label || "—")}</b> → ${targetIndex >= 0 ? `${targetIndex + 1}. ${esc(processStepTitle(steps[targetIndex], targetIndex))}` : "seguinte da lista"}</li>`;
+  }).join("");
+  return `<header><span class="bpmn-number">${index + 1}</span><strong>${esc(processStepTitle(step, index))}</strong><button class="modal-close-x bpmn-detail-close" type="button" title="Fechar">✕</button></header>
+    <dl>${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
+    ${outcomes ? `<div class="bpmn-detail-block"><span>Saídas</span><ul>${outcomes}</ul></div>` : ""}
+    ${step.details ? `<div class="bpmn-detail-block"><span>Detalhes</span><p>${esc(step.details)}</p></div>` : ""}
+    ${reference ? `<div class="bpmn-detail-block"><span>URL</span><a href="${esc(reference)}" target="_blank" rel="noopener">${esc(step.url)} ↗</a></div>` : ""}
+    ${currentUserCan("processes", "edit") ? '<button class="btn primary bpmn-detail-edit" type="button">Editar processo</button>' : ""}`;
+}
+
+function wrapFlowText(text, maxChars, maxLines) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length > maxChars && line) { lines.push(line); line = word; }
+    else line = next;
+  });
+  if (line) lines.push(line);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = `${kept[maxLines - 1].slice(0, Math.max(1, maxChars - 1))}…`;
+    return kept;
+  }
+  return lines;
+}
+
+// Monta o fluxo como SVG independente (tema claro) para salvar em PNG/PDF.
+function processFlowSvgMarkup(process, steps) {
+  const layout = processFlowLayout(steps, processFlowLaneBy, processFlowOrientation);
+  const color = { bg: "#ffffff", laneA: "#f7f9fc", laneB: "#eef2f7", head: "#e3e9f2", group: "#d6e2f5", border: "#cfd8e5", text: "#17243b", muted: "#5d6b82", blue: "#2f6bd8", cyan: "#1593b8", orange: "#d79422", red: "#d64545", green: "#2fb36d" };
+  const pad = 24;
+  const titleH = 46;
+  const width = layout.width + pad * 2;
+  const height = layout.height + pad * 2 + titleH;
+  const t = (x, y, value, size, weight = 600, fill = color.text, anchor = "start") => `<text x="${x}" y="${y}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${esc(value)}</text>`;
+  const lines = (x, y, values, size, weight, fill, anchor = "start", lineHeight = size * 1.3) => values.map((value, index) => t(x, y + index * lineHeight, value, size, weight, fill, anchor)).join("");
+  const parts = [];
+  parts.push(`<rect width="${width}" height="${height}" fill="${color.bg}"/>`);
+  parts.push(t(pad, 30, `Fluxo BPMN · ${process.title || "Processo"}`, 16, 800));
+  parts.push(t(width - pad, 30, [process.category, process.system_name].filter(Boolean).join(" · "), 11, 600, color.muted, "end"));
+  parts.push(`<g transform="translate(${pad},${pad + titleH - 10})">`);
+  layout.lanes.forEach((lane, index) => {
+    const start = layout.laneStart.get(lane.key);
+    const span = layout.laneSpan.get(lane.key);
+    parts.push(layout.vertical
+      ? `<rect x="${start}" y="0" width="${span}" height="${layout.height}" fill="${index % 2 ? color.laneB : color.laneA}" stroke="${color.border}"/>`
+      : `<rect x="0" y="${start}" width="${layout.width}" height="${span}" fill="${index % 2 ? color.laneB : color.laneA}" stroke="${color.border}"/>`);
+  });
+  const headCell = (start, span, level, text, fill) => {
+    if (layout.vertical) {
+      const x = start; const y = level * BPMN.levelH; const w = span; const h = BPMN.levelH;
+      return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${color.border}"/>${lines(x + w / 2, y + h / 2 + 4, wrapFlowText(String(text).toLocaleUpperCase("pt-BR"), Math.max(8, Math.floor(w / 7)), 1), 10, 800, color.text, "middle")}`;
+    }
+    const w = layout.levels === 2 ? BPMN.levelW : BPMN.laneHead; const x = level * BPMN.levelW; const y = start; const h = span;
+    const wrapped = wrapFlowText(String(text).toLocaleUpperCase("pt-BR"), Math.floor(w / 7), 4);
+    return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" stroke="${color.border}"/>${lines(x + w / 2, y + h / 2 - (wrapped.length - 1) * 6.5 + 4, wrapped, 10, 800, color.text, "middle", 13)}`;
+  };
+  if (layout.levels === 2) {
+    const groups = [];
+    layout.lanes.forEach((lane) => {
+      const last = groups[groups.length - 1];
+      if (last && last.group === lane.group) last.span += layout.laneSpan.get(lane.key);
+      else groups.push({ group: lane.group, start: layout.laneStart.get(lane.key), span: layout.laneSpan.get(lane.key) });
+    });
+    groups.forEach((group) => parts.push(headCell(group.start, group.span, 0, group.group, color.group)));
+    layout.lanes.forEach((lane) => parts.push(headCell(layout.laneStart.get(lane.key), layout.laneSpan.get(lane.key), 1, lane.name, color.head)));
+  } else layout.lanes.forEach((lane) => parts.push(headCell(layout.laneStart.get(lane.key), layout.laneSpan.get(lane.key), 0, lane.name, color.head)));
+  parts.push(`<defs><marker id="flow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="${color.cyan}"/></marker></defs>`);
+  layout.graph.edges.forEach((edge) => {
+    const path = processFlowEdgePath(edge, layout);
+    if (!path) return;
+    parts.push(`<path d="${path.d}" fill="none" stroke="${color.cyan}" stroke-width="1.5" marker-end="url(#flow-arrow)"/>`);
+    if (edge.label) parts.push(`<text x="${path.labelAt[0]}" y="${path.labelAt[1]}" font-size="10" font-weight="700" fill="${color.text}" stroke="${color.bg}" stroke-width="3" paint-order="stroke">${esc(edge.label)}</text>`);
+  });
+  layout.graph.nodes.forEach((node) => {
+    const box = layout.boxes.get(node.id);
+    const cx = box.x + box.w / 2;
+    const cy = box.y + box.h / 2;
+    const labelX = layout.vertical ? box.x + box.w + 8 : cx;
+    const labelY = layout.vertical ? cy + 4 : box.y + box.h + 14;
+    const anchor = layout.vertical ? "start" : "middle";
+    if (node.kind === "start") {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="${box.w / 2 - 1}" fill="${color.bg}" stroke="${color.green}" stroke-width="2"/>`, t(labelX, labelY, "Início", 10, 700, color.muted, anchor));
+      return;
+    }
+    if (node.kind === "end") {
+      parts.push(`<circle cx="${cx}" cy="${cy}" r="${box.w / 2 - 3}" fill="${color.bg}" stroke="${color.red}" stroke-width="5"/>`, t(labelX, labelY, node.implicit ? "Fim" : processStepTitle(node.step, node.index), 10, 700, color.muted, anchor));
+      return;
+    }
+    if (node.kind === "decision") {
+      const r = box.w / 2 - 2;
+      parts.push(`<polygon points="${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}" fill="${color.bg}" stroke="${color.orange}" stroke-width="2"/>`);
+      const wrapped = wrapFlowText(node.step.label || "Decisão", 13, 3);
+      parts.push(lines(cx, cy - (wrapped.length - 1) * 6 + 3, wrapped, 9.5, 700, color.text, "middle", 12));
+      parts.push(`<circle cx="${cx}" cy="${box.y + 4}" r="10" fill="${color.orange}"/>`, t(cx, box.y + 7.5, String(node.index + 1), 9, 800, "#ffffff", "middle"));
+      return;
+    }
+    const step = node.step;
+    parts.push(`<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="8" fill="${color.bg}" stroke="${color.border}"/>`);
+    parts.push(`<rect x="${box.x}" y="${box.y}" width="3" height="${box.h}" rx="1.5" fill="${color.blue}"/>`);
+    parts.push(`<circle cx="${box.x + 18}" cy="${box.y + 18}" r="10" fill="${color.blue}"/>`, t(box.x + 18, box.y + 21.5, String(node.index + 1), 9, 800, "#ffffff", "middle"));
+    const title = wrapFlowText(processStepTitle(step, node.index), 24, 3);
+    parts.push(lines(box.x + 36, box.y + 22, title, 10.5, 700, color.text, "start", 13.5));
+    const meta = [step.label ? [step.system, step.module].filter(Boolean).join(" · ") : "", step.responsible && processFlowLaneBy !== "responsible" ? step.responsible : ""].filter(Boolean).join(" — ");
+    if (meta) parts.push(t(box.x + 36, box.y + 22 + title.length * 13.5 + 2, meta.length > 34 ? `${meta.slice(0, 33)}…` : meta, 9, 500, color.muted));
+  });
+  parts.push("</g>");
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="Urbanist, Arial, Helvetica, sans-serif">${parts.join("")}</svg>`, width, height };
+}
+
+async function processFlowPngBlob(process, steps, scale = 2) {
+  const { svg, width, height } = processFlowSvgMarkup(process, steps);
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Não foi possível gerar a imagem do fluxo."));
+      img.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const context = canvas.getContext("2d");
+    context.scale(scale, scale);
+    context.drawImage(image, 0, 0, width, height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    return { blob, dataUrl: canvas.toDataURL("image/png"), width, height };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function loadJsPdf() {
+  if (window.jspdf?.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    script.onload = () => window.jspdf?.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error("PDF indisponível."));
+    script.onerror = () => reject(new Error("Não foi possível carregar o gerador de PDF."));
+    document.head.appendChild(script);
+  });
+}
+
+async function exportProcessFlow(process, steps, format) {
+  if (!steps.length) { toast("Cadastre etapas para exportar o fluxo.", true); return; }
+  const baseName = `fluxo_${String(process.title || "processo").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "").toLowerCase() || "processo"}`;
+  try {
+    const image = await processFlowPngBlob(process, steps, format === "pdf" ? 2 : 2);
+    if (format === "png") {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(image.blob);
+      link.download = `${baseName}.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+      toast("PNG do fluxo salvo.");
+      return;
+    }
+    const JsPdf = await loadJsPdf();
+    const orientation = image.width >= image.height ? "landscape" : "portrait";
+    const pdf = new JsPdf({ orientation, unit: "pt", format: [image.width, image.height] });
+    pdf.addImage(image.dataUrl, "PNG", 0, 0, image.width, image.height);
+    pdf.save(`${baseName}.pdf`);
+    toast("PDF do fluxo salvo.");
+  } catch (err) {
+    toast("Erro ao exportar o fluxo · " + err.message, true);
+  }
+}
+
 function openToolProcessFlow(id) {
   const process = toolProcessRows().find((item) => item.id === id);
   if (!process) return;
   const steps = normalizeProcessSteps(process.steps);
-  const grouped = new Map();
-  steps.forEach((step, index) => {
-    const path = {
-      module: step.module || "Sem módulo",
-      submodule: step.submodule || "Sem submódulo",
-      group: step.group || "Sem grupo"
-    };
-    const key = JSON.stringify(path);
-    if (!grouped.has(key)) grouped.set(key, { ...path, steps: [] });
-    grouped.get(key).steps.push({ ...step, number: index + 1 });
-  });
-  const lanes = [...grouped.values()];
-  const laneIndexes = new Map(lanes.map((lane, index) => [JSON.stringify({
-    module: lane.module, submodule: lane.submodule, group: lane.group
-  }), index]));
-  const matrixColumns = `96px repeat(${Math.max(steps.length, 1)}, minmax(220px, 1fr)) 96px`;
-  const headers = steps.map((step, index) => `<div class="process-flow-column-head" style="grid-column:${index + 2};grid-row:1">Etapa ${index + 1}</div>`).join("");
-  const nodes = steps.map((step, index) => {
-    const reference = safeHttpUrl(step.url);
-    const key = JSON.stringify({
-      module: step.module || "Sem módulo",
-      submodule: step.submodule || "Sem submódulo",
-      group: step.group || "Sem grupo"
-    });
-    const hierarchy = [
-      ["Módulo", step.module || "Não informado"],
-      ["Submódulo", step.submodule || "Não informado"],
-      ["Grupo", step.group || "Não informado"],
-      ["Tipo", step.type || "Não informado"]
-    ];
-    return `<article class="process-flow-node process-flow-point" data-sequence="${index + 1}" style="grid-column:${index + 2};grid-row:${laneIndexes.get(key) + 2}">
-      <div class="process-flow-node-head"><span class="process-flow-number">${index + 1}</span><strong>${esc(step.system || "Sem sistema")}</strong></div>
-      <div class="process-flow-node-meta">${hierarchy.map(([label, value]) => `<div><span>${label}</span><b>${esc(value)}</b></div>`).join("")}</div>
-      <div class="process-flow-node-details"><span>Detalhes</span><p>${esc(step.details || "Sem detalhes.")}</p></div>
-      <div class="process-flow-node-url"><span>URL</span>${reference ? `<a href="${esc(reference)}" target="_blank" rel="noopener">${esc(step.url)} ↗</a>` : '<b>Não informada</b>'}</div>
-    </article>`;
-  }).join("");
-  const systems = [...new Set(steps.map((step) => step.system).filter(Boolean))];
-  const content = `<div class="process-flow-view">
-    <div class="process-flow-summary">
-      <div><span>Categoria</span><strong>${esc(process.category || "Não informada")}</strong></div>
-      <div><span>Sistemas</span><strong>${esc(systems.join(", ") || "Não informado")}</strong></div>
-      <div><span>Etapas</span><strong>${steps.length}</strong></div>
-      <div><span>Linhas</span><strong>${grouped.size}</strong></div>
+  const laneLabel = () => (PROCESS_LANE_OPTIONS.find(([value]) => value === processFlowLaneBy) || PROCESS_LANE_OPTIONS[0])[1];
+  const content = `<div class="bpmn-view">
+    <div class="bpmn-toolbar">
+      <div class="bpmn-summary"><span>Categoria <b>${esc(process.category || "—")}</b></span><span>Canal <b>${esc(process.system_name || "—")}</b></span><span>Etapas <b>${steps.length}</b></span></div>
     </div>
-    <div class="process-flow-scroll">
-      ${steps.length ? `<div class="process-flow-matrix" style="grid-template-columns:${matrixColumns};grid-template-rows:34px repeat(${Math.max(lanes.length, 1)},minmax(250px,auto))">
-        <div class="process-flow-column-head process-flow-fixed-start" style="grid-column:1;grid-row:1">Início</div>
-        ${headers}
-        <div class="process-flow-column-head process-flow-fixed-end" style="grid-column:${steps.length + 2};grid-row:1">Fim</div>
-        <div class="process-flow-terminal start process-flow-point" data-sequence="0" style="grid-column:1;grid-row:2 / span ${Math.max(lanes.length, 1)}"><span>Início</span></div>
-        ${nodes}
-        <div class="process-flow-terminal end process-flow-point" data-sequence="${steps.length + 1}" style="grid-column:${steps.length + 2};grid-row:2 / span ${Math.max(lanes.length, 1)}"><span>Fim</span></div>
-      </div>` : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}
-    </div>
+    <div class="bpmn-body"><div class="registration-mind-controls bpmn-floating" role="group" aria-label="Controles do fluxo"><button class="view bpmn-orientation${processFlowOrientation === "horizontal" ? " active" : ""}" type="button" data-orientation="horizontal" title="Fluxo na horizontal" aria-label="Fluxo na horizontal">⇆</button><button class="view bpmn-orientation${processFlowOrientation === "vertical" ? " active" : ""}" type="button" data-orientation="vertical" title="Fluxo na vertical" aria-label="Fluxo na vertical">⇅</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-zoom-out" type="button" title="Diminuir zoom" aria-label="Diminuir zoom">−</button><button class="view registration-mind-zoom bpmn-zoom-reset" type="button" title="Zoom: Ctrl + rolar a bolinha ou pinça. Clique para voltar a 100%">${Math.round(processFlowZoom * 100)}%</button><button class="view bpmn-zoom-in" type="button" title="Aumentar zoom" aria-label="Aumentar zoom">+</button><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-hand${processFlowHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar, inclusive sobre as etapas" aria-label="Mãozinha" aria-pressed="${processFlowHandMode}">✋</button><button class="view bpmn-fullscreen" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button><span class="bpmn-floating-sep" aria-hidden="true"></span><span class="bpmn-lane-group"><button class="view bpmn-details-toggle${processFlowShowDetails ? " active" : ""}" type="button" title="Mostrar detalhes nas etapas" aria-label="Mostrar detalhes nas etapas" aria-pressed="${processFlowShowDetails}">ⓘ</button><button class="view bpmn-lane-btn bpmn-lane-menu-btn" type="button" title="Raias do fluxo">${laneLabel()} ▾</button></span><span class="bpmn-export"><span class="bpmn-floating-sep" aria-hidden="true"></span><button class="view bpmn-lane-btn bpmn-export-pdf" type="button" title="Salvar o fluxo em PDF">PDF</button><button class="view bpmn-lane-btn bpmn-export-png" type="button" title="Salvar o fluxo em PNG">PNG</button></span></div><div class="bpmn-scroll">${steps.length ? processFlowCanvasHtml(process, steps) : '<div class="tool-empty">Nenhuma etapa cadastrada.</div>'}</div><aside class="bpmn-detail" hidden></aside></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-flow-close">Fechar</button></div>`;
-  let resizeObserver;
-  const closeFlow = nestedCenterModal(`Fluxo · ${process.title}`, content, {
+  let flowCleanup = null;
+  const closeFlow = nestedCenterModal(`Fluxo BPMN · ${process.title}`, content, {
     cls: "full process-flow-modal",
     closeOnOverlay: true,
-    onClose: () => resizeObserver?.disconnect()
+    onClose: () => { flowCleanup?.(); if (document.fullscreenElement) document.exitFullscreen?.()?.catch(() => {}); }
   });
   document.getElementById("tool-process-flow-close").addEventListener("click", closeFlow);
-  const matrix = document.querySelector(".process-flow-matrix");
-  if (matrix) {
-    requestAnimationFrame(() => drawProcessFlowConnections(matrix));
-    resizeObserver = new ResizeObserver(() => drawProcessFlowConnections(matrix));
-    resizeObserver.observe(matrix);
-    matrix.closest(".process-flow-scroll")?.addEventListener("scroll", () => requestAnimationFrame(() => drawProcessFlowConnections(matrix)), { passive: true });
-  }
+  const view = document.querySelector(".process-flow-modal .bpmn-view");
+  if (!view) return;
+  const scroller = view.querySelector(".bpmn-scroll");
+  const detail = view.querySelector(".bpmn-detail");
+  const zoomLabel = view.querySelector(".bpmn-zoom-reset");
+  let suppressNodeClick = false;
+  const wireNodes = () => scroller.querySelectorAll(".bpmn-node[data-step]").forEach((node) => node.addEventListener("click", () => {
+    if (suppressNodeClick) { suppressNodeClick = false; return; }
+    const index = steps.findIndex((step) => step.id === node.dataset.step);
+    scroller.querySelectorAll(".bpmn-node.is-selected").forEach((item) => item.classList.remove("is-selected"));
+    node.classList.add("is-selected");
+    detail.innerHTML = processFlowDetailHtml(process, steps[index], index);
+    detail.hidden = false;
+    detail.querySelector(".bpmn-detail-close")?.addEventListener("click", () => { detail.hidden = true; node.classList.remove("is-selected"); });
+    detail.querySelector(".bpmn-detail-edit")?.addEventListener("click", () => openToolProcessForm(process.id, {
+      focusStep: node.dataset.step,
+      onSaved: () => {
+        const position = { left: scroller.scrollLeft, top: scroller.scrollTop };
+        closeFlow();
+        openToolProcessFlow(process.id);
+        const next = document.querySelector(".process-flow-modal .bpmn-scroll");
+        if (next) { next.scrollLeft = position.left; next.scrollTop = position.top; }
+      }
+    }));
+  }));
+  const redraw = () => {
+    if (!steps.length) return;
+    scroller.innerHTML = processFlowCanvasHtml(process, steps);
+    wireNodes();
+  };
+  wireNodes();
+  view.querySelectorAll(".bpmn-orientation").forEach((button) => button.addEventListener("click", () => {
+    processFlowOrientation = button.dataset.orientation;
+    try { localStorage.setItem("processFlowOrientation", processFlowOrientation); } catch {}
+    view.querySelectorAll(".bpmn-orientation").forEach((item) => item.classList.toggle("active", item === button));
+    detail.hidden = true;
+    redraw();
+  }));
+  const laneMenuButton = view.querySelector(".bpmn-lane-menu-btn");
+  laneMenuButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const existing = view.querySelector(".bpmn-lane-menu");
+    if (existing) { existing.remove(); return; }
+    const menu = document.createElement("div");
+    menu.className = "bpmn-lane-menu";
+    menu.innerHTML = `<div class="bpmn-lane-menu-head">Raias por</div>${PROCESS_LANE_OPTIONS.map(([value, label]) => `<button type="button" data-lane-by="${value}" class="${processFlowLaneBy === value ? "active" : ""}">${processFlowLaneBy === value ? "✓ " : ""}${label}</button>`).join("")}`;
+    laneMenuButton.parentElement.appendChild(menu);
+    const close = (clickEvent) => { if (!menu.contains(clickEvent.target)) { menu.remove(); document.removeEventListener("mousedown", close, true); } };
+    setTimeout(() => document.addEventListener("mousedown", close, true), 0);
+    menu.querySelectorAll("[data-lane-by]").forEach((button) => button.addEventListener("click", () => {
+      processFlowLaneBy = button.dataset.laneBy;
+      try { localStorage.setItem("processFlowLaneBy", processFlowLaneBy); } catch {}
+      laneMenuButton.textContent = `${laneLabel()} ▾`;
+      menu.remove();
+      document.removeEventListener("mousedown", close, true);
+      detail.hidden = true;
+      redraw();
+    }));
+  });
+  view.querySelector(".bpmn-details-toggle").addEventListener("click", (event) => {
+    processFlowShowDetails = !processFlowShowDetails;
+    try { localStorage.setItem("processFlowShowDetails", processFlowShowDetails ? "1" : "0"); } catch {}
+    Object.assign(BPMN, processFlowShowDetails ? BPMN_DETAILED : BPMN_COMPACT);
+    event.currentTarget.classList.toggle("active", processFlowShowDetails);
+    event.currentTarget.setAttribute("aria-pressed", String(processFlowShowDetails));
+    redraw();
+  });
+  const setZoom = (next, clientX, clientY) => {
+    const canvas = scroller.querySelector(".bpmn-canvas");
+    if (!canvas) return;
+    const zoom = Math.min(2, Math.max(0.3, Math.round(next * 100) / 100));
+    const previous = processFlowZoom;
+    if (zoom === previous) return;
+    const rect = scroller.getBoundingClientRect();
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    const contentX = (scroller.scrollLeft + x) / previous;
+    const contentY = (scroller.scrollTop + y) / previous;
+    processFlowZoom = zoom;
+    canvas.style.zoom = zoom;
+    scroller.scrollLeft = contentX * zoom - x;
+    scroller.scrollTop = contentY * zoom - y;
+    zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  };
+  view.querySelector(".bpmn-zoom-in").addEventListener("click", () => setZoom(processFlowZoom * 1.15));
+  view.querySelector(".bpmn-zoom-out").addEventListener("click", () => setZoom(processFlowZoom / 1.15));
+  zoomLabel.addEventListener("click", () => setZoom(1));
+  scroller.addEventListener("wheel", (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    event.preventDefault();
+    setZoom(processFlowZoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX, event.clientY);
+  }, { passive: false });
+  let drag = null;
+  scroller.addEventListener("pointerdown", (event) => {
+    suppressNodeClick = false;
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (!processFlowHandMode && event.target.closest(".bpmn-node[data-step]")) return;
+    drag = { x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop, id: event.pointerId, moved: false };
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) { drag.moved = true; scroller.setPointerCapture?.(drag.id); scroller.classList.add("is-panning"); }
+    scroller.scrollLeft = drag.left - dx;
+    scroller.scrollTop = drag.top - dy;
+  });
+  const endDrag = () => { if (drag?.moved) suppressNodeClick = true; drag = null; scroller.classList.remove("is-panning"); };
+  const modal = view.closest(".process-flow-modal");
+  view.querySelector(".bpmn-hand").addEventListener("click", (event) => {
+    processFlowHandMode = !processFlowHandMode;
+    event.currentTarget.classList.toggle("active", processFlowHandMode);
+    event.currentTarget.setAttribute("aria-pressed", String(processFlowHandMode));
+    view.classList.toggle("is-hand", processFlowHandMode);
+  });
+  view.classList.toggle("is-hand", processFlowHandMode);
+  const setFullscreen = (on, touchBrowser = true) => {
+    modal?.classList.toggle("is-fullscreen", on);
+    const button = view.querySelector(".bpmn-fullscreen");
+    button.textContent = on ? "✕" : "⛶";
+    button.title = on ? "Sair da tela cheia (Esc)" : "Tela cheia";
+    button.classList.toggle("active", on);
+    if (!touchBrowser) return;
+    try {
+      if (on && !document.fullscreenElement) document.documentElement.requestFullscreen?.()?.catch(() => {});
+      else if (!on && document.fullscreenElement) document.exitFullscreen?.()?.catch(() => {});
+    } catch {}
+  };
+  view.querySelector(".bpmn-fullscreen").addEventListener("click", () => setFullscreen(!modal?.classList.contains("is-fullscreen")));
+  const onFullscreenChange = () => { if (!document.fullscreenElement && modal?.classList.contains("is-fullscreen")) setFullscreen(false, false); };
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  flowCleanup = () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  view.querySelector(".bpmn-export-png").addEventListener("click", () => exportProcessFlow(process, steps, "png"));
+  view.querySelector(".bpmn-export-pdf").addEventListener("click", () => exportProcessFlow(process, steps, "pdf"));
+  scroller.addEventListener("pointerup", endDrag);
+  scroller.addEventListener("pointercancel", endDrag);
+  let pinch = null;
+  const distance = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  scroller.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2) return;
+    pinch = { distance: distance(event.touches) || 1, zoom: processFlowZoom };
+    event.preventDefault();
+  }, { passive: false });
+  scroller.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) return;
+    event.preventDefault();
+    const [a, b] = event.touches;
+    setZoom(pinch.zoom * (distance(event.touches) / pinch.distance), (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+  }, { passive: false });
+  scroller.addEventListener("touchend", (event) => { if (event.touches.length < 2) pinch = null; });
 }
 
-function drawProcessFlowConnections(matrix) {
-  matrix.querySelector(".process-flow-svg")?.remove();
-  const points = [...matrix.querySelectorAll(".process-flow-point")]
-    .sort((a, b) => Number(a.dataset.sequence) - Number(b.dataset.sequence));
-  if (points.length < 2) return;
-  const bounds = matrix.getBoundingClientRect();
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.classList.add("process-flow-svg");
-  svg.setAttribute("width", String(matrix.scrollWidth));
-  svg.setAttribute("height", String(matrix.scrollHeight));
-  svg.setAttribute("viewBox", `0 0 ${matrix.scrollWidth} ${matrix.scrollHeight}`);
-  svg.innerHTML = '<defs><marker id="process-flow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z"></path></marker></defs>';
-  points.slice(0, -1).forEach((point, index) => {
-    const next = points[index + 1];
-    const from = point.getBoundingClientRect();
-    const to = next.getBoundingClientRect();
-    const x1 = from.right - bounds.left;
-    const y1 = from.top + from.height / 2 - bounds.top;
-    const x2 = to.left - bounds.left;
-    const y2 = to.top + to.height / 2 - bounds.top;
-    const middle = x1 + Math.max(24, (x2 - x1) / 2);
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", `M ${x1} ${y1} H ${middle} V ${y2} H ${x2}`);
-    path.setAttribute("marker-end", "url(#process-flow-arrow)");
-    svg.appendChild(path);
-  });
-  matrix.prepend(svg);
+function processStepTargetOptions(steps, index, selected, emptyLabel) {
+  return `<option value="">${esc(emptyLabel)}</option>${steps.map((target, targetIndex) => targetIndex === index ? "" :
+    `<option value="${esc(target.id)}"${target.id === selected ? " selected" : ""}>${targetIndex + 1}. ${esc(processStepTitle(target, targetIndex))}</option>`).join("")}`;
 }
 
 function processStepEditorHtml(steps) {
-  return steps.map((step, index) => `<div class="process-step-editor" data-index="${index}">
-    <div class="process-step-number">${index + 1}</div><div class="process-step-fields">
-      <div class="process-step-grid">
+  const responsibleOptions = [...assigneeJobTitleOptions().map((option) => option.value), "Cliente", "Sistema"];
+  const datalist = `<datalist id="process-responsible-options">${responsibleOptions.map((value) => `<option value="${esc(value)}"></option>`).join("")}</datalist>`;
+  return datalist + steps.map((step, index) => {
+    const element = step.element || "task";
+    const elementOptions = Object.entries(PROCESS_ELEMENTS).map(([value, label]) => `<option value="${value}"${value === element ? " selected" : ""}>${label}</option>`).join("");
+    const head = `<div class="process-step-grid process-step-bpmn">
+        <label>Elemento<select class="process-step-input" data-field="element">${elementOptions}</select></label>
+        <label>${element === "decision" ? "Pergunta *" : element === "end" ? "Resultado" : "Nome da etapa"}<input class="process-step-input" data-field="label" value="${esc(step.label)}" placeholder="${element === "decision" ? "Ex.: Pedido aprovado?" : element === "end" ? "Ex.: Pedido faturado" : "Opcional — usa Sistema · Módulo"}"></label>
+        <label>Responsável<input class="process-step-input" data-field="responsible" list="process-responsible-options" value="${esc(step.responsible)}" placeholder="Cargo, Cliente ou Sistema"></label>
+        ${element === "task" ? `<label>Próxima etapa<select class="process-step-input" data-field="next">${processStepTargetOptions(steps, index, step.next, "Seguinte da lista")}</select></label>` : ""}
+      </div>`;
+    const outcomes = element === "decision" ? `<div class="process-step-outcomes"><div class="process-step-outcomes-head"><span>Saídas</span><button class="btn process-outcome-add" type="button">+ Saída</button></div>
+        ${(step.outcomes || []).map((outcome, outcomeIndex) => `<div class="process-outcome-row" data-outcome="${outcomeIndex}">
+          <input class="process-outcome-input" data-field="label" value="${esc(outcome.label)}" placeholder="Ex.: Sim">
+          <select class="process-outcome-input" data-field="target">${processStepTargetOptions(steps, index, outcome.target, "Seguinte da lista")}</select>
+          <button class="tool-icon-btn process-outcome-remove" type="button" title="Remover saída">×</button>
+        </div>`).join("") || '<span class="muted process-outcome-empty">Sem saídas: segue para a próxima etapa da lista.</span>'}
+      </div>` : "";
+    const taskFields = element === "task" ? `<div class="process-step-grid">
         <label>Sistema *<input class="process-step-input" data-field="system" value="${esc(step.system)}" placeholder="Ex.: Bling"></label>
         <label>Módulo *<input class="process-step-input" data-field="module" value="${esc(step.module)}" placeholder="Ex.: Vendas"></label>
         <label>Submódulo<input class="process-step-input" data-field="submodule" value="${esc(step.submodule)}" placeholder="Ex.: Pedidos de venda"></label>
@@ -11397,25 +14856,30 @@ function processStepEditorHtml(steps) {
         <label>Tipo<input class="process-step-input" data-field="type" value="${esc(step.type)}" placeholder="Ex.: Procedimento"></label>
         <label>URL<input class="process-step-input" data-field="url" type="url" value="${esc(step.url)}" placeholder="https://..."></label>
       </div>
-      <label class="process-step-details">Detalhes<textarea class="process-step-input" data-field="details" rows="4" placeholder="Explique como executar esta etapa">${esc(step.details)}</textarea></label>
-    </div>
+      <label class="process-step-details">Detalhes<textarea class="process-step-input" data-field="details" rows="4" placeholder="Explique como executar esta etapa">${esc(step.details)}</textarea></label>` : "";
+    return `<div class="process-step-editor process-step-${element}" data-index="${index}">
+    <div class="process-step-number">${index + 1}</div><div class="process-step-fields">${head}${outcomes}${taskFields}</div>
     <div class="process-step-actions"><button class="tool-icon-btn process-step-up" type="button" title="Subir">↑</button><button class="tool-icon-btn process-step-down" type="button" title="Descer">↓</button><button class="tool-icon-btn process-step-remove" type="button" title="Excluir">×</button></div>
-  </div>`).join("");
+  </div>`;
+  }).join("");
 }
 
 function emptyProcessStep() {
-  return { id: crypto.randomUUID(), system: "", module: "", submodule: "", group: "", type: "", url: "", details: "" };
+  return { id: crypto.randomUUID(), system: "", module: "", submodule: "", group: "", type: "", url: "", details: "", element: "task", label: "", responsible: "", next: "", outcomes: [] };
 }
 
-function openToolProcessForm(id = null) {
+function openToolProcessForm(id = null, options = {}) {
   if (!requireCurrentUserPermission("processes", id ? "edit" : "create", "Processos")) return;
   const current = toolProcessRows().find((item) => item.id === id) || {};
   let draftSteps = normalizeProcessSteps(current.steps);
   if (!draftSteps.length) draftSteps = [emptyProcessStep()];
   const content = `<div class="form process-form">
     <div class="field full"><label>Nome do processo *</label><input id="tool-process-title" value="${esc(current.title || "")}" placeholder="Ex.: Criar pedido de venda no Bling"></div>
-    <div class="field"><label>Categoria</label><input id="tool-process-category" value="${esc(current.category || "")}" placeholder="Ex.: Operações"></div>
-    <div class="field"><label>Tags</label><input id="tool-process-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Bling, Nota fiscal, Financeiro"></div>
+    <div class="field"><label>Categoria</label><input id="tool-process-category" value="${esc(current.category || "")}" placeholder="Ex.: ERP"></div>
+    <div class="field"><label>Canal</label><input id="tool-process-channel" value="${esc(current.system_name || "")}" placeholder="Ex.: Bling"></div>
+    <div class="field"><label>Módulo</label><input id="tool-process-module" value="${esc(current.module_name || "")}" placeholder="Ex.: Vendas"></div>
+    <div class="field"><label>Submódulo</label><input id="tool-process-submodule" value="${esc(current.submodule_name || "")}" placeholder="Ex.: Pedidos"></div>
+    <div class="field full"><label>Tags</label><input id="tool-process-tags" value="${esc(normalizeTextList(current.tags).join(", "))}" placeholder="Bling, Nota fiscal, Financeiro"></div>
     <div class="field full"><div class="process-steps-head"><label>Etapas *</label><button class="btn" id="tool-process-step-add" type="button">+ Etapa</button></div><div id="tool-process-steps" class="process-steps-editor"></div></div>
   </div><div class="modal-foot"><button class="btn" id="tool-process-cancel">Cancelar</button><button class="btn primary" id="tool-process-save">Salvar</button></div>`;
   const closePanel = document.getElementById("tools-root")
@@ -11424,33 +14888,60 @@ function openToolProcessForm(id = null) {
   const stepsRoot = document.getElementById("tool-process-steps");
   const drawSteps = () => {
     stepsRoot.innerHTML = processStepEditorHtml(draftSteps);
-    stepsRoot.querySelectorAll(".process-step-input").forEach((input) => input.addEventListener("input", () => {
+    stepsRoot.querySelectorAll(".process-step-input").forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
       const index = Number(input.closest(".process-step-editor").dataset.index);
       draftSteps[index][input.dataset.field] = input.value;
+      if (input.dataset.field === "element") drawSteps();
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-input").forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", () => {
+      const step = draftSteps[Number(input.closest(".process-step-editor").dataset.index)];
+      const outcome = step.outcomes[Number(input.closest(".process-outcome-row").dataset.outcome)];
+      if (outcome) outcome[input.dataset.field] = input.value;
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-add").forEach((button) => button.addEventListener("click", () => {
+      const step = draftSteps[Number(button.closest(".process-step-editor").dataset.index)];
+      step.outcomes = [...(step.outcomes || []), { id: crypto.randomUUID(), label: "", target: "" }];
+      drawSteps();
+    }));
+    stepsRoot.querySelectorAll(".process-outcome-remove").forEach((button) => button.addEventListener("click", () => {
+      const step = draftSteps[Number(button.closest(".process-step-editor").dataset.index)];
+      step.outcomes.splice(Number(button.closest(".process-outcome-row").dataset.outcome), 1);
+      drawSteps();
     }));
     stepsRoot.querySelectorAll(".process-step-remove").forEach((button) => button.addEventListener("click", () => { draftSteps.splice(Number(button.closest(".process-step-editor").dataset.index), 1); drawSteps(); }));
     stepsRoot.querySelectorAll(".process-step-up").forEach((button) => button.addEventListener("click", () => { const index = Number(button.closest(".process-step-editor").dataset.index); if (index > 0) { [draftSteps[index - 1], draftSteps[index]] = [draftSteps[index], draftSteps[index - 1]]; drawSteps(); } }));
     stepsRoot.querySelectorAll(".process-step-down").forEach((button) => button.addEventListener("click", () => { const index = Number(button.closest(".process-step-editor").dataset.index); if (index < draftSteps.length - 1) { [draftSteps[index + 1], draftSteps[index]] = [draftSteps[index], draftSteps[index + 1]]; drawSteps(); } }));
   };
   drawSteps();
+  if (options.focusStep) {
+    const focusIndex = draftSteps.findIndex((step) => step.id === options.focusStep);
+    const focusEditor = stepsRoot.querySelector(`.process-step-editor[data-index="${focusIndex}"]`);
+    if (focusEditor) requestAnimationFrame(() => { focusEditor.scrollIntoView({ block: "center" }); focusEditor.classList.add("is-focused"); });
+  }
   document.getElementById("tool-process-step-add").addEventListener("click", () => { draftSteps.push(emptyProcessStep()); drawSteps(); stepsRoot.lastElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" }); });
   document.getElementById("tool-process-cancel").addEventListener("click", () => closeToolProcessPanel(closePanel));
   document.getElementById("tool-process-save").addEventListener("click", async () => {
     const title = document.getElementById("tool-process-title").value.trim();
-    const fields = ["system", "module", "submodule", "group", "type", "url", "details"];
+    const fields = ["system", "module", "submodule", "group", "type", "url", "details", "label", "responsible", "next"];
     const steps = draftSteps.map((step) => ({
       id: step.id || crypto.randomUUID(),
-      ...Object.fromEntries(fields.map((field) => [field, String(step[field] || "").trim()]))
-    })).filter((step) => fields.some((field) => step[field]));
+      ...Object.fromEntries(fields.map((field) => [field, String(step[field] || "").trim()])),
+      element: PROCESS_ELEMENTS[step.element] ? step.element : "task",
+      outcomes: step.element === "decision" ? (step.outcomes || []).map((outcome) => ({ id: outcome.id || crypto.randomUUID(), label: String(outcome.label || "").trim(), target: String(outcome.target || "").trim() })).filter((outcome) => outcome.label || outcome.target) : []
+    })).filter((step) => step.element !== "task" || fields.some((field) => step[field]));
     if (!title) { toast("Informe o nome do processo.", true); return; }
     if (!steps.length) { toast("Cadastre ao menos uma etapa.", true); return; }
-    if (steps.some((step) => !step.system || !step.module)) { toast("Informe Sistema e Módulo em todas as etapas.", true); return; }
+    if (steps.some((step) => step.element === "task" && (!step.system || !step.module))) { toast("Informe Sistema e Módulo em todas as tarefas.", true); return; }
+    if (steps.some((step) => step.element === "decision" && !step.label)) { toast("Informe a pergunta de cada decisão.", true); return; }
     if (steps.some((step) => step.url && !safeHttpUrl(step.url))) { toast("Revise as URLs das etapas. Use links começando com http:// ou https://.", true); return; }
     const button = document.getElementById("tool-process-save");
     button.disabled = true; button.textContent = "Salvando...";
     const body = {
       title,
       category: document.getElementById("tool-process-category").value.trim() || null,
+      system_name: document.getElementById("tool-process-channel").value.trim() || null,
+      module_name: document.getElementById("tool-process-module").value.trim() || null,
+      submodule_name: document.getElementById("tool-process-submodule").value.trim() || null,
       tags: normalizeTextList(document.getElementById("tool-process-tags").value),
       steps,
       version: id ? Number(current.version || 1) + 1 : 1,
@@ -11467,6 +14958,7 @@ function openToolProcessForm(id = null) {
       }
       toast("Processo salvo.");
       closeToolProcessPanel(closePanel);
+      options.onSaved?.(saved);
     } catch (err) {
       button.disabled = false; button.textContent = "Salvar";
       toast("Erro ao salvar processo · " + err.message, true);
@@ -11581,7 +15073,6 @@ function openToolColumnFilter(header, key, rows, valueFn, section = toolsState.s
     a.localeCompare(b, "pt-BR", { numeric: true, sensitivity: "base" })
   );
   const tableState = toolTableState(section);
-  let selected = new Set(tableState.filters[key] || []);
   const rect = header.getBoundingClientRect();
   const panel = document.createElement("div");
   panel.id = "tool-filter-dd";
@@ -11589,35 +15080,14 @@ function openToolColumnFilter(header, key, rows, valueFn, section = toolsState.s
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 300))}px`;
   panel.style.top = `${rect.bottom + 4}px`;
   panel.style.maxHeight = `${Math.max(220, window.innerHeight - rect.bottom - 20)}px`;
-  panel.innerHTML = `<div class="dd-head"><span>Filtrar · ${esc(TOOL_COLUMN_DEFS[section].find((col) => col.k === key)?.h || key)}</span><span>${values.length}</span></div>
-    <div class="dd-search"><input placeholder="Buscar..."></div><div class="dd-list"></div>
-    <div class="dd-foot"><button class="btn tool-filter-all">Todos</button><button class="btn danger tool-filter-clear">Limpar</button><button class="btn primary tool-filter-apply">Aplicar</button></div>`;
   document.body.appendChild(panel);
-  const list = panel.querySelector(".dd-list");
-  const draw = () => {
-    const query = panel.querySelector("input").value.trim().toLocaleLowerCase("pt-BR");
-    list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query)).map((value) => `<label class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(value)}</span></label>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", () => {
-      const value = item.dataset.value;
-      if (selected.has(value)) selected.delete(value); else selected.add(value);
-      draw();
-    }));
-  };
-  draw();
-  panel.querySelector("input").addEventListener("input", draw);
-  panel.querySelector(".tool-filter-all").addEventListener("click", () => {
-    if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
-    draw();
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${TOOL_COLUMN_DEFS[section].find((col) => col.k === key)?.h || key}`, values, key, current: tableState.filters[key],
+    onApply: (rule) => {
+      if (rule) tableState.filters[key] = rule; else delete tableState.filters[key];
+      panel.remove(); renderToolsSection();
+    }
   });
-  panel.querySelector(".tool-filter-clear").addEventListener("click", () => {
-    delete tableState.filters[key]; panel.remove(); renderToolsSection();
-  });
-  panel.querySelector(".tool-filter-apply").addEventListener("click", () => {
-    if (selected.size && selected.size < values.length) tableState.filters[key] = selected;
-    else delete tableState.filters[key];
-    panel.remove(); renderToolsSection();
-  });
-  panel.querySelector("input").focus();
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !header.contains(event.target)) {
@@ -11774,32 +15244,121 @@ function openUpdatesModal() {
   </div>`, { closeOnOverlay: true });
 }
 
+let adminLogState = { tab: "session", onlyErrors: false, search: "", errors: [], loading: false };
+function adminLogTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+function adminLogStatus(status, failed) {
+  return `<span class="log-status ${failed ? "err" : "ok"}">${status ? esc(status) : "REDE"}</span>`;
+}
+function renderAdminLog() {
+  const body = document.getElementById("admin-log-body");
+  if (!body) return;
+  const query = adminLogState.search.trim().toLocaleLowerCase("pt-BR");
+  const matches = (text) => !query || text.toLocaleLowerCase("pt-BR").includes(query);
+  document.querySelectorAll(".admin-log-tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === adminLogState.tab));
+  const onlyErrors = document.getElementById("admin-log-only-errors");
+  if (onlyErrors) onlyErrors.closest("label").hidden = adminLogState.tab !== "session";
+  if (adminLogState.tab === "session") {
+    const rows = API_REQUEST_LOG.filter((item) => (!adminLogState.onlyErrors || item.error)
+      && matches(`${item.method} ${item.resource} ${item.query} ${item.status} ${item.error}`));
+    const errorCount = API_REQUEST_LOG.filter((item) => item.error).length;
+    document.getElementById("admin-log-count").textContent = `${rows.length} chamada(s) · ${errorCount} erro(s) nesta sessão`;
+    body.innerHTML = `<table><thead><tr><th>Data/hora</th><th>Método</th><th>Recurso</th><th>Status</th><th>Tempo</th><th>Detalhe</th></tr></thead><tbody>${rows.map((item) => `<tr class="${item.error ? "log-row-error" : ""}">
+      <td>${esc(adminLogTime(item.at))}</td><td><strong>${esc(item.method)}</strong></td><td>${esc(item.resource)}</td>
+      <td>${adminLogStatus(item.status, Boolean(item.error))}</td><td>${esc(item.ms)} ms</td>
+      <td class="log-detail">${esc(item.error || item.query || "—")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nenhuma chamada registrada.</td></tr>'}</tbody></table>`;
+    return;
+  }
+  if (adminLogState.loading) { body.innerHTML = '<div class="empty">Carregando erros...</div>'; return; }
+  const rows = adminLogState.errors.filter((item) => matches(`${userDisplayName(item.profile_id)} ${item.method} ${item.path} ${item.status} ${item.message}`));
+  document.getElementById("admin-log-count").textContent = `${rows.length} erro(s) registrados`;
+  body.innerHTML = `<table><thead><tr><th>Data/hora</th><th>Usuário</th><th>Método</th><th>Recurso</th><th>Status</th><th>Mensagem</th></tr></thead><tbody>${rows.map((item) => `<tr class="log-row-error">
+    <td>${esc(adminLogTime(item.created_at))}</td><td>${esc(item.profile_id ? userDisplayName(item.profile_id) : "—")}</td><td><strong>${esc(item.method || "—")}</strong></td>
+    <td class="log-detail">${esc(item.path || "—")}</td><td>${adminLogStatus(item.status, true)}</td><td class="log-detail">${esc(item.message || "—")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nenhum erro registrado.</td></tr>'}</tbody></table>`;
+}
+async function loadAdminLogErrors() {
+  adminLogState.loading = true;
+  renderAdminLog();
+  try {
+    adminLogState.errors = isLive() ? (await api("app_request_errors?select=*&order=created_at.desc&limit=500")) || [] : [];
+  } catch (error) {
+    adminLogState.errors = [];
+    toast(`Não foi possível carregar os erros · ${error.message}`, true);
+  }
+  adminLogState.loading = false;
+  renderAdminLog();
+}
 function openAdminLog() {
   if (!currentUserIsAdmin()) { toast("LOG disponível apenas para administradores.", true); return; }
-  const sources = {
-    companies: "Empresa",
-    contacts: "Contato",
-    deals: "Negociação",
-    projects: "Entrega",
-    activityRecords: "Tarefa",
-    goals: "Meta",
-    objectives: "Objetivo",
-    products: "Produto",
-    users: "Usuário"
-  };
-  const rows = Object.entries(sources).flatMap(([key, type]) =>
-    (cache[key] || []).map((item) => ({
-      type,
-      name: item.name || item.title || item.trade_name || item.legal_name || item.full_name || item.contact_name || "Registro sem nome",
-      at: item.updated_at || item.created_at || ""
-    }))
-  ).filter((item) => item.at).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 100);
-  const body = rows.length
-    ? rows.map((item) => `<tr><td>${esc(item.type)}</td><td><strong>${esc(item.name)}</strong></td><td>${esc(new Date(item.at).toLocaleString("pt-BR"))}</td><td class="table-actions-cell">${tableActionButtons()}</td></tr>`).join("")
-    : '<tr><td colspan="4" class="empty">Nenhuma alteração registrada.</td></tr>';
-  shell("Log · Alterações recentes", `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Registro</th><th>Data</th>${tableActionsHead()}</tr></thead><tbody>${body}</tbody></table></div>
-    <div class="modal-foot"><button class="btn" id="log-close">Fechar</button></div>`, { cls: "wide" });
-  document.getElementById("log-close").addEventListener("click", closeModal);
+  adminLogState = { tab: "session", onlyErrors: false, search: "", errors: [], loading: false };
+  shell("Log · Chamadas ao banco", `<div class="modal-toolbar registration-toolbar admin-log-toolbar">
+      <div class="registration-toolbar-left"><button class="view admin-log-tab active" type="button" data-tab="session">Esta sessão</button><button class="view admin-log-tab" type="button" data-tab="errors">Erros de todos</button><span class="muted" id="admin-log-count"></span></div>
+      <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="admin-log-search" placeholder="Buscar por recurso, status ou erro..."></div>
+      <div class="registration-toolbar-right"><label class="admin-log-check"><input type="checkbox" id="admin-log-only-errors"> Só erros</label><button class="btn" id="admin-log-refresh" type="button" title="Atualizar">↻</button></div>
+    </div><div class="full-body admin-log-body table-wrap" id="admin-log-body"></div>`, { cls: "full" });
+  document.querySelectorAll(".admin-log-tab").forEach((button) => button.addEventListener("click", () => {
+    adminLogState.tab = button.dataset.tab;
+    if (adminLogState.tab === "errors") loadAdminLogErrors();
+    else renderAdminLog();
+  }));
+  document.getElementById("admin-log-search").addEventListener("input", (event) => { adminLogState.search = event.target.value; renderAdminLog(); });
+  document.getElementById("admin-log-only-errors").addEventListener("change", (event) => { adminLogState.onlyErrors = event.target.checked; renderAdminLog(); });
+  document.getElementById("admin-log-refresh").addEventListener("click", () => adminLogState.tab === "errors" ? loadAdminLogErrors() : renderAdminLog());
+  renderAdminLog();
+}
+
+// ---------- Atividades dos usuários ----------
+let userActivitiesState = { rows: [], userId: "", search: "", loading: false };
+function userActivityText(row) {
+  const entity = row.entity_type ? ` ${String(row.entity_type).toLocaleLowerCase("pt-BR")}` : "";
+  return `${row.action || "—"}${entity}${row.entity_label ? ` · ${row.entity_label}` : ""}`;
+}
+function renderUserActivities() {
+  const body = document.getElementById("user-activities-body");
+  if (!body) return;
+  if (userActivitiesState.loading) { body.innerHTML = '<div class="empty">Carregando atividades...</div>'; return; }
+  const query = userActivitiesState.search.trim().toLocaleLowerCase("pt-BR");
+  const rows = userActivitiesState.rows.filter((row) => !query
+    || `${userDisplayName(row.profile_id)} ${userActivityText(row)}`.toLocaleLowerCase("pt-BR").includes(query));
+  document.getElementById("user-activities-count").textContent = `${rows.length} atividade(s)`;
+  body.innerHTML = `<table><thead><tr><th>Nome</th><th>Atividade</th><th>Data/hora</th></tr></thead><tbody>${rows.map((row) => `<tr>
+    <td><strong>${esc(userDisplayName(row.profile_id))}</strong></td><td>${esc(userActivityText(row))}</td><td>${esc(adminLogTime(row.created_at))}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">Nenhuma atividade registrada.</td></tr>'}</tbody></table>`;
+}
+async function loadUserActivities() {
+  userActivitiesState.loading = true;
+  renderUserActivities();
+  const filters = [];
+  const profileId = currentUserIsAdmin() ? userActivitiesState.userId : currentProfile?.id;
+  if (profileId) filters.push(`profile_id=eq.${encodeURIComponent(profileId)}`);
+  try {
+    userActivitiesState.rows = isLive()
+      ? (await api(`user_activities?select=*&order=created_at.desc&limit=1000${filters.length ? `&${filters.join("&")}` : ""}`)) || []
+      : [];
+  } catch (error) {
+    userActivitiesState.rows = [];
+    toast(`Não foi possível carregar as atividades · ${error.message}`, true);
+  }
+  userActivitiesState.loading = false;
+  renderUserActivities();
+}
+function openUserActivities() {
+  const admin = currentUserIsAdmin();
+  userActivitiesState = { rows: [], userId: "", search: "", loading: true };
+  const users = [...(cache?.users || [])].sort((a, b) => userDisplayName(a.id).localeCompare(userDisplayName(b.id), "pt-BR", { sensitivity: "base" }));
+  const userFilter = admin
+    ? `<select id="user-activities-user" class="user-activities-user" aria-label="Filtrar por usuário"><option value="">Todos os usuários</option>${users.map((user) => `<option value="${esc(user.id)}">${esc(userDisplayName(user.id))}</option>`).join("")}</select>`
+    : "";
+  shell(admin ? "Atividades · Todos os usuários" : "Minhas atividades", `<div class="modal-toolbar registration-toolbar">
+      <div class="registration-toolbar-left"><span class="muted" id="user-activities-count">Carregando...</span></div>
+      <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="user-activities-search" placeholder="Buscar por nome ou atividade..."></div>
+      <div class="registration-toolbar-right">${userFilter}<button class="btn" id="user-activities-refresh" type="button" title="Atualizar">↻</button></div>
+    </div><div class="full-body table-wrap" id="user-activities-body"></div>`, { cls: "full" });
+  document.getElementById("user-activities-search").addEventListener("input", (event) => { userActivitiesState.search = event.target.value; renderUserActivities(); });
+  document.getElementById("user-activities-user")?.addEventListener("change", (event) => { userActivitiesState.userId = event.target.value; loadUserActivities(); });
+  document.getElementById("user-activities-refresh").addEventListener("click", loadUserActivities);
+  loadUserActivities();
 }
 
 function activeProfileId() {
@@ -11846,6 +15405,7 @@ function openTaskComments(activityId) {
       <button class="btn primary" type="submit">Enviar</button>
     </form>
   </div>`;
+  liveState.commentsActivityId = activityId;
   const insideProject = Boolean(document.getElementById("project-board-root"));
   if (insideProject) nestedSidePanel(`Comentários · ${activityDisplayName(task)}`, inner);
   else sidePanel(`Comentários · ${activityDisplayName(task)}`, inner, { closeOnOverlay: true });
@@ -12188,6 +15748,7 @@ function handleAction(action) {
     return;
   }
   if (action === "chat") { openInternalChat(); return; }
+  if (action === "activities") { openUserActivities(); return; }
   if (action === "integrations") {
     sidePanel("Integrações", integrationsHtml(), { closeOnOverlay: true });
     wireIntegrations();
@@ -12198,6 +15759,162 @@ function handleAction(action) {
     return;
   }
 }
+
+// ---------- Tempo real ----------
+// Modelo misto: comentários chegam direto no painel aberto; as demais
+// mudanças feitas por outros usuários acumulam no botão Atualizar (ao lado do
+// sino e no cabeçalho dos módulos em tela cheia), para a tela não mudar
+// enquanto a pessoa trabalha. Usa o Supabase Realtime (RLS continua valendo).
+
+function noteOwnWrite(resource, query, method) {
+  if (["GET", "HEAD"].includes(method)) return;
+  const now = Date.now();
+  liveState.ownWrites.set(`${resource}:*`, now);
+  for (const match of String(query || "").matchAll(/(?:^|&)(?:id|tax_id)=(?:eq\.|in\.\()([^&)]+)/g)) {
+    decodeURIComponent(match[1]).split(",").forEach((id) => liveState.ownWrites.set(`${resource}:${id.replace(/"/g, "")}`, now));
+  }
+  if (liveState.ownWrites.size > 2000) {
+    for (const [key, at] of liveState.ownWrites) if (now - at > 60000) liveState.ownWrites.delete(key);
+  }
+}
+
+const liveRefreshButtonHtml = () => '<button class="ico live-refresh" data-live-refresh type="button" title="Atualizar dados"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"/><path d="M16.2 3.8v3.4h-3.4"/></svg><span class="live-refresh-badge" hidden></span></button>';
+
+function updateLiveRefreshButtons() {
+  const count = liveState.pending;
+  document.querySelectorAll(".live-refresh").forEach((button) => {
+    button.classList.toggle("has-changes", count > 0);
+    button.title = count ? `${count} alteração(ões) feita(s) por outros usuários · clique para atualizar` : "Atualizar dados";
+    const badge = button.querySelector(".live-refresh-badge");
+    if (badge) { badge.hidden = !count; badge.textContent = count > 99 ? "99+" : String(count); }
+  });
+}
+
+function handleLiveChange(data) {
+  if (!cache || !LIVE_TABLES.includes(data?.table)) return;
+  const record = data.type === "DELETE" ? data.old_record : data.record;
+  const key = record?.id ?? record?.tax_id;
+  const now = Date.now();
+  const ownAt = liveState.ownWrites.get(`${data.table}:${key}`);
+  if (ownAt && now - ownAt < 15000) return;
+  if (data.type === "INSERT" && now - (liveState.ownWrites.get(`${data.table}:*`) || 0) < 3000) return;
+  if (data.table === "activity_comments" && data.type === "INSERT" && record?.id) {
+    if (record.author_id && record.author_id === currentProfile?.id) return;
+    if (!cache.activityComments.some((comment) => comment.id === record.id)) cache.activityComments.push(record);
+    const list = document.getElementById("task-comments-list");
+    const task = (cache.activityRecords || []).find((item) => item.id === record.activity_id);
+    if (list && task && liveState.commentsActivityId === record.activity_id) {
+      const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+      list.innerHTML = taskCommentsListHtml(task);
+      if (atBottom) list.scrollTop = list.scrollHeight;
+    }
+  }
+  liveState.pending += 1;
+  updateLiveRefreshButtons();
+}
+
+function liveSend(event, payload, topic = LIVE_TOPIC) {
+  const socket = liveState.socket;
+  if (!socket || socket.readyState !== 1) return;
+  socket.send(JSON.stringify({ topic, event, payload, ref: String(++liveState.ref), join_ref: topic === LIVE_TOPIC ? "1" : null }));
+}
+
+function clearLiveTimers() {
+  clearInterval(liveState.heartbeat);
+  clearInterval(liveState.tokenTimer);
+  liveState.heartbeat = null;
+  liveState.tokenTimer = null;
+}
+
+async function startLiveUpdates() {
+  if (!isLive() || liveState.socket || typeof WebSocket === "undefined") return;
+  liveState.stopped = false;
+  const c = getCfg();
+  const token = await getAccessToken();
+  if (!token || !c.url || !c.anonKey) return;
+  let socket;
+  try {
+    socket = new WebSocket(`${c.url.replace(/^http/i, "ws")}/realtime/v1/websocket?apikey=${encodeURIComponent(c.anonKey)}&vsn=1.0.0`);
+  } catch (error) {
+    scheduleLiveReconnect();
+    return;
+  }
+  liveState.socket = socket;
+  socket.onopen = () => {
+    if (liveState.connectedOnce && liveState.retry > 0) { liveState.pending += 1; updateLiveRefreshButtons(); }
+    liveState.retry = 0;
+    liveState.connectedOnce = true;
+    liveSend("phx_join", {
+      config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: LIVE_TABLES.map((table) => ({ event: "*", schema: "public", table })) },
+      access_token: token
+    });
+    liveState.heartbeat = setInterval(() => liveSend("heartbeat", {}, "phoenix"), 25000);
+    liveState.tokenTimer = setInterval(async () => {
+      const fresh = await getAccessToken();
+      if (fresh) liveSend("access_token", { access_token: fresh });
+    }, 5 * 60000);
+  };
+  socket.onmessage = (event) => {
+    let message;
+    try { message = JSON.parse(event.data); } catch (error) { return; }
+    if (message.event === "postgres_changes" && message.payload?.data) handleLiveChange(message.payload.data);
+    else if (message.event === "phx_reply" && message.payload?.status === "error") console.warn("[CMS] Tempo real recusado", message.payload.response);
+  };
+  socket.onclose = () => {
+    clearLiveTimers();
+    if (liveState.socket === socket) liveState.socket = null;
+    if (!liveState.stopped) scheduleLiveReconnect();
+  };
+  socket.onerror = () => { try { socket.close(); } catch (error) {} };
+}
+
+function scheduleLiveReconnect() {
+  clearTimeout(liveState.reconnectTimer);
+  const delay = Math.min(30000, 1000 * 2 ** liveState.retry);
+  liveState.retry += 1;
+  liveState.reconnectTimer = setTimeout(() => { if (!liveState.stopped) startLiveUpdates(); }, delay);
+}
+
+function stopLiveUpdates() {
+  liveState.stopped = true;
+  clearTimeout(liveState.reconnectTimer);
+  clearLiveTimers();
+  const socket = liveState.socket;
+  liveState.socket = null;
+  try { socket?.close(); } catch (error) {}
+  liveState.pending = 0;
+  updateLiveRefreshButtons();
+}
+
+async function refreshLiveData() {
+  const buttons = [...document.querySelectorAll(".live-refresh")];
+  if (buttons.some((button) => button.classList.contains("loading"))) return;
+  buttons.forEach((button) => button.classList.add("loading"));
+  try {
+    await loadAll();
+    refreshActivityCache();
+    liveState.pending = 0;
+    render();
+    if (document.getElementById("project-board-root") && projectBoardState.projectId) {
+      if (cache.projectById?.[projectBoardState.projectId]) renderProjectBoard(projectBoardState.projectId);
+      else { closeModal(); toast("Esta entrega foi removida por outro usuário.", true); }
+    }
+    if (document.getElementById("registrations-root")) renderRegistrationsSection();
+    const list = document.getElementById("task-comments-list");
+    const task = (cache.activityRecords || []).find((item) => item.id === liveState.commentsActivityId);
+    if (list && task) list.innerHTML = taskCommentsListHtml(task);
+    toast("Dados atualizados.");
+  } catch (error) {
+    toast("Erro ao atualizar · " + error.message, true);
+  } finally {
+    document.querySelectorAll(".live-refresh").forEach((button) => button.classList.remove("loading"));
+    updateLiveRefreshButtons();
+  }
+}
+
+document.addEventListener("click", (event) => {
+  if (event.target.closest("[data-live-refresh]")) refreshLiveData();
+});
 
 // ---------- Eventos globais ----------
 document.getElementById("login-form")?.addEventListener("submit", async (event) => {
@@ -12210,6 +15927,7 @@ document.getElementById("login-form")?.addEventListener("submit", async (event) 
     const password = document.getElementById("login-password").value;
     storeAuthSession(await authRequest("token?grant_type=password", { email, password }));
     await init();
+    logUserActivity("Entrou no sistema");
   } catch (err) {
     storeAuthSession(null);
     error.textContent = err.message === "Invalid login credentials" ? "E-mail ou senha inválidos." : err.message;
@@ -12306,6 +16024,31 @@ if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.onChanged)
   });
 }
 
+// Conversas recebidas pelo "Compartilhar" do Android (WhatsApp → Exportar
+// conversa → ENTERPRISER). O service worker guarda os arquivos e abre
+// /cms?share-target=1; aqui eles são importados no módulo Conversas.
+async function importSharedFiles() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("share-target")) return;
+  params.delete("share-target");
+  history.replaceState(null, "", location.pathname + (params.toString() ? `?${params}` : "") + location.hash);
+  if (!("caches" in window)) return;
+  try {
+    const store = await caches.open("enterpriser-share");
+    const requests = await store.keys();
+    if (!requests.length) { toast("Nenhum arquivo recebido do compartilhamento.", true); return; }
+    for (const request of requests) {
+      const response = await store.match(request);
+      const name = decodeURIComponent(response?.headers.get("X-File-Name") || "conversa.zip");
+      const blob = await response.blob();
+      await store.delete(request);
+      await importWhatsAppFile(new File([blob], name, { type: blob.type }));
+    }
+  } catch (error) {
+    toast("Erro ao receber conversa compartilhada · " + error.message, true);
+  }
+}
+
 async function init() {
   setConn();
   try {
@@ -12327,11 +16070,15 @@ async function init() {
         refreshActivityCache();
       }
     }
+    await migrateLocalConversations();
     syncRedditQueue();
     syncWhatsAppQueue();
     hideLogin();
     render();
     document.getElementById("boot-gate")?.setAttribute("hidden", "");
+    startLiveUpdates();
+    await importSharedFiles();
+    if (isLive()) setTimeout(runCompanyRegistryQueue, 3000);
   } catch (err) {
     document.getElementById("main").innerHTML =
       `<div class="empty">Falha ao carregar do Supabase.<br><span class="muted">${esc(err.message)}</span><br><br>` +
@@ -12356,3 +16103,44 @@ async function startApp() {
 
 setTheme(localStorage.getItem("crm_theme") === "light");
 startApp();
+
+// Toque longo no cabeçalho da coluna equivale ao Ctrl+clique (abre o filtro) em tablets e celulares.
+(function wireHeaderLongPress() {
+  let timer = null;
+  let start = null;
+  let fired = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  document.addEventListener("pointerdown", (event) => {
+    fired = false;
+    if (event.pointerType === "mouse") return;
+    const header = event.target.closest("thead th");
+    if (!header || header.classList.contains("noclick") || event.target.closest("button, input, select, textarea")) return;
+    start = { x: event.clientX, y: event.clientY, header };
+    cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      navigator.vibrate?.(12);
+      header.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true, metaKey: true, clientX: start.x, clientY: start.y }));
+    }, 550);
+  }, true);
+  document.addEventListener("pointermove", (event) => {
+    if (timer && start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancel();
+  }, true);
+  document.addEventListener("pointerup", cancel, true);
+  document.addEventListener("pointercancel", cancel, true);
+  document.addEventListener("touchend", (event) => {
+    if (!fired) return;
+    event.preventDefault();
+    fired = false;
+  }, { capture: true, passive: false });
+  document.addEventListener("click", (event) => {
+    if (!fired || !event.isTrusted || !start?.header.contains(event.target)) return;
+    fired = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("contextmenu", (event) => {
+    if (event.target.closest?.("thead th")) event.preventDefault();
+  }, true);
+})();

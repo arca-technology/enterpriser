@@ -2165,6 +2165,7 @@ function columns(tab, c) {
       { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
+      { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => conversationDealsCell(row, c) },
       { k: "owner_id", h: "RESPONSÁVEL", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
       { k: "contact", h: "CONTATO", fmt: (_v, row) => contactForConversation(row) || "—" },
       { k: "username", h: "USUÁRIO", fmt: (v, row) => v ? (row.source === "Reddit" ? `u/${v}` : v) : "—" },
@@ -2291,8 +2292,11 @@ function readProjectBusinessMetrics(form = document.querySelector("#modal-root .
   }).filter((row) => row.revenue != null || row.skus != null || row.supplier_company_ids.length || row.observations);
 }
 
-function dealContactOptions(c, companyId) {
-  if (!companyId) return [];
+function dealContactOptions(c, companyId, preferredContactId = "") {
+  if (!companyId) {
+    const preferred = c.contactById?.[preferredContactId];
+    return preferred ? [{ value: preferred.id, label: preferred.name || "Contato sem nome" }] : [];
+  }
   const linkedIds = new Set((c.contactCompanies || [])
     .filter((link) => String(link.company_id) === String(companyId))
     .map((link) => String(link.contact_id)));
@@ -2432,6 +2436,22 @@ let state = {
   pageSize: 50, kanbanPipelineId: null, calendarCursor: null
 };
 const secondaryTableSelections = new Map();
+const HORIZONTAL_TABLE_SCROLL_SELECTOR = ".table-scroll,.table-wrap,.product-activity-list,.registration-table-scroll,.task-table-wrap,.business-metrics-table";
+
+function preserveHorizontalTableScroll(root, scope) {
+  if (!root) return;
+  const previousScope = root.dataset.horizontalScrollScope;
+  const positions = previousScope === scope
+    ? [...root.querySelectorAll(HORIZONTAL_TABLE_SCROLL_SELECTOR)].map((element) => element.scrollLeft)
+    : [];
+  root.dataset.horizontalScrollScope = scope;
+  queueMicrotask(() => {
+    if (!root.isConnected || root.dataset.horizontalScrollScope !== scope) return;
+    [...root.querySelectorAll(HORIZONTAL_TABLE_SCROLL_SELECTOR)].forEach((element, index) => {
+      if (positions[index] != null) element.scrollLeft = positions[index];
+    });
+  });
+}
 
 function secondaryTableSelection(scope) {
   if (!secondaryTableSelections.has(scope)) secondaryTableSelections.set(scope, new Set());
@@ -2900,6 +2920,18 @@ function annotateContactLinks(c) {
   });
 }
 
+function annotateConversationLinks(c) {
+  const dealsByContact = {};
+  (c.deals || []).forEach((deal) => { if (deal.contact_id) (dealsByContact[deal.contact_id] ||= []).push(deal); });
+  (c.conversations || []).forEach((conversation) => {
+    const list = dealsByContact[conversation.contact_id] || [];
+    const value = !conversation.contact_id || !c.contactById?.[conversation.contact_id]
+      ? "Pessoa não vinculada"
+      : list.length ? "Com negócio" : "Sem negócio";
+    Object.defineProperty(conversation, "__deals", { value, writable: true, configurable: true, enumerable: false });
+  });
+}
+
 function contactDealsCell(person, c) {
   const list = person.__dealList || [];
   if (!list.length) return '<span class="muted">—</span>';
@@ -2916,8 +2948,39 @@ function contactDealsCell(person, c) {
   }).join("")}</span>`;
 }
 
+function conversationDealsCell(conversation, c) {
+  const contactId = conversation.contact_id;
+  if (!contactId || !c.contactById?.[contactId]) return '<span class="muted">Pessoa não vinculada</span>';
+  const list = (c.deals || []).filter((deal) => deal.contact_id === contactId);
+  const content = list.length
+    ? contactDealsCell({ __dealList: list }, c)
+    : '<span class="muted">Sem negócio</span>';
+  return `<button class="conversation-deals-link" type="button" data-contact-id="${esc(contactId)}" data-create="${list.length ? "false" : "true"}" title="${list.length ? "Abrir negócios desta pessoa" : "Cadastrar negócio para esta pessoa"}">${content}</button>`;
+}
+
+function openDealsForContact(contactId, createWhenEmpty = false) {
+  if (!currentUserCan("deals", "view")) { toast("Você não possui acesso ao módulo Negócios.", true); return; }
+  const contact = cache.contactById?.[contactId];
+  if (!contact) { toast("Vincule a conversa a uma pessoa antes de acessar os negócios.", true); return; }
+  const deals = (cache.deals || []).filter((deal) => deal.contact_id === contactId);
+  state.tab = "deals";
+  state.view = "table";
+  state.q = "";
+  state.sortK = null;
+  state.filters.deals = { contact_id: new Set([String(contactId)]) };
+  state.pages.deals = 1;
+  const search = document.getElementById("search");
+  if (search) search.value = "";
+  render();
+  if (!deals.length && createWhenEmpty && currentUserCan("deals", "create")) {
+    const companyId = normalizeIdList(contact.company_ids, contact.company_id)[0] || "";
+    openForm("deals", null, { defaults: { contact_id: contactId, company_id: companyId, no_company: !companyId } });
+  }
+}
+
 function rowsFor(tab, c) {
   if (tab === "contacts") annotateContactLinks(c);
+  if (tab === "conversations") annotateConversationLinks(c);
   let rows = c[tab] || [];
   if (state.q) {
     const q = state.q.toLowerCase();
@@ -2941,6 +3004,7 @@ function rowsFor(tab, c) {
 
 // ---------- Render tabela ----------
 function renderTable(c) {
+  preserveHorizontalTableScroll(document.getElementById("main"), `main:${state.tab}:table`);
   const cols = visibleColumns(state.tab, c);
   let allRows = rowsFor(state.tab, c);
   const groupByClient = state.tab === "activities" && state.groupActivitiesByClient;
@@ -3074,6 +3138,8 @@ function renderTable(c) {
     b.addEventListener("click", () => deleteImport(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.open-chat").forEach((b) =>
     b.addEventListener("click", () => openConversationPopup(b.dataset.id)));
+  document.querySelectorAll("#main .conversation-deals-link").forEach((button) =>
+    button.addEventListener("click", () => openDealsForContact(button.dataset.contactId, button.dataset.create === "true")));
   document.querySelectorAll("#main .rowbtn.project-board-btn").forEach((b) =>
     b.addEventListener("click", () => openProjectBoard(b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.product-activities-btn").forEach((b) =>
@@ -3698,6 +3764,7 @@ function openProductActivities(productId, opts = {}) {
 }
 
 function renderProductWorkspace() {
+  preserveHorizontalTableScroll(document.getElementById("product-activities-root"), `product:${productActivityState.productId}:${productActivityState.tab}`);
   if (productActivityState.tab === "objectives") renderProductObjectives();
   else if (productActivityState.tab === "goals") renderProductGoals();
   else renderProductActivities();
@@ -5573,6 +5640,7 @@ function renderProjectBoard(projectId) {
   const root = document.getElementById("project-board-root");
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!root || !project) return;
+  preserveHorizontalTableScroll(root, `project:${projectId}:${projectBoardState.section}:${projectBoardState.view || "table"}`);
   if (projectBoardState.section === "data") {
     root.innerHTML = `<div class="project-board">${renderProjectDataModule(project)}</div>`;
     wireProjectDataModule(project);
@@ -8202,7 +8270,7 @@ function openForm(tab, id, opts = {}) {
   }
   const fieldHtml = (f) => {
     if (f.embedded) return "";
-    let val = record ? record[f.k] : f.def ?? "";
+    let val = record ? record[f.k] : opts.defaults?.[f.k] ?? f.def ?? "";
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
     if (tab === "projects" && record && ["financial_accounts", "freight_channels"].includes(f.k)) {
@@ -8243,7 +8311,8 @@ function openForm(tab, id, opts = {}) {
         : input;
     }
     if (tab === "deals" && f.k === "company_id") {
-      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${record?.no_company ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
+      const noCompany = record ? record.no_company : opts.defaults?.no_company;
+      return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_company"${noCompany ? " checked" : ""}><span>Não possui empresa</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
@@ -8320,10 +8389,11 @@ function openForm(tab, id, opts = {}) {
     const contactEl = form?.querySelector('[data-k="contact_id"]');
     const pipelineEl = form?.querySelector('[data-k="pipeline_id"]');
     const stageEl = form?.querySelector('[data-k="stage"]');
+    const preferredContactId = String(record?.contact_id || opts.defaults?.contact_id || "");
     const syncDealContacts = () => {
       if (!contactEl) return;
-      const selected = String(contactEl.value || record?.contact_id || "");
-      const options = dealContactOptions(c, companyEl?.value);
+      const selected = String(contactEl.value || preferredContactId);
+      const options = dealContactOptions(c, companyEl?.value, selected);
       contactEl.innerHTML = ['<option value="">—</option>']
         .concat(options.map((option) => `<option value="${esc(option.value)}"${String(option.value) === selected ? " selected" : ""}>${esc(option.label)}</option>`)).join("");
       if (!options.some((option) => String(option.value) === selected)) contactEl.value = "";
@@ -8331,15 +8401,13 @@ function openForm(tab, id, opts = {}) {
     const syncNoCompany = () => {
       const disabled = Boolean(noCompanyEl?.checked);
       companyPicker?.classList.toggle("field-disabled", disabled);
-      contactEl?.closest(".field")?.classList.toggle("field-disabled", disabled);
       companyPicker?.querySelector(".single-search-input")?.toggleAttribute("disabled", disabled);
-      if (contactEl) contactEl.disabled = disabled;
       if (disabled) {
         if (companyEl) companyEl.value = "";
         const searchInput = companyPicker?.querySelector(".single-search-input");
         if (searchInput) searchInput.value = "";
-        if (contactEl) { contactEl.value = ""; contactEl.innerHTML = '<option value="">—</option>'; }
-      } else syncDealContacts();
+      }
+      syncDealContacts();
     };
     companyEl?.addEventListener("change", syncDealContacts);
     noCompanyEl?.addEventListener("change", syncNoCompany);
@@ -10324,6 +10392,7 @@ function renderRegistrationsSection() {
   const root = document.getElementById("registrations-root");
   if (!root) return;
   const section = registrationsState.section;
+  preserveHorizontalTableScroll(root, `registrations:${section}:${registrationTableState().view || "table"}`);
   const permissionModule = REGISTRATION_PERMISSION_MODULE[section];
   if (!currentUserCan(permissionModule, "view")) {
     root.innerHTML = '<div class="empty">Você não possui acesso a este cadastro.</div>';
@@ -11881,6 +11950,7 @@ async function importCustomTableFile(file) {
 function renderToolsSection() {
   const root = document.getElementById("tools-root");
   if (!root) return;
+  preserveHorizontalTableScroll(root, `tools:${toolsState.section}`);
   hydrateToolsSessionCache(toolsState.section);
   if (toolsState.section === "emails") renderToolEmails(root);
   else if (toolsState.section === "processes") renderToolProcesses(root);
@@ -11993,6 +12063,7 @@ function openSocialDataMenu(anchor) {
 function renderSocialSection() {
   const root = document.getElementById("social-root");
   if (!root) return;
+  preserveHorizontalTableScroll(root, `social:${socialState.section}`);
   if (socialState.section === "home") { renderSocialHome(root); return; }
   const columns = visibleSocialColumns();
   const tableState = socialTableState();

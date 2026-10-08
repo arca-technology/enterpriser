@@ -624,6 +624,9 @@
   body.light .tool-tag{border-color:#91b9d4;background:#e7f4fc;color:#175b83}
   .tool-tag.pipeline-tag{border-color:color-mix(in srgb,var(--pipe) 60%,transparent);background:color-mix(in srgb,var(--pipe) 16%,transparent);color:var(--pipe)}
   body.light .tool-tag.pipeline-tag{color:color-mix(in srgb,var(--pipe) 70%,#000)}
+  .conversation-deals-link{display:inline-flex;max-width:100%;align-items:center;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+  .conversation-deals-link:hover .tool-tag,.conversation-deals-link:focus-visible .tool-tag{outline:1px solid var(--cyan);outline-offset:1px}
+  .conversation-deals-link>.muted{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .tool-icon-btn{width:27px;height:27px;padding:0;border:1px solid var(--border);border-radius:5px;background:var(--panel2);color:var(--muted);cursor:pointer}
   .tool-icon-btn:hover{color:var(--text);background:var(--row)}
   .process-open-link{display:block;max-width:100%;padding:0;border:0;background:transparent;color:var(--text);font:inherit;font-weight:700;text-align:left;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
