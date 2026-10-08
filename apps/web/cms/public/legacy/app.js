@@ -1947,9 +1947,10 @@ const taskPlannedStart = (task) => task?.planned_start_date || null;
 const taskPlannedEnd = (task) => task?.planned_end_date || task?.due_date || null;
 const taskStatusLabel = (status) => TASK_STATUS.find((item) => item.id === status)?.label || "Em aberto";
 const taskStatusTone = (status) => status === "done" ? "won" : status === "canceled" ? "lost" : status === "doing" ? "negotiation" : "lead";
+const taskStatusClass = (status) => `task-status-${["todo", "doing", "done", "canceled"].includes(status) ? status : "todo"}`;
 function inlineTaskStatus(task, className = "inline-task-status") {
   const disabled = !currentUserCan("activities", "operate") || taskStatusLocked(task);
-  return `<select class="${className}" data-id="${esc(task.id)}" title="${taskStatusLocked(task) ? "Somente administradores alteram esta tarefa" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
+  return `<select class="${className} ${taskStatusClass(task.status || "todo")}" data-id="${esc(task.id)}" title="${taskStatusLocked(task) ? "Somente administradores alteram esta tarefa" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
 }
 function taskDeadlineState(task) {
   const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
@@ -2128,8 +2129,8 @@ function columns(tab, c) {
     case "activities": return [
       { k: "client_name", h: "CLIENTE", cls: "sticky-col sticky-col-1", thCls: "sticky-col sticky-col-1" },
       { k: "product_name", h: "PRODUTO", cls: "sticky-col sticky-col-2", thCls: "sticky-col sticky-col-2" },
-      { k: "activity_origin", h: "ORIGEM", fmt: (v, row) => row.parent_activity_id ? badge("lead", "Subtarefa") : badge(v === "product" ? "qualification" : "proposal", v === "product" ? "Produto" : "Dia a dia") },
-      { k: "title", h: "TAREFA", fmt: (_v, row) => `${row.parent_activity_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(row))}` },
+      { k: "activity_origin", h: "ORIGEM", cls: "sticky-col sticky-col-3", thCls: "sticky-col sticky-col-3", fmt: (v, row) => row.parent_activity_id ? badge("lead", "Subtarefa") : badge(v === "product" ? "qualification" : "proposal", v === "product" ? "Produto" : "Dia a dia") },
+      { k: "title", h: "TAREFA", cls: "sticky-col sticky-col-4 task-name-col", thCls: "sticky-col sticky-col-4 task-name-col", fmt: (_v, row) => `${row.parent_activity_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(row))}` },
       { k: "priority", h: "PRIORIDADE", fmt: (v) => priorityBadge(v) },
       { k: "dependency_ids", h: "DEPENDE DE", fmt: (v, row) => stackedCell(dependencyNameList(v, row.depends_on_activity_id, c.activityRecords)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "information", h: "INFORMAÇÃO", cls: "muted" },
@@ -2443,8 +2444,30 @@ function loadColPrefs() {
   try { return JSON.parse(localStorage.getItem("crm_cols_v2") || "{}"); }
   catch (e) { return {}; }
 }
+let columnPreferenceSaveTimer = null;
+function scheduleRemoteColumnPreferencesSave() {
+  if (!isLive() || !currentProfile?.id) return;
+  clearTimeout(columnPreferenceSaveTimer);
+  columnPreferenceSaveTimer = setTimeout(async () => {
+    try {
+      await api("user_ui_preferences?on_conflict=profile_id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify({
+          profile_id: currentProfile.id,
+          column_preferences: colPrefs,
+          secondary_column_preferences: secondaryColPrefs,
+          updated_at: new Date().toISOString()
+        })
+      });
+    } catch (error) {
+      console.warn("Não foi possível sincronizar as preferências de colunas.", error);
+    }
+  }, 450);
+}
 function saveColPrefs() {
   localStorage.setItem("crm_cols_v2", JSON.stringify(colPrefs));
+  scheduleRemoteColumnPreferencesSave();
 }
 let colPrefs = loadColPrefs();
 let state = {
@@ -2916,11 +2939,14 @@ function orderedColumns(tab, c) {
     const previous = cols.slice(0, index).reverse().find((item) => ordered.includes(item));
     ordered.splice(previous ? ordered.indexOf(previous) + 1 : 0, 0, col);
   });
-  return ordered;
+  if (tab !== "activities") return ordered;
+  const frozen = new Set(["client_name", "product_name", "activity_origin", "title"]);
+  return [...cols.filter((col) => frozen.has(col.k)), ...ordered.filter((col) => !frozen.has(col.k))];
 }
 function visibleColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
-  return orderedColumns(tab, c).filter((col) => prefs[col.k] !== false);
+  const frozen = tab === "activities" ? new Set(["client_name", "product_name", "activity_origin", "title"]) : new Set();
+  return orderedColumns(tab, c).filter((col) => frozen.has(col.k) || prefs[col.k] !== false);
 }
 function displayValue(row, col, c) {
   const val = col.fmt ? col.fmt(row[col.k], row, c) : esc(row[col.k] ?? "—");
@@ -3362,7 +3388,15 @@ function timelineItem(tab, row, c) {
     return {
       id: row.id, title: c.productById[row.product_id]?.name || row.name || "Entrega",
       detail: c.companyById[row.company_id]?.legal_name || "Sem cliente", start: row.start_date, end: row.end_date || row.start_date, status: row.status,
-      progress: { ...progress, label: deliveryGanttProgressLabel(progress) }
+      progress: {
+        ...progress,
+        label: deliveryGanttProgressLabel(progress),
+        segments: [
+          { id: "tasks", label: "Tarefas", ...progress.tasks },
+          { id: "objectives", label: "Objetivos", ...progress.objectives },
+          { id: "goals", label: "Metas", ...progress.goals }
+        ]
+      }
     };
   }
   if (tab === "activities") return {
@@ -3451,18 +3485,28 @@ function ganttTimelineMarkup(items, label = "Registro", itemClass = "", footer =
     const stateClass = ganttItemState(item);
     const title = esc(`${item.title} · ${period}`);
     const progressPercent = Math.max(0, Math.min(100, Number(item.progress?.percent || 0)));
+    const progressSegments = Array.isArray(item.progress?.segments) ? item.progress.segments : [];
     const progressTitle = item.progress ? esc(`Andamento ${progressPercent}% · ${item.progress.label}`) : "";
+    const progressControls = progressSegments.length
+      ? progressSegments.map((segment, index) => {
+        const percent = Math.max(0, Math.min(100, Number(segment.percent || 0)));
+        const count = `${Number(segment.done || 0)}/${Number(segment.total || 0)}`;
+        const segmentTitle = esc(`${segment.label}: ${count} · ${percent}%`);
+        return `<button class="gantt-progress-rail gantt-progress-${esc(segment.id)} ${itemClass}${percent >= 100 && Number(segment.total || 0) ? " complete" : ""}${Number(segment.total || 0) ? "" : " empty"}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px;top:${40 + index * 21}px" title="${segmentTitle}"><span style="width:${percent}%"></span><b>${esc(segment.label)} · ${count} · ${percent}%</b></button>`;
+      }).join("")
+      : `<button class="gantt-progress-rail ${itemClass}${progressPercent >= 100 ? " complete" : ""}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${progressTitle}"><span style="width:${progressPercent}%"></span><b>${progressPercent}%</b></button>`;
     const control = item.progress
       ? `<button class="gantt-bar gantt-contract-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="Contrato · ${title}">${esc(item.title)}</button>
-        <button class="gantt-progress-rail ${itemClass}${progressPercent >= 100 ? " complete" : ""}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${progressTitle}"><span style="width:${progressPercent}%"></span><b>${progressPercent}%</b></button>`
+        ${progressControls}`
       : isMilestone
         ? `<button class="gantt-milestone ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px" title="${title}"><span></span></button>`
         : `<button class="gantt-bar ${stateClass} ${itemClass}" data-id="${esc(item.id)}" style="left:${left}px;width:${width}px" title="${title}">${esc(item.title)}</button>`;
-    return `<div class="gantt-row${item.progress ? " has-progress" : ""}"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span>${item.progress ? `<small class="gantt-progress-summary">${esc(`${progressPercent}% · ${item.progress.label}`)}</small>` : ""}</div>
-      <div class="gantt-track${item.progress ? " has-progress" : ""}" style="width:${scale.width}px">${grid}${todayLine}${control}</div></div>`;
+    const progressHeight = item.progress ? (progressSegments.length ? 50 + progressSegments.length * 21 : 76) : 54;
+    return `<div class="gantt-row${item.progress ? " has-progress" : ""}" style="min-height:${progressHeight}px"><div class="gantt-label"><strong>${esc(item.title)}</strong><small>${esc(item.detail)}</small><span>${esc(period)}</span>${item.progress ? `<small class="gantt-progress-summary">${esc(`${progressPercent}% geral · ${item.progress.label}`)}</small>` : ""}</div>
+      <div class="gantt-track${item.progress ? " has-progress" : ""}" style="width:${scale.width}px;height:${progressHeight}px">${grid}${todayLine}${control}</div></div>`;
   }).join("");
   const legend = showsProgress
-    ? '<span><i class="planned"></i>Contrato</span><span><i class="active"></i>Andamento</span><span><i class="done"></i>Concluído</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">Linha vermelha: hoje</span>'
+    ? '<span><i class="planned"></i>Contrato</span><span><i class="tasks"></i>Tarefas</span><span><i class="objectives"></i>Objetivos</span><span><i class="goals"></i>Metas</span><span class="gantt-legend-note">Linha vermelha: hoje</span>'
     : '<span><i class="planned"></i>Planejado</span><span><i class="active"></i>Em andamento</span><span><i class="done"></i>Atendido</span><span><i class="overdue"></i>Atrasado</span><span class="gantt-legend-note">◆ data única</span>';
   return `<div class="gantt-shell"><div class="gantt-view"><div class="gantt-board">
     <div class="gantt-head"><div>${esc(label)}</div><div class="gantt-axis-wrap">${axis}</div></div>${rows}
@@ -4747,7 +4791,7 @@ const TASK_STATUS = [
   { id: "canceled", label: "Cancelado" }
 ];
 const CLIENT_ASSIGNEE_VALUE = "__client__";
-let projectBoardState = { projectId: null, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
+let projectBoardState = { projectId: null, view: "dashboard", section: "overview", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
 
 function internalAssigneeUser(user) {
   return ["admin", "collaborator"].includes(normalizedProfileRole(user?.role)) && (user?.status || "active") === "active";
@@ -5110,9 +5154,10 @@ function openProjectBoard(projectId) {
   if (!requireCurrentUserPermission("projects", "view", "Entregas")) return;
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!project) return;
-  projectBoardState = { projectId, view: "table", section: "activities", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
+  projectBoardState = { projectId, view: "dashboard", section: "overview", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Conteúdo da entrega">
-    <button class="modal-header-tab active" data-project-section="activities" role="tab">Tarefas</button>
+    <button class="modal-header-tab active" data-project-section="overview" role="tab">Visão geral</button>
+    <button class="modal-header-tab" data-project-section="activities" role="tab">Tarefas</button>
     <button class="modal-header-tab" data-project-section="objectives" role="tab">Objetivos</button>
     <button class="modal-header-tab" data-project-section="goals" role="tab">Metas</button>
     <button class="modal-header-tab" data-project-section="data" role="tab">Dados</button>
@@ -5125,7 +5170,7 @@ function openProjectBoard(projectId) {
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
     projectBoardState.section = button.dataset.projectSection;
-    projectBoardState.view = "table";
+    projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : "table";
     projectBoardState.search = "";
     projectBoardState.page = 1;
     projectBoardState.sortKey = null;
@@ -5250,7 +5295,7 @@ function renderTaskTable(tasks) {
     const subtasks = taskSubtaskProgress(task.id, allTasks);
     const terminal = subtasks.total === 0;
     return `<tr class="${parent ? "task-subtask-row" : "task-root-row"}"${parent ? ` data-expand-parent="${esc(parent.id)}"` : ` data-expand-id="${esc(task.id)}"`}>
-      <td><span class="task-table-title">${parent ? '<span class="task-subtask-branch">↳</span>' : ""}<span>${esc(activityDisplayName(task))}</span>${parent ? '<small>Subtarefa</small>' : ""}</span></td>
+      <td class="project-task-name-col"><span class="task-table-title">${parent ? '<span class="task-subtask-branch">↳</span>' : ""}<span>${esc(activityDisplayName(task))}</span>${parent ? '<small>Subtarefa</small>' : ""}</span></td>
       <td>${badge(task.source_template_id ? "qualification" : "proposal", task.source_template_id ? "Produto" : "Dia a dia")}</td>
       <td>${priorityBadge(task.priority)}</td>
       <td class="compact-multi-cell">${stackedCell(dependencyNameList(task.dependency_ids, task.depends_on_activity_id, tasks))}</td>
@@ -5287,7 +5332,7 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th>Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
+      <th class="project-task-name-col">Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="29" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
@@ -5449,6 +5494,43 @@ function renderTaskDashboard(tasks) {
     <div class="metric"><div class="k">Concluídas</div><div class="v">${done}</div></div>
     <div class="metric"><div class="k">Atrasadas</div><div class="v">${overdue}</div></div>
     <div class="metric"><div class="k">Progresso</div><div class="v">${pct}%</div></div>
+  </div>`;
+}
+
+function renderDeliveryOverview(project) {
+  const tasks = operationalProjectTasks(project.id).filter((task) => task.status !== "canceled");
+  const objectives = loadDeliveryObjectives().filter((item) => item.project_id === project.id && item.status !== "canceled");
+  const goals = loadDeliveryGoals().filter((item) => item.project_id === project.id && item.status !== "canceled");
+  const today = isoDay(new Date());
+  const taskDone = tasks.filter((item) => item.status === "done").length;
+  const taskDoing = tasks.filter((item) => item.status === "doing").length;
+  const taskLate = tasks.filter((item) => taskPlannedEnd(item) && item.status !== "done" && taskPlannedEnd(item) < today).length;
+  const objectiveDone = objectives.filter((item) => item.status === "done").length;
+  const objectiveAverage = objectives.length
+    ? Math.round(objectives.reduce((sum, item) => sum + deliveryObjectivePercent(item, tasks), 0) / objectives.length)
+    : 0;
+  const goalReached = goals.filter((item) => deliveryGoalReached(item)).length;
+  const goalAverage = goals.length
+    ? Math.round(goals.reduce((sum, item) => sum + deliveryGoalPercent(item), 0) / goals.length)
+    : 0;
+  const currentRevenue = deliveryMetricsTotal(project);
+  const continuityRevenue = deliveryContinuityChain(project).reduce((sum, item) => sum + deliveryMetricsTotal(item), 0);
+  const taskPercent = tasks.length ? Math.round(taskDone / tasks.length * 100) : 0;
+  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div>${hint ? `<div class="metric-hint">${esc(hint)}</div>` : ""}</div>`;
+  const section = (id, title, metrics, progress, action) => `<section class="delivery-overview-section">
+    <header><div><strong>${esc(title)}</strong><span>${esc(action)}</span></div><button class="btn delivery-overview-open" type="button" data-overview-section="${id}">Abrir</button></header>
+    <div class="project-dashboard">${metrics.join("")}</div>
+    <div class="delivery-overview-progress"><span style="width:${Math.max(0, Math.min(100, progress))}%"></span><b>${progress}%</b></div>
+  </section>`;
+  return `<div class="delivery-overview">
+    <div class="delivery-overview-heading"><div><span>Visão geral da entrega</span><strong>${esc(project.name || "Entrega")}</strong></div><small>${project.start_date ? dt(project.start_date) : "—"} a ${project.end_date ? dt(project.end_date) : "—"}</small></div>
+    <div class="delivery-overview-grid">
+      ${section("activities", "Tarefas", [metric("Total", tasks.length), metric("Em andamento", taskDoing), metric("Atendidas", taskDone), metric("Atrasadas", taskLate)], taskPercent, "Tabela, calendário, Gantt e mapa mental")}
+      ${section("objectives", "Objetivos", [metric("Total", objectives.length), metric("Concluídos", objectiveDone), metric("Em andamento", objectives.filter((item) => item.status === "doing").length), metric("Progresso médio", `${objectiveAverage}%`)], objectiveAverage, "Acompanhamento dos objetivos")}
+      ${section("goals", "Metas", [metric("Total", goals.length), metric("Atingidas", goalReached), metric("Em andamento", goals.filter((item) => item.status === "doing").length), metric("Atingimento médio", `${goalAverage}%`)], goalAverage, "Indicadores e resultados-chave")}
+      ${section("data", "Dados", [metric("Faturamento da entrega", brl(currentRevenue)), metric("Continuidade", brl(continuityRevenue)), metric("Meses acompanhados", normalizeProjectBusinessMetrics(project.business_metrics).length), metric("Entregas na sequência", deliveryContinuityChain(project).length)], continuityRevenue > 0 ? Math.round(currentRevenue / continuityRevenue * 100) : 0, "Faturamento, SKUs e fornecedores")}
+    </div>
+    <section class="dashboard-block delivery-overview-okr"><h4>OKR <small>Objetivos e metas agrupados por Categoria e Canal</small></h4>${deliveryOkrBoardHtml(objectives, goals, tasks)}</section>
   </div>`;
 }
 
@@ -5660,8 +5742,8 @@ function projectToolbarHtml(client, product, total) {
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
       <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização: ${esc(activePrimaryLabel)}">${viewTriggerInner(activePrimaryMode)}</button>
-      <button class="view project-mode${projectBoardState.view === "matrix" ? " active" : ""}" data-project-mode="matrix" title="Matriz" aria-label="Matriz"${projectBoardState.section === "activities" ? "" : " disabled"}>${viewButtonInner("matrix")}</button>
-      <button class="view project-mode${projectBoardState.view === "dashboard" ? " active" : ""}" data-project-mode="dashboard" title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button>
+      <button class="view" type="button" title="Matriz (temporariamente desabilitada)" aria-label="Matriz" disabled>${viewButtonInner("matrix")}</button>
+      <button class="view" type="button" title="Dashboard disponível na aba Visão geral" aria-label="Dashboard" disabled>${viewButtonInner("dashboard")}</button>
       <button class="btn project-data-btn" type="button" title="Dados">⬆⬇</button>
     </div>
   </div>`;
@@ -5672,6 +5754,20 @@ function renderProjectBoard(projectId) {
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!root || !project) return;
   preserveHorizontalTableScroll(root, `project:${projectId}:${projectBoardState.section}:${projectBoardState.view || "table"}`);
+  if (projectBoardState.section === "overview") {
+    root.innerHTML = `<div class="project-board">${renderDeliveryOverview(project)}</div>`;
+    root.querySelectorAll(".delivery-overview-open").forEach((button) => button.addEventListener("click", () => {
+      projectBoardState.section = button.dataset.overviewSection;
+      projectBoardState.view = "table";
+      projectBoardState.search = "";
+      projectBoardState.page = 1;
+      projectBoardState.sortKey = null;
+      projectBoardState.filters = {};
+      document.querySelectorAll("[data-project-section]").forEach((tab) => tab.classList.toggle("active", tab.dataset.projectSection === projectBoardState.section));
+      renderProjectBoard(projectId);
+    }));
+    return;
+  }
   if (projectBoardState.section === "data") {
     root.innerHTML = `<div class="project-board">${renderProjectDataModule(project)}</div>`;
     wireProjectDataModule(project);
@@ -6231,7 +6327,10 @@ function applyProjectTableColumnPreferences(table) {
   const scope = `delivery:${projectBoardState.section}`;
   const prefs = secondaryColumnPrefs(scope);
   const definitions = projectTableDefinitions(table);
-  const ordered = orderedColumnDefinitions(definitions, prefs);
+  const savedOrder = orderedColumnDefinitions(definitions, prefs);
+  const ordered = projectBoardState.section === "activities"
+    ? [...definitions.filter((column) => column.k === "d0"), ...savedOrder.filter((column) => column.k !== "d0")]
+    : savedOrder;
   const headRow = table.tHead?.rows?.[0];
   if (!headRow) return;
   const headers = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.projectColumn).map((cell) => [cell.dataset.projectColumn, cell]));
@@ -6245,7 +6344,7 @@ function applyProjectTableColumnPreferences(table) {
     orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
-    const visible = prefs[col.k] !== false;
+    const visible = (projectBoardState.section === "activities" && col.k === "d0") || prefs[col.k] !== false;
     headers[col.k].hidden = !visible;
     projectTableRows(table).forEach((row) => {
       const cell = row.querySelector(`td[data-project-column="${CSS.escape(col.k)}"]`);
@@ -6872,14 +6971,16 @@ function openColumnManager() {
     const listed = colsInOrder().filter((col) => listMode === "all" || (listMode === "visible" ? prefs[col.k] !== false : prefs[col.k] === false));
     panel.querySelector("#cols-dd-list").innerHTML = listed.map((col) => {
       const on = prefs[col.k] !== false;
-      return `<div class="column-manager-row${on ? "" : " off"}" data-k="${esc(col.k)}" draggable="true">
-        <span class="column-drag-handle" title="Arrastar para reordenar">⠿</span>
-        <button class="column-switch${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}" title="${on ? "Ocultar" : "Exibir"} ${esc(col.h)}"></button>
+      const locked = state.tab === "activities" && ["client_name", "product_name", "activity_origin", "title"].includes(col.k);
+      return `<div class="column-manager-row${on ? "" : " off"}${locked ? " locked" : ""}" data-k="${esc(col.k)}" draggable="${!locked}">
+        <span class="column-drag-handle" title="${locked ? "Coluna congelada" : "Arrastar para reordenar"}">⠿</span>
+        <button class="column-switch${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}" title="${locked ? "Coluna congelada" : `${on ? "Ocultar" : "Exibir"} ${col.h}`}"${locked ? " disabled" : ""}></button>
         <span class="column-manager-label">${esc(col.h)}</span>
       </div>`;
     }).join("");
     panel.querySelectorAll(".column-manager-row").forEach((item) => {
       item.querySelector(".column-switch").addEventListener("click", () => {
+        if (item.classList.contains("locked")) return;
         const visibleCount = baseCols.filter((col) => prefs[col.k] !== false).length;
         const k = item.dataset.k;
         if (prefs[k] !== false && visibleCount <= 1) return;
@@ -6891,6 +6992,7 @@ function openColumnManager() {
         render();
       });
       item.addEventListener("dragstart", (event) => {
+        if (item.classList.contains("locked")) { event.preventDefault(); return; }
         draggedKey = item.dataset.k;
         item.classList.add("dragging");
         event.dataTransfer.effectAllowed = "move";
@@ -6963,6 +7065,25 @@ function secondaryColumnPrefs(scope) {
 
 function saveSecondaryColumnPrefs() {
   localStorage.setItem(SECONDARY_COL_PREFS_KEY, JSON.stringify(secondaryColPrefs));
+  scheduleRemoteColumnPreferencesSave();
+}
+
+async function loadRemoteColumnPreferences() {
+  if (!isLive() || !currentProfile?.id) return;
+  try {
+    const rows = await api(`user_ui_preferences?select=column_preferences,secondary_column_preferences&profile_id=eq.${encodeURIComponent(currentProfile.id)}&limit=1`);
+    const saved = rows?.[0];
+    if (saved) {
+      colPrefs = { ...colPrefs, ...(saved.column_preferences || {}) };
+      secondaryColPrefs = { ...secondaryColPrefs, ...(saved.secondary_column_preferences || {}) };
+      localStorage.setItem("crm_cols_v2", JSON.stringify(colPrefs));
+      localStorage.setItem(SECONDARY_COL_PREFS_KEY, JSON.stringify(secondaryColPrefs));
+    } else if (Object.keys(colPrefs).length || Object.keys(secondaryColPrefs).length) {
+      scheduleRemoteColumnPreferencesSave();
+    }
+  } catch (error) {
+    console.warn("Preferências remotas de colunas indisponíveis; usando o cache local.", error);
+  }
 }
 
 function orderedColumnDefinitions(definitions, prefs) {
@@ -6977,7 +7098,11 @@ function orderedColumnDefinitions(definitions, prefs) {
 function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
   document.getElementById("cols-dd")?.remove();
   const prefs = secondaryColumnPrefs(scope);
-  let order = orderedColumnDefinitions(definitions, prefs).map((col) => col.k);
+  const frozenKeys = scope === "delivery:activities" ? new Set(["d0"]) : new Set();
+  let order = [
+    ...definitions.filter((col) => frozenKeys.has(col.k)).map((col) => col.k),
+    ...orderedColumnDefinitions(definitions, prefs).filter((col) => !frozenKeys.has(col.k)).map((col) => col.k)
+  ];
   let listMode = "all";
   let draggedKey = null;
   const panel = document.createElement("div");
@@ -7003,15 +7128,17 @@ function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
   const draw = () => {
     const listed = ordered().filter((col) => listMode === "all" || (listMode === "visible" ? prefs[col.k] !== false : prefs[col.k] === false));
     panel.querySelector(".column-manager-list").innerHTML = listed.map((col) => {
-      const on = prefs[col.k] !== false;
-      return `<div class="column-manager-row${on ? "" : " off"}" data-k="${esc(col.k)}" draggable="true">
-        <span class="column-drag-handle" title="Arrastar para reordenar">⠿</span>
-        <button class="column-switch${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}" title="${on ? "Ocultar" : "Exibir"} ${esc(col.h)}"></button>
+      const locked = frozenKeys.has(col.k);
+      const on = locked || prefs[col.k] !== false;
+      return `<div class="column-manager-row${on ? "" : " off"}${locked ? " locked" : ""}" data-k="${esc(col.k)}" draggable="${!locked}">
+        <span class="column-drag-handle" title="${locked ? "Coluna congelada" : "Arrastar para reordenar"}">⠿</span>
+        <button class="column-switch${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}" title="${locked ? "Coluna congelada" : `${on ? "Ocultar" : "Exibir"} ${col.h}`}"${locked ? " disabled" : ""}></button>
         <span class="column-manager-label">${esc(col.h)}</span>
       </div>`;
     }).join("");
     panel.querySelectorAll(".column-manager-row").forEach((item) => {
       item.querySelector(".column-switch").addEventListener("click", () => {
+        if (item.classList.contains("locked")) return;
         const visibleCount = definitions.filter((col) => prefs[col.k] !== false).length;
         const key = item.dataset.k;
         if (prefs[key] !== false && visibleCount <= 1) return;
@@ -7020,6 +7147,7 @@ function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
         draw();
       });
       item.addEventListener("dragstart", (event) => {
+        if (item.classList.contains("locked")) { event.preventDefault(); return; }
         draggedKey = item.dataset.k;
         item.classList.add("dragging");
         event.dataTransfer.effectAllowed = "move";
@@ -16292,6 +16420,7 @@ async function init() {
         showLogin("Este usuário não possui um perfil ativo no CMS.");
         return;
       }
+      await loadRemoteColumnPreferences();
       if (currentUserIsAdmin()) {
         await migrateLocalOperationalData();
         await syncProductObjectives();

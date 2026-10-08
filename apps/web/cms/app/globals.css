@@ -175,6 +175,8 @@
   .column-manager-row.drag-over{box-shadow:inset 0 2px 0 var(--cyan)}
   .column-manager-row.off .column-manager-label{color:var(--muted2);text-decoration:line-through}
   .column-drag-handle{color:var(--muted2);cursor:grab;font-size:13px;letter-spacing:-3px}
+  .column-manager-row.locked .column-drag-handle{cursor:not-allowed;opacity:.35}
+  .column-manager-row.locked .column-manager-label::after{content:" · fixa";color:var(--muted2);font-size:8px}
   .column-switch{position:relative;width:30px;height:17px;border:0;border-radius:10px;background:#242d39;padding:0;cursor:pointer;transition:background .15s ease}
   .column-switch::after{content:"";position:absolute;left:3px;top:3px;width:11px;height:11px;border-radius:50%;background:#fff;transition:transform .15s ease}
   .column-switch.on{background:#3987f6}
@@ -311,7 +313,14 @@
   .task-table-wrap{flex:1;min-height:0;overflow:auto}
   .task-table-wrap table{font-size:12px}
   .task-subtask-row td:first-child{border-left:3px solid var(--cyan)}
-  .task-table-title{display:flex;align-items:center;gap:7px;min-width:180px}
+  .task-table-title{display:flex;align-items:flex-start;gap:7px;width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
+  .task-table-wrap .select-head,.task-table-wrap .select-cell{position:sticky;left:0;z-index:5;background:var(--panel)}
+  .task-table-wrap .expand-head,.task-table-wrap .expand-cell{position:sticky;left:42px;z-index:5;background:var(--panel)}
+  .task-table-wrap thead .select-head,.task-table-wrap thead .expand-head{z-index:8;background:var(--panel2)}
+  .task-table-wrap .project-task-name-col{position:sticky;left:72px;z-index:4;width:240px;min-width:240px;max-width:240px;background:var(--panel);white-space:normal;overflow-wrap:anywhere;box-shadow:8px 0 14px rgba(0,0,0,.14)}
+  .task-table-wrap thead .project-task-name-col{z-index:7;background:var(--panel2)}
+  .task-table-wrap tbody tr:nth-child(even) .select-cell,.task-table-wrap tbody tr:nth-child(even) .expand-cell,.task-table-wrap tbody tr:nth-child(even) .project-task-name-col{background:var(--row-alt)}
+  .task-table-wrap tbody tr:hover .select-cell,.task-table-wrap tbody tr:hover .expand-cell,.task-table-wrap tbody tr:hover .project-task-name-col{background:var(--row-hover)}
   .task-table-title small{padding:2px 5px;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:8px;text-transform:uppercase}
   .task-subtask-branch{color:var(--cyan);font-size:16px}
   .task-subtasks-editor{display:grid;gap:7px}
@@ -325,6 +334,16 @@
   .project-dashboard{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;padding:16px 18px}
   .project-dashboard .metric{min-height:92px}
   .delivery-dashboard{display:flex;min-height:0;flex-direction:column;gap:4px;overflow:auto;padding-bottom:18px}
+  .delivery-overview{height:100%;min-height:0;overflow:auto;padding:14px;background:var(--bg)}
+  .delivery-overview-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px;padding:0 2px}
+  .delivery-overview-heading>div{display:grid;gap:3px}.delivery-overview-heading span,.delivery-overview-heading small{color:var(--muted);font-size:10px;text-transform:uppercase}.delivery-overview-heading strong{font-size:16px}
+  .delivery-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .delivery-overview-section{display:grid;gap:10px;padding:12px;border:1px solid var(--border);border-radius:7px;background:var(--panel)}
+  .delivery-overview-section>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.delivery-overview-section>header>div{display:grid;gap:2px}.delivery-overview-section>header strong{font-size:13px}.delivery-overview-section>header span{color:var(--muted);font-size:9.5px}
+  .delivery-overview-section .project-dashboard{grid-template-columns:repeat(4,minmax(0,1fr));padding:0}.delivery-overview-section .metric{min-height:68px}
+  .delivery-overview-progress{position:relative;height:18px;overflow:hidden;border:1px solid var(--border);border-radius:4px;background:var(--panel2)}
+  .delivery-overview-progress>span{position:absolute;inset:0 auto 0 0;background:var(--blue)}.delivery-overview-progress>b{position:relative;z-index:1;display:block;padding:1px 6px;font-size:9px;line-height:14px}
+  .delivery-overview-okr{margin-top:10px}
   .metric-hint{margin-top:6px;color:var(--muted);font-size:10px}
   .dashboard-block{margin:0 18px;padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--panel)}
   .dashboard-block+.dashboard-block{margin-top:12px}
@@ -393,7 +412,10 @@
   .data-table tbody tr:nth-child(even) .expand-cell{background:var(--row-alt)}
   .data-table tbody tr:hover .expand-cell{background:var(--row-hover)}
   .data-table .sticky-col-1{left:72px}
-  .data-table .sticky-col-2{left:282px;width:105px;min-width:105px;max-width:105px;box-shadow:8px 0 14px rgba(0,0,0,.16)}
+  .data-table .sticky-col-2{left:282px;width:105px;min-width:105px;max-width:105px}
+  .data-table .sticky-col-3{left:387px;width:96px;min-width:96px;max-width:96px}
+  .data-table .sticky-col-4{left:483px;width:240px;min-width:240px;max-width:240px;box-shadow:8px 0 14px rgba(0,0,0,.16)}
+  .data-table .task-name-col{white-space:normal;overflow-wrap:anywhere;line-height:1.35}
   .data-table tbody tr:nth-child(even) .sticky-col{background:var(--row-alt)}
   .data-table tbody tr:hover .sticky-col{background:var(--row-hover)}
   .data-table[data-tab="companies"] .company-sticky-col{position:sticky;z-index:3;background:var(--panel);overflow:hidden;text-overflow:ellipsis}
@@ -533,6 +555,10 @@
   .gantt-progress-rail{position:absolute;z-index:2;top:42px;height:18px;min-width:18px;overflow:hidden;padding:0;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);cursor:pointer;text-align:left}
   .gantt-progress-rail>span{position:absolute;inset:0 auto 0 0;background:var(--cyan)}
   .gantt-progress-rail.complete>span{background:var(--green)}
+  .gantt-progress-rail.empty{opacity:.55}
+  .gantt-progress-tasks>span{background:#2f6bd8}
+  .gantt-progress-objectives>span{background:#8b5cf6}
+  .gantt-progress-goals>span{background:#f59e0b}
   .gantt-progress-rail>b{position:relative;z-index:1;display:block;padding:1px 6px;font-size:9px;line-height:14px;text-shadow:0 1px 2px var(--bg)}
   .gantt-bar:hover,.gantt-milestone:hover{filter:brightness(1.12)}
   .gantt-progress-rail:hover{filter:brightness(1.12)}
@@ -547,6 +573,9 @@
   .gantt-legend i.active{background:var(--cyan)}
   .gantt-legend i.done{background:var(--green)}
   .gantt-legend i.overdue{background:var(--red)}
+  .gantt-legend i.tasks{background:#2f6bd8}
+  .gantt-legend i.objectives{background:#8b5cf6}
+  .gantt-legend i.goals{background:#f59e0b}
   .gantt-legend-note{margin-left:auto}
   .gantt-bottom-scroll{height:18px;min-height:18px;margin:0 14px;overflow-x:scroll;overflow-y:hidden;border:1px solid var(--border);border-top:0;background:var(--panel2);flex:0 0 18px}
   .gantt-bottom-scroll>div{height:1px}
@@ -1562,6 +1591,14 @@
   /* Status de tarefa editável diretamente nas tabelas. */
   .inline-task-status,.project-inline-task-status{min-width:112px;height:26px;padding:2px 24px 2px 7px;
     border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);font:inherit;cursor:pointer}
+  .inline-task-status.task-status-todo,.project-inline-task-status.task-status-todo{border-color:#d69b00;background:#4a3808;color:#ffd45c}
+  .inline-task-status.task-status-doing,.project-inline-task-status.task-status-doing{border-color:#3b82f6;background:#102d61;color:#9dc7ff}
+  .inline-task-status.task-status-done,.project-inline-task-status.task-status-done{border-color:#28a764;background:#0d3b29;color:#73e8aa}
+  .inline-task-status.task-status-canceled,.project-inline-task-status.task-status-canceled{border-color:#697586;background:#29313d;color:#c0c7d1}
+  body.light .inline-task-status.task-status-todo,body.light .project-inline-task-status.task-status-todo{border-color:#d69b00;background:#fff1b8;color:#6c4c00}
+  body.light .inline-task-status.task-status-doing,body.light .project-inline-task-status.task-status-doing{border-color:#3b82f6;background:#dcecff;color:#174f9e}
+  body.light .inline-task-status.task-status-done,body.light .project-inline-task-status.task-status-done{border-color:#28a764;background:#d8f6e6;color:#14633c}
+  body.light .inline-task-status.task-status-canceled,body.light .project-inline-task-status.task-status-canceled{border-color:#87909e;background:#e7e9ed;color:#48515f}
   .inline-task-status:disabled,.project-inline-task-status:disabled{cursor:default;opacity:.55}
 .internal-chat-search{padding:10px 12px;border-bottom:1px solid var(--border);background:var(--panel)}
 .internal-chat-search input{width:100%;height:34px}
