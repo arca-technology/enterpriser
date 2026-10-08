@@ -2082,6 +2082,8 @@ function columns(tab, c) {
       { k: "job_title", h: "CARGO" },
       { k: "department", h: "DEPARTAMENTO" },
       { k: "company_ids", h: "EMPRESA(S)", fmt: (v, row) => companyNames(v?.length ? v : [row.company_id], c) },
+      { k: "__conversations", h: "CONVERSAS", fmt: (v) => v ? `<span class="tool-tag">${v} ${v === 1 ? "conversa" : "conversas"}</span>` : '<span class="muted">—</span>' },
+      { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => contactDealsCell(row, c) },
       { k: "linkedin", h: "LINKEDIN", cls: "muted" },
       { k: "facebook", h: "FACEBOOK", cls: "muted" },
       { k: "instagram", h: "INSTAGRAM", cls: "muted" },
@@ -2874,7 +2876,48 @@ function displayValue(row, col, c) {
   return String(val ?? "").replace(/<[^>]+>/g, "");
 }
 
+// Cor fixa de cada pipeline (pela ordem de cadastro), usada nos sinais de
+// negócios da tabela de pessoas.
+const PIPELINE_COLORS = ["#38bdf8", "#a78bfa", "#f59e0b", "#34d399", "#f472b6", "#fb7185", "#22d3ee", "#facc15", "#818cf8", "#4ade80"];
+function pipelineColor(pipelineId, c = cache) {
+  const index = (c?.pipelines || []).findIndex((pipeline) => pipeline.id === pipelineId);
+  return index < 0 ? "#94a3b8" : PIPELINE_COLORS[index % PIPELINE_COLORS.length];
+}
+
+// Marca em cada pessoa quantas conversas e quais negócios ela tem. Os campos
+// não são enumeráveis: servem para filtrar/ordenar e não vão para o banco.
+function annotateContactLinks(c) {
+  const conversations = {};
+  (c.conversations || []).forEach((row) => { if (row.contact_id) conversations[row.contact_id] = (conversations[row.contact_id] || 0) + 1; });
+  const deals = {};
+  (c.deals || []).forEach((deal) => { if (deal.contact_id) (deals[deal.contact_id] ||= []).push(deal); });
+  const set = (row, key, value) => Object.defineProperty(row, key, { value, writable: true, configurable: true, enumerable: false });
+  (c.contacts || []).forEach((person) => {
+    const list = deals[person.id] || [];
+    set(person, "__conversations", conversations[person.id] || 0);
+    set(person, "__dealList", list);
+    set(person, "__deals", [...new Set(list.map((deal) => c.pipelineById?.[deal.pipeline_id]?.name || "Sem pipeline"))].sort().join(", "));
+  });
+}
+
+function contactDealsCell(person, c) {
+  const list = person.__dealList || [];
+  if (!list.length) return '<span class="muted">—</span>';
+  const groups = new Map();
+  list.forEach((deal) => {
+    const key = deal.pipeline_id || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(deal);
+  });
+  return `<span class="tool-tags">${[...groups].map(([pipelineId, items]) => {
+    const name = c.pipelineById?.[pipelineId]?.name || "Sem pipeline";
+    const titles = items.map((deal) => `${c.productById?.[deal.product_id]?.name || deal.title || "Negócio"} · ${STATUS_LABEL[deal.status] || deal.status || ""}`).join("\n");
+    return `<span class="tool-tag pipeline-tag" style="--pipe:${pipelineColor(pipelineId, c)}" title="${esc(titles)}">${esc(name)}${items.length > 1 ? ` · ${items.length}` : ""}</span>`;
+  }).join("")}</span>`;
+}
+
 function rowsFor(tab, c) {
+  if (tab === "contacts") annotateContactLinks(c);
   let rows = c[tab] || [];
   if (state.q) {
     const q = state.q.toLowerCase();
