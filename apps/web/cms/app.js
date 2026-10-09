@@ -1561,6 +1561,11 @@ function taskDeadlinePeriod(task) {
   const month = date.toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
   return task.deadline_window === "month" ? month : `Semana ${task.deadline_window.replace("week", "")} · ${month}`;
 }
+function taskPlannedEndCell(task) {
+  const end = taskPlannedEnd(task);
+  if (!end) return "—";
+  return `<span title="${esc(`Limite para concluir: ${dt(end)}. O atraso começa no dia seguinte.`)}">${esc(taskDeadlinePeriod(task) || dt(end))}</span>`;
+}
 function projectTasks(projectId) {
   const tasks = operationalProjectTasks(projectId);
   const byId = new Map(tasks.map((task) => [task.id, task]));
@@ -2222,7 +2227,7 @@ function columns(tab, c) {
       { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => stackedCell(responsibilityNameList(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
       { k: "references", h: "REFERÊNCIAS", fmt: (_v, row) => taskReferencesHtml(row) },
       { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
-      { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (v, row) => esc(taskDeadlinePeriod(row) || dt(v || row.due_date) || "—") },
+      { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (_v, row) => taskPlannedEndCell(row) },
       { k: "actual_start_date", h: "INÍCIO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "actual_end_date", h: "TÉRMINO REAL", fmt: (v) => v ? dt(v) : "—" },
       { k: "status", h: "STATUS", fmt: (_v, row) => inlineTaskStatus(row) },
@@ -3164,7 +3169,8 @@ function renderTable(c) {
     const isFiltered = filters[col.k]?.size > 0;
     const arr = isFiltered ? `<span class="arrow">▼</span>` : state.sortK === col.k ? `<span class="arrow">${state.sortDir > 0 ? "▲" : "▼"}</span>` : "";
     const cls = [isFiltered ? "filtered" : "", col.thCls || ""].filter(Boolean).join(" ");
-    return `<th data-k="${col.k}" class="${cls}" title="Clique para ordenar. Ctrl+clique para filtrar.">${col.h}${arr}</th>`;
+    const dateMeaning = { planned_start_date: "Quando começa o período planejado para realizar a atividade.", planned_end_date: "Limite para concluir: uma data, semana ou mês. Atraso somente depois desse limite.", actual_start_date: "Quando o trabalho efetivamente começou.", actual_end_date: "Quando o trabalho foi efetivamente concluído." }[col.k];
+    return `<th data-k="${col.k}" class="${cls}" title="${esc(dateMeaning ? `${dateMeaning} Clique para ordenar. Ctrl+clique para filtrar.` : "Clique para ordenar. Ctrl+clique para filtrar.")}">${col.h}${arr}</th>`;
   }).join("") + actionHead;
 
   let previousClient = null;
@@ -5387,7 +5393,7 @@ function renderTaskTable(tasks) {
       <td class="compact-multi-cell">${stackedCell(responsibilityNameList(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
       <td>${taskReferencesHtml(task)}</td>
       <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
-      <td>${esc(taskDeadlinePeriod(task) || (taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—"))}</td>
+      <td>${taskPlannedEndCell(task)}</td>
       <td>${esc(task.actual_start_date ? dt(task.actual_start_date) : "—")}</td>
       <td>${esc(task.actual_end_date ? dt(task.actual_end_date) : "—")}</td>
       <td>${inlineTaskStatus(task, "project-inline-task-status")}</td>
@@ -9612,10 +9618,30 @@ const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pip
 const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
+const HELP_TASK_DATES_SECTION = { title: "Datas previstas e reais", lead: "<b>Previsto é o planejamento; real é o que aconteceu.</b> Começar o período não significa que a tarefa já começou ou que está atrasada.",
+  cards: [["Início previsto", "Data planejada para começar. Nas tarefas mensais por período, é a abertura da janela: 01/09/2026 permite realizar a atividade ao longo de setembro."],
+    ["Término previsto", "Limite para concluir. Quando aparece <b>setembro de 2026</b>, o limite é 30/09/2026, não 01/09. Quando aparece uma semana, o limite é o último dia daquela janela."],
+    ["Início real", "Quando o trabalho efetivamente começou. Ao mudar o status para Em andamento, o sistema preenche a data de hoje se ainda estiver vazia."],
+    ["Término real", "Quando o trabalho foi concluído. Ao mudar para Atendido, o sistema preenche a data de hoje se estiver vazia. Se o registro foi feito depois, ajuste as datas reais no formulário."]],
+  tips: ["Exemplo: mentoria de setembro com início previsto em 01/09 e término previsto em setembro de 2026. Realizá-la em 18/09 está dentro do prazo. Sem conclusão, ela fica atrasada em 01/10."] };
+const HELP_TASK_WINDOWS_SECTION = { title: "Recorrência e prazo no mês", lead: "<b>Recorrência define quantas vezes fazer; prazo define até quando fazer cada ocorrência.</b> Mensal significa uma ocorrência por mês, não obrigação de concluir no dia 1.",
+  cards: [["Data específica", "Use quando existe um vencimento definido, como uma reunião agendada ou uma obrigação com dia certo. Mantém o planejamento por datas e prazo sugerido."],
+    ["Semana 1 a 4", "São faixas do mês, não semanas de segunda a domingo: 1 = dias 1–7; 2 = 8–14; 3 = 15–21; 4 = dia 22 até o último dia do mês."],
+    ["Mês inteiro", "Use para uma atividade que precisa acontecer naquele mês, mas não tem dia marcado. O vencimento é o último dia do mês."],
+    ["Dias úteis", "Considera dias úteis nos cálculos de duração e início após dependência; na recorrência diária, não gera ocorrências em fins de semana. A janela mensal continua com os limites de calendário acima."]],
+  tips: ["Conciliação de BPO no começo do mês: escolha Mensal + Semana 1. Concluir no dia 1 ou no dia 6 está Em dia; sem conclusão, fica Atrasado a partir do dia 8.", "A seleção Prazo no mês aparece ao escolher Mensal. Modelos existentes continuam com Data específica até você escolher outra opção."] };
+const HELP_TASK_OPERATIONS_SECTION = { title: "Executar e acompanhar", steps: ["Confira cliente, canal, responsável e dependências antes de começar. Uma dependência indica um trabalho anterior necessário para liberar a execução.", "Ao começar, use <b>Em andamento</b>. Complete o checklist e consulte as referências para seguir o procedimento.", "Registre dúvidas, decisões e resultados nos <b>Comentários</b>, que identificam o autor. Comentário não substitui a conclusão da tarefa.", "Quando o trabalho terminar, use <b>Atendido</b>. Use <b>Cancelado</b> quando a atividade não será realizada, registrando o motivo nos comentários."],
+  cards: [["Status não é prazo", "Em aberto (amarelo), Em andamento (azul), Atendido (verde) e Cancelado (cinza) descrevem a execução. Uma tarefa pode estar Em andamento e Atrasado ao mesmo tempo."],
+    ["Em dia, Atrasado e Adiantado", "Sem conclusão, o atraso começa no dia seguinte ao término previsto. Com término real, o sistema compara a conclusão com o prazo: dentro da janela é Em dia, depois é Atrasado e antes da abertura é Adiantado. Em Data específica, concluir antes do vencimento é Adiantado."],
+    ["Subtarefas e checklist", "Subtarefas são trabalhos separados, com acompanhamento próprio. Checklist são verificações dentro de um trabalho; quando existem subtarefas, o checklist fica nelas."],
+    ["Operar ou editar", "Operar acompanha a execução, como alterar status. Editar muda o cadastro e o planejamento. Os comandos disponíveis dependem das permissões do usuário."]] };
+const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };
 const HELP_PAGES = {
   home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
     lead: "O CMS reúne relacionamento comercial (CRM), gestão das entregas e tarefas (PM), processos (BPM) e ferramentas do escritório. Escolha acima um dos módulos principais ou, na barra, um submódulo de Cadastros, Ferramentas ou Social.",
     sections: [
+      { title: "Entenda o fluxo de trabalho", lead: "<b>Pessoas e Empresas</b> identificam com quem você se relaciona. <b>Conversas</b> guardam o histórico. <b>Negócios</b> acompanham uma oportunidade de venda. <b>Entregas</b> organizam o serviço vendido; suas <b>Tarefas</b> registram o trabalho, seus <b>Objetivos</b> o resultado esperado e suas <b>Metas</b> a medida desse resultado.", tips: ["Cadastros › Tarefas, Metas e Objetivos são modelos dos produtos. Dentro da entrega, são os registros reais daquele cliente. Não são duas listas para executar o mesmo trabalho."] },
+      HELP_RECORD_ACTIONS_SECTION,
       { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
         cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
       { title: "Cabeçalho e rodapé", cards: [["↻ Atualizar", "Ao lado do sino. Pisca e mostra quantas alterações outros usuários fizeram; clique para trazer os dados novos sem recarregar a página. Comentários chegam sozinhos no painel aberto."], ["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
@@ -9628,6 +9654,7 @@ const HELP_PAGES = {
   contacts: { kicker: "Módulo", title: "Pessoas", path: ["Cabeçalho", "Pessoas"],
     lead: "Cadastro único dos contatos — clientes, leads, fornecedores e parceiros — vinculados a uma ou mais empresas.",
     sections: [
+      { title: "Quem é a pessoa no relacionamento?", cards: [["Pessoa e empresa", "A pessoa é o contato humano. A empresa é a organização; uma pessoa pode estar vinculada a mais de uma. Confira esses vínculos para encontrar o contato correto em uma negociação."], ["Tipo de contato", "Descreve a relação: Colaborador, Fornecedor, Cliente, Parceiro ou Network. Pode ter mais de um tipo e também ficar vazio quando você ainda não classificou."], ["Canal", "É a origem do primeiro contato com você, como rede social, e-mail, telefone ou evento. Não é cargo, departamento nem origem dos dados importados."], ["Cargo e departamento", "Cargo descreve o papel da pessoa; departamento, a área em que atua. Tags e observações complementam o contexto sem substituir esses campos."]] },
       { title: "Cadastrar uma pessoa", steps: ["Clique no <b>+</b> da barra.", "Preencha o nome e ao menos um telefone ou e-mail.", "Vincule uma ou mais empresas, o tipo de contato e o canal de origem.", "Complete cargo, departamento, redes sociais, grupos, tags, CPF, nascimento e observações e salve."],
         cards: [["Padronização", "Telefones e e-mails são padronizados ao salvar."], ["Sem duplicados", "Mesmo nome com o mesmo telefone ou e-mail atualiza o contato existente."], ["Colunas fixas", "Nome e telefone ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION,
@@ -9636,6 +9663,7 @@ const HELP_PAGES = {
   companies: { kicker: "Módulo", title: "Empresas", path: ["Cabeçalho", "Empresas"],
     lead: "Empresas clientes e parceiras, com dados cadastrais públicos e as pessoas vinculadas. As entregas são vinculadas a uma empresa pelo CNPJ.",
     sections: [
+      { title: "Identifique o negócio do cliente", cards: [["CNPJ e nomes", "CNPJ identifica a empresa. Razão social é o nome legal; nome fantasia é o nome pelo qual o negócio é conhecido. Entregas e continuidades usam a empresa vinculada."], ["QSA", "É o quadro de sócios e administradores. Os nomes e cargos ajudam a identificar as pessoas vinculadas; não representam o canal do primeiro contato."], ["Atualizar dados", "O enriquecimento consulta os dados cadastrais públicos. Não significa atualizar o faturamento real do cliente: esse acompanhamento fica em Dados, na entrega."]] },
       { title: "Cadastrar uma empresa", steps: ["Clique no <b>+</b> e digite o CNPJ.", "Clique em <b>Buscar dados</b>: razão social, nome fantasia, contato, abertura, situação, capital social, atividades, endereço e QSA vêm da Receita e não podem ser editados.", "Confira as inscrições estaduais (a primeira é a do estado da empresa; adicione outras UFs) e a inscrição municipal.", "Escolha o tipo de contato, as pessoas vinculadas e as observações e salve. Para corrigir dados, use <b>Atualizar da Receita</b>."],
         cards: [["Importar planilha", "Em ⬆⬇ Dados baixe o modelo e informe só CNPJ, tipo de contato, inscrição municipal e observações. A empresa entra na hora com a tag <b>Desatualizada</b> e o CMS busca os dados da Receita em segundo plano (cerca de 5 por minuto). Se a consulta falhar aparece <b>Erro na Receita</b>: use Atualizar da Receita."], ["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION
@@ -9643,6 +9671,7 @@ const HELP_PAGES = {
   conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
     lead: "Histórico das conversas de WhatsApp e Reddit Chat, importado ou capturado pela extensão, ligado às pessoas e aos negócios.",
     sections: [
+      { title: "Transforme histórico em contexto", lead: "Uma conversa registra o que foi discutido; não é, por si só, uma negociação nem uma tarefa concluída. Associe a pessoa correta para encontrar seu histórico e seus negócios.", cards: [["Quando criar um negócio", "Quando houver uma oportunidade comercial a acompanhar. Consulte os negócios da pessoa antes de criar outro para a mesma oportunidade."], ["Quando registrar uma tarefa", "Quando houver trabalho a executar na entrega. Registre prazo, responsável e resultado esperado; manter a mensagem na conversa não substitui esse acompanhamento."]] },
       { title: "Importar do WhatsApp", steps: ["No WhatsApp, abra a conversa e use <b>Exportar conversa</b> (sem mídia).", "No CMS, clique em <b>⬆⬇ Dados</b> e escolha <b>Conversa (.txt/.zip)</b>.", "Selecione o arquivo .txt ou .zip.", "O CMS liga a conversa à pessoa com o mesmo nome ou telefone; se não achar, associe manualmente."] },
       { title: "Pelo celular (Android)", steps: ["Instale o app ENTERPRISER pelo Chrome (Adicionar à tela inicial).", "No WhatsApp, abra a conversa e use <b>Mais › Exportar conversa › Sem mídia</b>.", "Na lista de compartilhamento escolha <b>ENTERPRISER</b>.", "O CMS abre e importa a conversa direto no módulo Conversas."], lead: "No iPhone o compartilhamento direto não é suportado pelo sistema: salve o .zip em Arquivos e importe pelo menu Dados." },
       { title: "Conversas por usuário", cards: [["Salvas no banco", "As conversas ficam no Supabase e aparecem em qualquer aparelho."], ["Responsável", "É o usuário que subiu a conversa; cada um tem a própria cópia: você e o comercial podem importar a conversa com o mesmo cliente."], ["Reimportar", "Importar de novo a mesma conversa atualiza as mensagens, sem duplicar, e mantém o vínculo com a pessoa."]] },
@@ -9650,9 +9679,10 @@ const HELP_PAGES = {
       { title: "Extensão Chrome", lead: "Na extensão as conversas do WhatsApp Web e do Reddit Chat são capturadas automaticamente. A versão web mostra o que foi capturado." }
     ] },
   deals: { kicker: "Módulo", title: "Negócios", path: ["Cabeçalho", "Negócios"],
-    lead: "Oportunidades comerciais em pipelines com etapas, valor e previsão de fechamento.",
+    lead: "Uma negociação representa uma oportunidade de vender um produto ou serviço. O pipeline mostra em que etapa da venda ela está; ainda não é o projeto em execução.",
     sections: [
-      { title: "Cadastrar um negócio", steps: ["Clique no <b>+</b>.", "Escolha a empresa (ou \"Não possui empresa\") e o contato.", "Escolha produto, pipeline, etapa e origem do lead.", "Informe valor e previsão de fechamento e salve."] },
+      { title: "Do contato à venda", cards: [["Contato e empresa", "Contato é a pessoa com quem você negocia; empresa é o negócio ao qual ela está vinculada. Sem empresa, marque Não possui empresa. Quando houver empresa, escolha um contato vinculado a ela."], ["Produto e valor", "O nome da negociação vem do produto e o valor vem do preço padrão dele. Se não houver produto cadastrado, use a opção sem produto para escrever o nome."], ["Entrada e avanço", "Novos negócios entram como Lead no pipeline Padrão. Avance a etapa conforme o relacionamento comercial evoluir; abrir uma conversa não significa que a venda foi ganha."]] },
+      { title: "Cadastrar um negócio", steps: ["Escolha a empresa (ou Não possui empresa) e o contato.", "Selecione o produto ou informe o nome na opção sem produto.", "Confira a origem do lead e salve. O negócio começa como Lead no pipeline Padrão."] },
       { title: "Quadro do pipeline", steps: ["Escolha <b>Quadro</b> na visualização.", "Arraste os cartões entre as etapas.", "Solte em <b>Ganho</b> ou <b>Perdido</b> para fechar."] },
       { title: "Ganho vira entrega", lead: "Quando o negócio é ganho, o CMS cria automaticamente a <b>Entrega</b> do cliente com o produto vendido, já com as tarefas, objetivos e metas do produto.",
         tips: ["Pipelines e etapas são configurados em Cadastros › Pipeline."] }
@@ -9660,18 +9690,27 @@ const HELP_PAGES = {
   projects: { kicker: "Módulo", title: "Entregas", path: ["Cabeçalho", "Entregas", "👁 abrir"],
     lead: "A entrega é o projeto ou serviço pós-venda do cliente, no padrão <b>EC365 | Cliente | Produto</b>. Abra pelo ícone de olho para trabalhar nas abas Tarefas, Objetivos, Metas e Dados.",
     sections: [
+      { title: "Como gerir uma entrega", steps: ["Confira o cliente, o produto e o período do contrato. A entrega reúne o trabalho daquele serviço, não apenas uma lista de tarefas.", "Ative no Setup os canais que fazem parte do serviço. Eles liberam as tarefas correspondentes; canais ativados não podem ser removidos.", "Distribua o trabalho, acompanhe os status das tarefas e confira objetivos e metas. Atualize os dados mensais para comparar a evolução do negócio do cliente.", "Em uma renovação, escolha a entrega anterior do mesmo CNPJ em Continuidade. Ela herda os canais e mantém o acompanhamento do histórico."], cards: [["Contrato e execução", "Ativo, Inativo e Encerrado descrevem a situação da entrega/contrato. Em aberto, Em andamento, Atendido e Cancelado descrevem cada tarefa. O contrato pode estar ativo e conter tarefas atrasadas."], ["Gantt", "A barra do contrato mostra a duração da entrega. As barras de tarefas, objetivos e metas mostram o progresso do trabalho, não dias decorridos. O percentual geral resume o acompanhamento."]] },
+      HELP_TASK_DATES_SECTION,
+      HELP_TASK_OPERATIONS_SECTION,
+      HELP_TASK_WINDOWS_SECTION,
       { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
       { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Cada canal ativado libera as tarefas daquele Canal e não pode ser desativado depois de salvo.",
         cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
       { title: "Aba Tarefas", lead: "Tarefas do produto e do dia a dia com subtarefas, checklist, responsáveis (colaboradores e Cliente), dependências, referências a documentos e tabelas, comentários e status.",
-        cards: [["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard."], ["Prazos", "Cada tarefa tem duração e <b>Iniciar após dependência (dias)</b>. Quando a anterior termina, as dependentes são recalculadas pela data real ou prevista, com dias úteis e recorrência."]],
+        cards: [["Visualizações", "Use Tabela para comparar campos, Quadro para acompanhar a execução, Calendário para ver datas e Gantt para acompanhar o período e o progresso. Matriz e Dashboard da barra ficam desativados por enquanto; a entrega abre com seu resumo geral."], ["Prazos", "Data específica usa duração e <b>Iniciar após dependência (dias)</b>. Dependentes são recalculadas pela data real ou prevista. Nas janelas mensais, o limite continua sendo o fim da semana ou do mês escolhido."]],
         tips: ["Datas editadas à mão não são recalculadas, e dependências circulares são bloqueadas."] },
       { title: "Abas Objetivos e Metas", cards: [["Objetivos", "Critério de conclusão, Categoria, Canal, responsável, prazo e dependências. O progresso vem das tarefas vinculadas."], ["Metas", "Indicador, comparação (no mínimo, no máximo, exato), valor atual, alvo, Categoria, Canal e prazo. Atualize o valor atual direto na tabela."], ["Dashboard", "Atingimento médio, atingidas, atrasadas e bloqueadas, lista de KPIs e quadro OKR."], ["OKR", "Objetivos (O) e metas (KR) com a mesma Categoria e Canal formam um cartão com o progresso geral."]] },
-      { title: "Aba Dados", lead: "Faturamento mensal do negócio por canal durante a entrega e o histórico das entregas de continuidade." }
+      { title: "Aba Dados", lead: "Registre o faturamento por canal e mês, a quantidade de SKUs, os fornecedores e as observações. O faturamento mensal soma os canais; o total reúne os meses. Esses valores descrevem o negócio do cliente, não o preço do serviço contratado. Em continuidade, compare também o histórico das entregas anteriores do mesmo CNPJ." }
     ] },
   activities: { kicker: "Módulo", title: "Tarefas", path: ["Cabeçalho", "Tarefas"],
     lead: "Todas as tarefas de todas as entregas em um só lugar, com cliente, entrega, origem, prioridade, estrutura, datas, status, prazo e comentários.",
     sections: [
+      { title: "Organize o dia de trabalho", lead: "Esta lista reúne o trabalho real dos clientes. Use-a para decidir o que executar e identificar bloqueios; os modelos ficam em Cadastros › Tarefas.", steps: ["Comece pelas tarefas do seu responsável e dos clientes que acompanha.", "Confira prazo e dependências. Prioridade indica importância; Atrasado indica que o limite passou. São informações diferentes.", "Atualize o status conforme executar e registre o resultado nos comentários."] },
+      HELP_TASK_DATES_SECTION,
+      HELP_TASK_WINDOWS_SECTION,
+      HELP_TASK_OPERATIONS_SECTION,
+      HELP_RECORD_ACTIONS_SECTION,
       { title: "Acompanhar", steps: ["Filtre por cliente, status, prioridade ou responsável.", "Altere o status direto na linha.", "Clique no lápis para abrir a tarefa no formulário da entrega."] },
       { title: "Agrupar e editar em massa", cards: [["≡ Agrupar por cliente", "Um grupo por cliente com a contagem; use ▸ para abrir um ou todos."], ["Edição em massa", "Neste módulo altera <b>Status</b> e <b>Prioridade</b>. Marque as tarefas, clique em ✎ em AÇÕES e escolha o valor."]] }
     ] },
@@ -9687,16 +9726,18 @@ const HELP_PAGES = {
   "reg-activities": { kicker: "Cadastros", title: "Tarefas", path: ["Rodapé", "Cadastros", "Tarefas"],
     lead: "Modelos de tarefa. A mesma tarefa pode valer para vários produtos e, ao salvar, as entregas desses produtos são sincronizadas.",
     sections: [
+      { title: "Modelo ou tarefa do cliente?", lead: "Aqui você define <b>como o serviço deve ser executado</b>: estrutura, recorrência, prazo, responsáveis padrão e procedimento. Vinculado a um produto, o modelo gera tarefas nas entregas desse produto. A execução e a conclusão são acompanhadas nas tarefas da entrega, não no modelo.", tips: ["Ao alterar um modelo, confira as entregas vinculadas: a sincronização pode atualizar o planejamento das tarefas. As datas de tarefas já atendidas ou canceladas são preservadas."] },
+      HELP_TASK_WINDOWS_SECTION,
       { title: "Cadastrar um modelo", steps: ["Escolha os produtos.", "Monte o nome com <b>Usar estrutura</b>: Categoria | Canal | Módulo | Submódulo | Tarefa | Tipo.", "Defina prioridade, recorrência, dias úteis, prazo e iniciar após dependência.", "Adicione checklist, objetivo, responsáveis padrão, dependências e subtarefas."],
         tips: ["Usar estrutura exige Categoria, Canal, Módulo e Tipo. A coluna Tarefa fica fixa ao rolar."] },
       HELP_MIND_MAP_SECTION
     ] },
   "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
     lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
-    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+    sections: [{ title: "Defina uma medida de sucesso", lead: "Meta é um resultado mensurável, não uma ação. Exemplo: chegar a 500 SKUs ativos. Defina o indicador, a unidade, o valor-alvo e a comparação; acompanhe o valor atual na entrega do cliente.", cards: [["No mínimo", "O valor atual precisa alcançar ou superar o alvo. Exemplo: faturamento de pelo menos R$ 50 mil."], ["No máximo", "O resultado deve permanecer no limite ou abaixo dele. Exemplo: até 5 reclamações."], ["Exato", "O resultado esperado é o valor definido. Use quando atingir exatamente aquela quantidade faz sentido."], ["Modelo e resultado real", "O cadastro define a meta padrão do produto. Cada entrega acompanha os valores do seu cliente; o valor de um cliente não deve ser registrado no modelo."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
     lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
-    sections: [{ title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+    sections: [{ title: "Defina o resultado esperado", lead: "Objetivo descreve o que se quer alcançar. Tarefa é o trabalho necessário; meta mede o resultado. Exemplo: objetivo = organizar o financeiro; tarefas = configurar contas e conciliar movimentos; meta = atingir a quantidade-alvo de movimentos conciliados.", cards: [["Critério de conclusão", "Descreva como reconhecer que o objetivo foi alcançado, com um resultado verificável, não apenas uma intenção."], ["Tarefas vinculadas", "O progresso do objetivo vem das tarefas associadas. Confira os vínculos antes de usar o percentual como evidência de conclusão."], ["Dependências", "Indicam resultados ou trabalhos anteriores necessários. Use para organizar a sequência, não apenas para agrupar itens com nomes semelhantes."], ["Modelo e cliente", "O cadastro é o objetivo padrão do produto. Dentro da entrega, acompanhe o resultado específico do cliente."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
     lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
     sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
