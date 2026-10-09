@@ -343,7 +343,13 @@
   .delivery-overview{height:100%;min-height:0;overflow:auto;padding:14px;background:var(--bg)}
   .delivery-overview-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:12px;padding:0 2px}
   .delivery-overview-heading>div{display:grid;gap:3px}.delivery-overview-heading span,.delivery-overview-heading small{color:var(--muted);font-size:10px;text-transform:uppercase}.delivery-overview-heading strong{font-size:16px}
-  .delivery-overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .delivery-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+  .delivery-overview-grid .delivery-overview-section{min-width:0}
+  .delivery-overview-grid .project-dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .delivery-overview-grid .metric{min-width:0;overflow-wrap:anywhere}
+  .delivery-overview-grid .metric .v{font-size:18px}
+  @media(max-width:1100px){.delivery-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:600px){.delivery-overview-grid{grid-template-columns:minmax(0,1fr)}}
   .delivery-overview-section{display:grid;gap:10px;padding:12px;border:1px solid var(--border);border-radius:7px;background:var(--panel)}
   .delivery-overview-section>header{display:flex;align-items:center;justify-content:space-between;gap:12px}.delivery-overview-section>header>div{display:grid;gap:2px}.delivery-overview-section>header strong{font-size:13px}.delivery-overview-section>header span{color:var(--muted);font-size:9.5px}
   .delivery-overview-section .project-dashboard{grid-template-columns:repeat(4,minmax(0,1fr));padding:0}.delivery-overview-section .metric{min-height:68px}
@@ -941,7 +947,7 @@
   .registrations-product{display:grid;gap:3px}
   .registrations-product small{color:var(--muted);font-size:10.5px}
   .registration-task-name{display:flex;min-width:0;align-items:center;gap:7px}
-  .registration-task-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .registration-task-name strong{flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
   .registration-task-toggle,.registration-task-toggle-spacer{display:inline-flex;width:22px;height:22px;flex:0 0 22px;align-items:center;justify-content:center}
   .registration-task-toggle{border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);font:inherit;font-size:12px;cursor:pointer}
   .registration-task-toggle:hover{border-color:var(--cyan);color:var(--cyan)}
@@ -950,7 +956,7 @@
   .registration-subtask-count:empty{display:none}
   .registration-subtask-row td{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
   .registration-subtask-row .registration-subtask-name{display:flex;min-width:0;align-items:center;gap:7px;padding-left:22px}
-  .registration-subtask-row .registration-subtask-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .registration-subtask-row .registration-subtask-name strong{flex:1;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
   .registration-subtask-name b{color:var(--cyan);font-size:16px}
   .registration-subtask-row .table-actions-cell{background:color-mix(in srgb,var(--panel2) 58%,var(--bg))!important}
   .product-activity-list .pa-subtask-row td:first-child{border-left:3px solid var(--cyan)}
@@ -1127,7 +1133,19 @@
   body.light .product-activity-list .pa-delete,body.light .product-activity-list .po-delete,body.light .product-activity-list .pg-delete{color:#b4232f}
   .registration-activities-table .select-head,.registration-activities-table .select-cell{position:sticky;left:0;z-index:4;background:var(--panel)}
   .registration-activities-table .select-head{z-index:7;background:var(--panel2)}
-  .registration-activities-table .registration-task-sticky{position:sticky;left:72px;z-index:3;min-width:320px;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
+  .registration-activities-table .registration-task-sticky{position:sticky;left:72px;z-index:3;width:320px;min-width:320px;max-width:320px;white-space:normal;overflow-wrap:anywhere;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
+  .result-name-sticky{position:sticky;left:42px;z-index:3;min-width:220px;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
+  thead th.result-name-sticky{z-index:6;background:var(--panel2)}
+  tbody tr:nth-child(even) td.result-name-sticky{background:var(--row-alt)}
+  tbody tr:hover td.result-name-sticky{background:var(--row-hover)}
+  .objective-control.task-status-todo{border-color:#d69b00;background:#4a3808;color:#ffd45c}
+  .objective-control.task-status-doing{border-color:#3b82f6;background:#102d61;color:#9dc7ff}
+  .objective-control.task-status-done{border-color:#28a764;background:#0d3b29;color:#73e8aa}
+  .objective-control.task-status-canceled{border-color:#697586;background:#29313d;color:#c0c7d1}
+  body.light .objective-control.task-status-todo{border-color:#d69b00;background:#fff1b8;color:#6c4c00}
+  body.light .objective-control.task-status-doing{border-color:#3b82f6;background:#dcecff;color:#174f9e}
+  body.light .objective-control.task-status-done{border-color:#28a764;background:#d8f6e6;color:#14633c}
+  body.light .objective-control.task-status-canceled{border-color:#87909e;background:#e7e9ed;color:#48515f}
   .registration-activities-table thead th.registration-task-sticky{z-index:6;background:var(--panel2)}
   .registration-activities-table th:last-child,.registration-activities-table td:last-child{position:sticky;right:0;z-index:3;min-width:82px;background:var(--panel);box-shadow:-8px 0 14px rgba(0,0,0,.12)}
   .registration-activities-table thead th:last-child{z-index:6;background:var(--panel2)}

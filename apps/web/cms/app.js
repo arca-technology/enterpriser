@@ -1151,7 +1151,7 @@ async function syncProductObjectives() {
           updates.owner_id = defaultAssignees[0];
         }
         if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
-        if (!current.due_date && suggestedDue) updates.due_date = suggestedDue;
+        if (!current.schedule_manual && !["done", "canceled"].includes(current.status)) updates.due_date = suggestedDue;
         if (Object.entries(updates).some(([key, value]) => current[key] !== value)) {
           Object.assign(current, updates, { updated_at: new Date().toISOString() });
           if (isLive()) await updateRow("deliveryObjectives", current.id, updates);
@@ -1239,7 +1239,7 @@ async function syncProductGoals() {
           updates.owner_id = defaultAssignees[0];
         }
         if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
-        if (!current.due_date && suggestedDue) updates.due_date = suggestedDue;
+        if (!current.schedule_manual && !["done", "canceled"].includes(current.status)) updates.due_date = suggestedDue;
         if (Object.entries(updates).some(([key, value]) => current[key] !== value)) {
           Object.assign(current, updates, { updated_at: new Date().toISOString() });
           if (isLive()) await updateRow("deliveryGoals", current.id, updates);
@@ -5498,7 +5498,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
       <td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
       <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(objective.assignee_ids), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-objective-due" type="date" value="${esc(objective.due_date || "")}"></td>
-      <td><select class="objective-control delivery-objective-status">${taskStatusOptions(objective.status || "todo")}</select></td>
+      <td><select class="objective-control delivery-objective-status ${taskStatusClass(objective.status || "todo")}">${taskStatusOptions(objective.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
@@ -5561,7 +5561,7 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
   const rows = goals.map((goal) => {
     const current = Number(goal.current_value || 0);
     const target = Number(goal.target_value || 0);
-    const progress = target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0;
+    const progress = deliveryGoalPercent(goal);
     const targetLabel = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
@@ -5571,12 +5571,12 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
       <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
       <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(goal.assignee_ids), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
       <td><input class="objective-control delivery-goal-due" type="date" value="${esc(goal.due_date || "")}"></td>
-      <td><select class="objective-control delivery-goal-status">${taskStatusOptions(goal.status || "todo")}</select></td>
+      <td><select class="objective-control delivery-goal-status ${taskStatusClass(goal.status || "todo")}">${taskStatusOptions(goal.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
     </tr>`;
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap"><table><thead><tr>
-    <th>Meta</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Progresso</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+    <th>Meta</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Atingimento</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
   <div class="table-pagination"><span>${goals.length} meta(s)</span><div><span>Acompanhamento da entrega</span></div></div></div>`;
 }
@@ -5749,7 +5749,7 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 const PROJECT_TABLE_LABELS = {
   activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
   objectives: ["Objetivo", "Categoria", "Canal", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
-  goals: ["Meta", "Categoria", "Canal", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Progresso", "Depende de", "Responsável", "Prazo", "Status"]
+  goals: ["Meta", "Categoria", "Canal", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Atingimento", "Depende de", "Responsável", "Prazo", "Status"]
 };
 
 function projectSectionValues(item, tasks = []) {
@@ -5792,7 +5792,7 @@ function projectSectionValues(item, tasks = []) {
   return [
     item.name || "—", item.category || "—", item.channel || "—", item.metric || "—", current.toLocaleString("pt-BR"),
     `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—", item.notes || "—",
-    `${target ? Math.max(0, Math.min(100, Math.round(current / target * 100))) : 0}%`,
+    `${deliveryGoalPercent(item)}%`,
     deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
     item.due_date ? dt(item.due_date) : "—",
     TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
@@ -5953,7 +5953,7 @@ function wireDeliveryObjectives(projectId) {
       });
     });
     row.querySelector(".delivery-objective-due")?.addEventListener("change", async (event) => {
-      await updateDeliveryObjective(objectiveId, { due_date: event.target.value || null });
+      await updateDeliveryObjective(objectiveId, { due_date: event.target.value || null, schedule_manual: Boolean(event.target.value) });
     });
     row.querySelector(".delivery-objective-status")?.addEventListener("change", async (event) => {
       await updateDeliveryObjective(objectiveId, { status: event.target.value });
@@ -6011,7 +6011,7 @@ function wireDeliveryGoals(projectId) {
       renderProjectBoard(projectId);
     });
     row.querySelector(".delivery-goal-due")?.addEventListener("change", async (event) =>
-      updateDeliveryGoal(goalId, { due_date: event.target.value || null }));
+      updateDeliveryGoal(goalId, { due_date: event.target.value || null, schedule_manual: Boolean(event.target.value) }));
     row.querySelector(".delivery-goal-status")?.addEventListener("change", async (event) => {
       await updateDeliveryGoal(goalId, { status: event.target.value });
       renderProjectBoard(projectId);
@@ -6435,7 +6435,7 @@ function applyProjectTableColumnPreferences(table) {
   const prefs = secondaryColumnPrefs(scope);
   const definitions = projectTableDefinitions(table);
   const savedOrder = orderedColumnDefinitions(definitions, prefs);
-  const ordered = projectBoardState.section === "activities"
+  const ordered = ["activities", "goals", "objectives"].includes(projectBoardState.section)
     ? [...definitions.filter((column) => column.k === "d0"), ...savedOrder.filter((column) => column.k !== "d0")]
     : savedOrder;
   const headRow = table.tHead?.rows?.[0];
@@ -6451,11 +6451,15 @@ function applyProjectTableColumnPreferences(table) {
     orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
-    const visible = (projectBoardState.section === "activities" && col.k === "d0") || prefs[col.k] !== false;
+    const visible = col.k === "d0" || prefs[col.k] !== false;
     headers[col.k].hidden = !visible;
+    if (["goals", "objectives"].includes(projectBoardState.section) && col.k === "d0") headers[col.k].classList.add("result-name-sticky");
     projectTableRows(table).forEach((row) => {
       const cell = row.querySelector(`td[data-project-column="${CSS.escape(col.k)}"]`);
-      if (cell) cell.hidden = !visible;
+      if (cell) {
+        cell.hidden = !visible;
+        if (["goals", "objectives"].includes(projectBoardState.section) && col.k === "d0") cell.classList.add("result-name-sticky");
+      }
     });
   });
 }
@@ -9664,7 +9668,7 @@ const HELP_TASK_OPERATIONS_SECTION = { title: "Executar e acompanhar", steps: ["
     ["Em dia, Atrasado e Adiantado", "Sem conclusão, o atraso começa no dia seguinte ao término previsto. Com término real, o sistema compara a conclusão com o prazo: dentro da janela é Em dia, depois é Atrasado e antes da abertura é Adiantado. Em Data específica, concluir antes do vencimento é Adiantado."],
     ["Subtarefas e checklist", "Subtarefas são trabalhos separados, com acompanhamento próprio. Checklist são verificações dentro de um trabalho; quando existem subtarefas, o checklist fica nelas."],
     ["Operar ou editar", "Operar acompanha a execução, como alterar status. Editar muda o cadastro e o planejamento. Os comandos disponíveis dependem das permissões do usuário."]] };
-const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
+const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> O campo fica em Cadastros › Tarefas › Editar, abaixo de Canal. Na entrega, a aba Setup ativa ERP, marketplaces, lojas, frete e contas financeiras; não é um segundo cadastro de requisitos. Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
   cards: [["Integração BLING + SHEIN", "Mantenha Canal = BLING e marque BLING e SHEIN em Requer no Setup. A tarefa de integrar SHEIN só aparece quando os dois estiverem ativados."], ["Conciliação do BLING", "Marque somente BLING. Não precisa exigir nenhum marketplace para fazer a conciliação do ERP."], ["Instruções por canal", "Cada integração mantém sua própria tarefa, instruções, checklist e conclusão. Marcar vários requisitos não cria cópias nem uma tarefa por canal."], ["Alterar o modelo", "Edite os requisitos em Cadastros › Tarefas. As entregas vinculadas passam a usar essa regra, inclusive para tarefas já geradas. Tarefas ocultas não são apagadas; voltam quando o Setup atender aos requisitos."]],
   tips: ["Os modelos existentes receberam o canal atual como requisito quando ele faz parte do Setup, preservando o filtro anterior. Revise as integrações e adicione o canal de destino; o sistema não deduz requisitos pelo nome."] };
 const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };
@@ -9768,10 +9772,10 @@ const HELP_PAGES = {
       HELP_MIND_MAP_SECTION
     ] },
   "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
-    lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. <b>Atingimento</b> mede o resultado: 40 SKUs de um alvo de 100 representam 40%, mesmo que as tarefas estejam concluídas. Prazo sugerido soma dias ao início da entrega e acompanha alterações do modelo nos itens pendentes. Ao editar o prazo diretamente na entrega, a data passa a ser manual; limpar esse campo retoma o prazo do cadastro. Metas atendidas e canceladas preservam suas datas.",
     sections: [{ title: "Defina uma medida de sucesso", lead: "Meta é um resultado mensurável, não uma ação. Exemplo: chegar a 500 SKUs ativos. Defina o indicador, a unidade, o valor-alvo e a comparação; acompanhe o valor atual na entrega do cliente.", cards: [["No mínimo", "O valor atual precisa alcançar ou superar o alvo. Exemplo: faturamento de pelo menos R$ 50 mil."], ["No máximo", "O resultado deve permanecer no limite ou abaixo dele. Exemplo: até 5 reclamações."], ["Exato", "O resultado esperado é o valor definido. Use quando atingir exatamente aquela quantidade faz sentido."], ["Modelo e resultado real", "O cadastro define a meta padrão do produto. Cada entrega acompanha os valores do seu cliente; o valor de um cliente não deve ser registrado no modelo."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
-    lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências.",
+    lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. O prazo sugerido soma dias ao início da entrega e acompanha alterações do cadastro nos objetivos pendentes. Uma data preenchida diretamente na entrega é manual; limpar o campo retoma o prazo do modelo. Objetivos atendidos e cancelados preservam suas datas.",
     sections: [{ title: "Defina o resultado esperado", lead: "Objetivo descreve o que se quer alcançar. Tarefa é o trabalho necessário; meta mede o resultado. Exemplo: objetivo = organizar o financeiro; tarefas = configurar contas e conciliar movimentos; meta = atingir a quantidade-alvo de movimentos conciliados.", cards: [["Critério de conclusão", "Descreva como reconhecer que o objetivo foi alcançado, com um resultado verificável, não apenas uma intenção."], ["Tarefas vinculadas", "O progresso do objetivo vem das tarefas associadas. Confira os vínculos antes de usar o percentual como evidência de conclusão."], ["Dependências", "Indicam resultados ou trabalhos anteriores necessários. Use para organizar a sequência, não apenas para agrupar itens com nomes semelhantes."], ["Modelo e cliente", "O cadastro é o objetivo padrão do produto. Dentro da entrega, acompanhe o resultado específico do cliente."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
     lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
@@ -11328,7 +11332,9 @@ function applyRegistrationColumnPreferences(table) {
   const scope = `registrations:${registrationsState.section}`;
   const prefs = secondaryColumnPrefs(scope);
   const definitions = registrationColumnDefinitions(table);
-  const ordered = orderedColumnDefinitions(definitions, prefs);
+  const savedOrder = orderedColumnDefinitions(definitions, prefs);
+  const freezeName = ["goals", "objectives"].includes(registrationsState.section);
+  const ordered = freezeName ? [...definitions.filter((col) => col.k === "c0"), ...savedOrder.filter((col) => col.k !== "c0")] : savedOrder;
   const headRow = table.tHead?.rows?.[0];
   if (!headRow) return;
   const headerByKey = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
@@ -11342,11 +11348,15 @@ function applyRegistrationColumnPreferences(table) {
     orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
-    const visible = prefs[col.k] !== false;
+    const visible = (freezeName && col.k === "c0") || prefs[col.k] !== false;
     headerByKey[col.k].hidden = !visible;
+    if (freezeName && col.k === "c0") headerByKey[col.k].classList.add("result-name-sticky");
     registrationTableRows(table, true).forEach((row) => {
       const cell = registrationCell(row, col.k);
-      if (cell) cell.hidden = !visible;
+      if (cell) {
+        cell.hidden = !visible;
+        if (freezeName && col.k === "c0") cell.classList.add("result-name-sticky");
+      }
     });
   });
 }
