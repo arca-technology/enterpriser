@@ -17,5 +17,10 @@ for (const id of ['projects', 'activities']) {
   assert.ok(pages[id].sections.some((section) => section.title === 'Executar e acompanhar'));
 }
 assert.ok(pages['reg-activities'].sections.some((section) => section.title === 'Recorrência e prazo no mês'));
+for (const id of ['projects', 'activities', 'reg-activities']) {
+  const setup = pages[id].sections.find((section) => section.title === 'Requer no Setup');
+  assert.ok(setup.lead.includes('Todos os requisitos'));
+  assert.ok(setup.cards.some((card) => card[0] === 'Integração BLING + SHEIN'));
+}
 assert.ok(!JSON.stringify(pages.deals).includes('previsão de fechamento'));
 console.log('Operational help content checks passed.');

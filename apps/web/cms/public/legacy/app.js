@@ -192,12 +192,25 @@ function activatedDeliveryChannels(project) {
     project?.store_platform,
     ...normalizeTextList(project?.freight_channels),
     ...normalizeTextList(project?.financial_accounts),
-    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project))).flat()
+    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project))).flat(),
+    project?.company_setup
   ].filter(Boolean).map(normalizeDeliveryChannel));
 }
 function projectChannelEnabled(project, channel) {
   const normalized = normalizeDeliveryChannel(channel);
   return !normalized || !MANAGED_DELIVERY_CHANNELS.has(normalized) || activatedDeliveryChannels(project).has(normalized);
+}
+function taskSetupRequirements(task) {
+  if (Array.isArray(task?.required_setup)) return normalizeTextList(task.required_setup);
+  return MANAGED_DELIVERY_CHANNELS.has(normalizeDeliveryChannel(task?.channel)) ? [task.channel] : [];
+}
+function projectTaskEnabled(project, task) {
+  const active = activatedDeliveryChannels(project);
+  return taskSetupRequirements(task).every((value) => active.has(normalizeDeliveryChannel(value)));
+}
+function taskSetupOptions(selected = []) {
+  const values = normalizeTextList([...Object.values(DELIVERY_CHANNEL_OPTIONS).flat(), ...DELIVERY_COMPANY_SETUP_OPTIONS, ...selected]);
+  return values.map((value) => ({ value, label: value }));
 }
 const MAX_PIPELINES = 5;
 const SOURCES = ["Indicação", "Site", "Anúncio", "Evento", "LinkedIn", "Inbound", "Prospecção", "Outro"];
@@ -929,9 +942,11 @@ function saveProjectTasks(rows) {
   if (cache && !isLive()) cache.activityRecords = rows;
 }
 function operationalProjectTasks(projectId = null) {
+  const templates = new Map((cache?.productActivities || []).map((item) => [item.id, item]));
   return loadProjectTasks().filter((task) => {
     if (projectId && task.project_id !== projectId) return false;
-    return projectChannelEnabled(cache?.projectById?.[task.project_id], task.channel);
+    const template = templates.get(task.source_template_id);
+    return projectTaskEnabled(cache?.projectById?.[task.project_id], template || task);
   });
 }
 function loadProductActivities() {
@@ -1010,6 +1025,7 @@ function activityRemoteBody(task) {
     submodule: task.submodule || null,
     category: task.category || null,
     channel: task.channel || null,
+    required_setup: taskSetupRequirements(task),
     type: task.type || null,
     recurrence: task.recurrence || "once",
     deadline_window: task.deadline_window || "date",
@@ -1049,6 +1065,7 @@ function productActivityRemoteBody(template) {
     submodule: template.submodule || null,
     category: template.category || null,
     channel: template.channel || null,
+    required_setup: taskSetupRequirements(template),
     type: template.type || null,
     activity: template.activity,
     information: template.information || null,
@@ -1285,7 +1302,7 @@ async function syncProductActivities() {
   const tasks = loadProjectTasks();
   let changed = false;
   for (const project of cache.projects || []) {
-    for (const template of templates.filter((item) => item.product_id === project.product_id && projectChannelEnabled(project, item.channel))) {
+    for (const template of templates.filter((item) => item.product_id === project.product_id && projectTaskEnabled(project, item))) {
       const hasSubtasks = templates.some((item) => item.parent_template_id === template.id);
       const objective = template.objective_template_id
         ? loadDeliveryObjectives().find((item) => item.project_id === project.id && item.source_template_id === template.objective_template_id)
@@ -1316,6 +1333,7 @@ async function syncProductActivities() {
           submodule: template.submodule || "",
           category: template.category || "",
           channel: template.channel || "",
+          required_setup: taskSetupRequirements(template),
           type: template.type || "",
           recurrence: template.recurrence || "once",
           deadline_window: window,
@@ -1353,7 +1371,7 @@ async function syncProductActivities() {
           }
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
-            : ["document_ids", "custom_table_ids"].includes(key)
+            : ["document_ids", "custom_table_ids", "required_setup"].includes(key)
               ? JSON.stringify(normalizeIdList(current[key])) !== JSON.stringify(normalizeIdList(value))
             : current[key] !== value)) {
             Object.assign(current, updates, { updated_at: new Date().toISOString() });
@@ -1382,10 +1400,10 @@ async function syncProductActivities() {
     }
   }
   for (const project of cache.projects || []) {
-    const projectTemplates = templates.filter((item) => item.product_id === project.product_id && projectChannelEnabled(project, item.channel));
+    const projectTemplates = templates.filter((item) => item.product_id === project.product_id && projectTaskEnabled(project, item));
     const projectTemplateIds = new Set(projectTemplates.map((item) => item.id));
     for (const template of projectTemplates) {
-      const occurrences = tasks.filter((task) => task.project_id === project.id && task.source_template_id === template.id && projectChannelEnabled(project, task.channel)).sort(activityOccurrenceSort);
+      const occurrences = tasks.filter((task) => task.project_id === project.id && task.source_template_id === template.id && projectTaskEnabled(project, template)).sort(activityOccurrenceSort);
       const dependencyTemplateIds = normalizeIdList(template.dependency_template_ids, template.depends_on_template_id)
         .filter((templateId) => projectTemplateIds.has(templateId));
       const parentOccurrences = template.parent_template_id && projectTemplateIds.has(template.parent_template_id)
@@ -2215,6 +2233,7 @@ function columns(tab, c) {
       { k: "type", h: "TIPO" },
       { k: "recurrence", h: "RECORRÊNCIA", fmt: (v) => RECURRENCE_LABEL[v] || "Única" },
       { k: "consider_business_days", h: "DIAS ÚTEIS", fmt: (v) => v ? "Sim" : "Não" },
+      { k: "required_setup", h: "REQUER NO SETUP", fmt: (_v, row) => stackedCell(taskSetupRequirements(row)) },
       { k: "target_days", h: "PRAZO SUGERIDO", fmt: (v) => v == null ? "—" : `${v} dia(s)` },
       { k: "checklist", h: "CHECKLIST", fmt: (v, row) => {
         const subtasks = taskSubtaskProgress(row.id, c.activityRecords);
@@ -4613,6 +4632,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       submodule: requestedParent.submodule || "",
       category: requestedParent.category || "",
       channel: requestedParent.channel || "",
+      required_setup: taskSetupRequirements(requestedParent),
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
       deadline_window: requestedParent.deadline_window || "date",
@@ -4669,6 +4689,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
       <div class="field"><label>Categoria</label><input id="pa-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
+      <div class="field task-form-wide"><label>Requer no Setup</label>${multiPickerHtml("pa-required-setup", taskSetupOptions(taskSetupRequirements(current)), new Set(taskSetupRequirements(current)), "Selecionar requisitos")}</div>
       <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="task-schedule-row task-schedule-row-wide">
@@ -4700,6 +4721,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   document.getElementById("pa-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-save").addEventListener("click", saveProductActivity);
   wireMonthlyDeadline("pa");
+  wireMultiPicker("pa-required-setup");
   document.getElementById("pa-add-subtask")?.addEventListener("click", () => openProductActivityDrawer(null, null, editing.id));
   document.getElementById("pa-checklist-add")?.addEventListener("click", () => {
     productActivityChecklistDraft.push({ id: crypto.randomUUID(), text: "", checked: false });
@@ -4767,6 +4789,7 @@ async function saveProductActivity() {
     submodule: document.getElementById("pa-submodule").value.trim(),
     category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
+    required_setup: multiPickerValues("pa-required-setup"),
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
     deadline_window: document.getElementById("pa-recurrence").value === "monthly" ? document.getElementById("pa-deadline-window").value : "date",
@@ -6259,6 +6282,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Subsetor</label><input id="project-task-subsector" value="${esc(current.subsector || parentTask?.subsector || "")}" placeholder="Subsetor opcional"></div>
       <div class="field"><label>Categoria</label><input id="project-task-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="project-task-channel" value="${esc(current.channel || "")}"></div>
+      <div class="field task-form-wide"><label>Requer no Setup</label>${multiPickerHtml("project-task-required-setup", taskSetupOptions(taskSetupRequirements(current)), new Set(taskSetupRequirements(current)), "Selecionar requisitos", false, Boolean(current.source_template_id))}</div>
       <div class="field"><label>Módulo</label><input id="project-task-module" value="${esc(current.module || parentTask?.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="project-task-submodule" value="${esc(current.submodule || parentTask?.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="task-schedule-row">
@@ -6289,6 +6313,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   document.getElementById("project-task-close").addEventListener("click", close);
   document.getElementById("project-task-cancel").addEventListener("click", close);
   wireMonthlyDeadline("project-task");
+  wireMultiPicker("project-task-required-setup");
   wireTaskGroupSelect("project-task-group", "project-task-subgroup");
   wireMultiPicker("project-task-dependencies");
   wireMultiPicker("project-task-assignees");
@@ -6335,6 +6360,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       submodule: document.getElementById("project-task-submodule").value.trim(),
       category: document.getElementById("project-task-category").value.trim(),
       channel: document.getElementById("project-task-channel").value.trim(),
+      required_setup: multiPickerValues("project-task-required-setup"),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
       deadline_window: deadlineWindow,
@@ -7503,6 +7529,7 @@ function importSpec(tab, c = cache) {
       { key: "title", header: "Tarefa", req: true },
       { key: "priority", header: "Prioridade", type: "select", options: () => PRIORITY_OPTIONS.map(([value, label]) => ({ value, label })), note: "Vazio = Normal" },
       { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "required_setup", header: "Requer no Setup", type: "multi", options: () => taskSetupOptions(), note: "Separe por ;. Todos devem estar ativos; vazio = tarefa geral." },
       { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" }, { key: "type", header: "Tipo" },
       { key: "information", header: "Informação" },
       { key: "planned_start_date", header: "Início previsto", type: "date" },
@@ -7627,6 +7654,7 @@ function registrationImportSpec(section, c = cache) {
     columns: [
       products,
       { key: "category", header: "Categoria" }, { key: "channel", header: "Canal" },
+      { key: "required_setup", header: "Requer no Setup", type: "multi", options: () => taskSetupOptions(), note: "Separe por ;. Todos devem estar ativos; vazio = tarefa geral." },
       { key: "module", header: "Módulo" }, { key: "submodule", header: "Submódulo" },
       { key: "activity", header: "Tarefa", note: "Vazio = usar estrutura" },
       { key: "type", header: "Tipo" },
@@ -7647,6 +7675,7 @@ function registrationImportSpec(section, c = cache) {
         const draft = {
           id: crypto.randomUUID(), product_id: productId, template_group_id: groupId, parent_template_id: null,
           activity: body.activity || "", category: body.category || "", channel: body.channel || "", module: body.module || "",
+          required_setup: normalizeTextList(body.required_setup),
           submodule: body.submodule || "", type: body.type || "", group: "", subgroup: "", sector: "", subsector: "",
           priority: body.priority || "normal", recurrence: body.recurrence || "once",
           target_days: body.target_days ?? null, start_after_days: body.start_after_days ?? null,
@@ -9635,6 +9664,9 @@ const HELP_TASK_OPERATIONS_SECTION = { title: "Executar e acompanhar", steps: ["
     ["Em dia, Atrasado e Adiantado", "Sem conclusão, o atraso começa no dia seguinte ao término previsto. Com término real, o sistema compara a conclusão com o prazo: dentro da janela é Em dia, depois é Atrasado e antes da abertura é Adiantado. Em Data específica, concluir antes do vencimento é Adiantado."],
     ["Subtarefas e checklist", "Subtarefas são trabalhos separados, com acompanhamento próprio. Checklist são verificações dentro de um trabalho; quando existem subtarefas, o checklist fica nelas."],
     ["Operar ou editar", "Operar acompanha a execução, como alterar status. Editar muda o cadastro e o planejamento. Os comandos disponíveis dependem das permissões do usuário."]] };
+const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
+  cards: [["Integração BLING + SHEIN", "Mantenha Canal = BLING e marque BLING e SHEIN em Requer no Setup. A tarefa de integrar SHEIN só aparece quando os dois estiverem ativados."], ["Conciliação do BLING", "Marque somente BLING. Não precisa exigir nenhum marketplace para fazer a conciliação do ERP."], ["Instruções por canal", "Cada integração mantém sua própria tarefa, instruções, checklist e conclusão. Marcar vários requisitos não cria cópias nem uma tarefa por canal."], ["Alterar o modelo", "Edite os requisitos em Cadastros › Tarefas. As entregas vinculadas passam a usar essa regra, inclusive para tarefas já geradas. Tarefas ocultas não são apagadas; voltam quando o Setup atender aos requisitos."]],
+  tips: ["Os modelos existentes receberam o canal atual como requisito quando ele faz parte do Setup, preservando o filtro anterior. Revise as integrações e adicione o canal de destino; o sistema não deduz requisitos pelo nome."] };
 const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };
 const HELP_PAGES = {
   home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
@@ -9694,8 +9726,9 @@ const HELP_PAGES = {
       HELP_TASK_DATES_SECTION,
       HELP_TASK_OPERATIONS_SECTION,
       HELP_TASK_WINDOWS_SECTION,
+      HELP_TASK_SETUP_SECTION,
       { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
-      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Cada canal ativado libera as tarefas daquele Canal e não pode ser desativado depois de salvo.",
+      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Os itens ativos são comparados com Requer no Setup das tarefas. Todos os requisitos devem estar ativos; o campo Canal não controla mais a liberação. Canais ativados não podem ser desativados depois de salvo.",
         cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
       { title: "Aba Tarefas", lead: "Tarefas do produto e do dia a dia com subtarefas, checklist, responsáveis (colaboradores e Cliente), dependências, referências a documentos e tabelas, comentários e status.",
         cards: [["Visualizações", "Use Tabela para comparar campos, Quadro para acompanhar a execução, Calendário para ver datas e Gantt para acompanhar o período e o progresso. Matriz e Dashboard da barra ficam desativados por enquanto; a entrega abre com seu resumo geral."], ["Prazos", "Data específica usa duração e <b>Iniciar após dependência (dias)</b>. Dependentes são recalculadas pela data real ou prevista. Nas janelas mensais, o limite continua sendo o fim da semana ou do mês escolhido."]],
@@ -9710,6 +9743,7 @@ const HELP_PAGES = {
       HELP_TASK_DATES_SECTION,
       HELP_TASK_WINDOWS_SECTION,
       HELP_TASK_OPERATIONS_SECTION,
+      HELP_TASK_SETUP_SECTION,
       HELP_RECORD_ACTIONS_SECTION,
       { title: "Acompanhar", steps: ["Filtre por cliente, status, prioridade ou responsável.", "Altere o status direto na linha.", "Clique no lápis para abrir a tarefa no formulário da entrega."] },
       { title: "Agrupar e editar em massa", cards: [["≡ Agrupar por cliente", "Um grupo por cliente com a contagem; use ▸ para abrir um ou todos."], ["Edição em massa", "Neste módulo altera <b>Status</b> e <b>Prioridade</b>. Marque as tarefas, clique em ✎ em AÇÕES e escolha o valor."]] }
@@ -9727,6 +9761,7 @@ const HELP_PAGES = {
     lead: "Modelos de tarefa. A mesma tarefa pode valer para vários produtos e, ao salvar, as entregas desses produtos são sincronizadas.",
     sections: [
       { title: "Modelo ou tarefa do cliente?", lead: "Aqui você define <b>como o serviço deve ser executado</b>: estrutura, recorrência, prazo, responsáveis padrão e procedimento. Vinculado a um produto, o modelo gera tarefas nas entregas desse produto. A execução e a conclusão são acompanhadas nas tarefas da entrega, não no modelo.", tips: ["Ao alterar um modelo, confira as entregas vinculadas: a sincronização pode atualizar o planejamento das tarefas. As datas de tarefas já atendidas ou canceladas são preservadas."] },
+      HELP_TASK_SETUP_SECTION,
       HELP_TASK_WINDOWS_SECTION,
       { title: "Cadastrar um modelo", steps: ["Escolha os produtos.", "Monte o nome com <b>Usar estrutura</b>: Categoria | Canal | Módulo | Submódulo | Tarefa | Tipo.", "Defina prioridade, recorrência, dias úteis, prazo e iniciar após dependência.", "Adicione checklist, objetivo, responsáveis padrão, dependências e subtarefas."],
         tips: ["Usar estrutura exige Categoria, Canal, Módulo e Tipo. A coluna Tarefa fica fixa ao rolar."] },
@@ -11010,6 +11045,17 @@ function renderRegistrationsSection() {
       })}</td></tr>${childRows}`;
     }).join("");
     root.innerHTML = registrationTemplateTable("tarefa", groups.size, "Cliente", "<th>Produto</th><th>Origem</th><th>Tarefa</th><th>Prioridade</th><th class=\"compact-multi-cell\">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Prazo sugerido</th><th>Checklist</th><th>Objetivo</th><th class=\"compact-multi-cell\">Responsáveis padrão</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>", rows, 30, "Tarefa");
+    const requirementHeader = document.createElement("th");
+    requirementHeader.textContent = "Requer no Setup";
+    root.querySelector("thead tr")?.lastElementChild.before(requirementHeader);
+    root.querySelectorAll("tbody tr[data-task-group], tbody tr[data-id]").forEach((row) => {
+      const item = row.dataset.taskGroup ? groupedById.get(row.dataset.taskGroup)?.item : items.find((candidate) => candidate.id === row.dataset.id);
+      const cell = document.createElement("td");
+      cell.className = "compact-multi-cell";
+      cell.innerHTML = stackedCell(taskSetupRequirements(item));
+      row.querySelector(".table-actions-cell")?.before(cell);
+    });
+    root.querySelector("tbody td.empty")?.setAttribute("colspan", "31");
     if (tableState.view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
