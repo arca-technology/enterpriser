@@ -2537,17 +2537,20 @@ let columnPreferenceSaveTimer = null;
 function scheduleRemoteColumnPreferencesSave() {
   if (!isLive() || !currentProfile?.id) return;
   clearTimeout(columnPreferenceSaveTimer);
+  const profileId = currentProfile.id;
+  const body = JSON.stringify({
+    profile_id: profileId,
+    column_preferences: colPrefs,
+    secondary_column_preferences: secondaryColPrefs,
+    updated_at: new Date().toISOString()
+  });
   columnPreferenceSaveTimer = setTimeout(async () => {
+    if (currentProfile?.id !== profileId) return;
     try {
       await api("user_ui_preferences?on_conflict=profile_id", {
         method: "POST",
         headers: { "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
-        body: JSON.stringify({
-          profile_id: currentProfile.id,
-          column_preferences: colPrefs,
-          secondary_column_preferences: secondaryColPrefs,
-          updated_at: new Date().toISOString()
-        })
+        body
       });
     } catch (error) {
       console.warn("Não foi possível sincronizar as preferências de colunas.", error);
@@ -2559,6 +2562,53 @@ function saveColPrefs() {
   scheduleRemoteColumnPreferencesSave();
 }
 let colPrefs = loadColPrefs();
+let navigationPreference = { mode: "top", collapsed: false };
+function navigationStorageKey() {
+  return `crm_navigation_v1:${currentProfile?.id || "demo"}`;
+}
+function normalizeNavigationPreference(value) {
+  return { mode: value?.mode === "sidebar" ? "sidebar" : "top", collapsed: value?.collapsed === true };
+}
+function loadNavigationPreference() {
+  try { navigationPreference = normalizeNavigationPreference(JSON.parse(localStorage.getItem(navigationStorageKey()) || "null")); }
+  catch (_) { navigationPreference = normalizeNavigationPreference(null); }
+  // Reserved metadata shares the existing per-profile UI preference record.
+  colPrefs.__navigation = { ...navigationPreference };
+  applyNavigationPreference();
+}
+function applyNavigationPreference() {
+  const sidebar = document.getElementById("app-sidebar");
+  const tabs = document.getElementById("tabs");
+  const header = document.getElementById("app-header");
+  if (!sidebar || !tabs || !header) return;
+  const lateral = navigationPreference.mode === "sidebar";
+  document.body.classList.toggle("navigation-sidebar", lateral);
+  document.body.classList.toggle("navigation-collapsed", lateral && navigationPreference.collapsed);
+  closeMobileNavigation();
+  sidebar.hidden = !lateral;
+  document.getElementById("sidebar-toggle").hidden = !lateral;
+  if (lateral) sidebar.appendChild(tabs);
+  else header.insertBefore(tabs, header.querySelector(".actions"));
+  const button = document.getElementById("sidebar-collapse");
+  const label = navigationPreference.collapsed ? "Expandir navegação" : "Recolher navegação";
+  button.textContent = navigationPreference.collapsed ? "›" : "‹";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-expanded", String(!navigationPreference.collapsed));
+}
+function saveNavigationPreference(value) {
+  navigationPreference = normalizeNavigationPreference(value);
+  localStorage.setItem(navigationStorageKey(), JSON.stringify(navigationPreference));
+  colPrefs.__navigation = { ...navigationPreference };
+  saveColPrefs();
+  applyNavigationPreference();
+}
+function closeMobileNavigation() {
+  document.body.classList.remove("navigation-open");
+  document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "false");
+  const sidebar = document.getElementById("app-sidebar");
+  if (sidebar) sidebar.inert = window.matchMedia("(max-width:760px)").matches;
+}
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
   groupActivitiesByClient: false,
@@ -7345,6 +7395,9 @@ async function loadRemoteColumnPreferences() {
       secondaryColPrefs = { ...secondaryColPrefs, ...(saved.secondary_column_preferences || {}) };
       localStorage.setItem("crm_cols_v2", JSON.stringify(colPrefs));
       localStorage.setItem(SECONDARY_COL_PREFS_KEY, JSON.stringify(secondaryColPrefs));
+      navigationPreference = normalizeNavigationPreference(colPrefs.__navigation);
+      localStorage.setItem(navigationStorageKey(), JSON.stringify(navigationPreference));
+      applyNavigationPreference();
     } else if (Object.keys(colPrefs).length || Object.keys(secondaryColPrefs).length) {
       scheduleRemoteColumnPreferencesSave();
     }
@@ -9776,6 +9829,11 @@ function openSettings() {
       <div class="field full"><label>Meu usuário no Reddit</label>
         <input data-k="myRedditUsername" value="${esc(c.myRedditUsername || "")}" placeholder="sem o u/"></div>
     </div>
+    <div class="help-content" style="padding-bottom:0"><h4>Navegação</h4></div>
+    <div class="form"><div class="field full navigation-options" role="radiogroup" aria-label="Posição da navegação">
+      <label><input type="radio" name="navigation-mode" value="top"${navigationPreference.mode === "top" ? " checked" : ""}>Superior</label>
+      <label><input type="radio" name="navigation-mode" value="sidebar"${navigationPreference.mode === "sidebar" ? " checked" : ""}>Lateral</label>
+    </div></div>
     <div class="help-content" style="padding-bottom:0">
       <h4>Conexão Supabase</h4>
     </div>
@@ -9804,8 +9862,16 @@ function openSettings() {
       url: val("url").replace(/\/$/, ""),
       anonKey: val("anonKey")
     };
+    saveNavigationPreference({ ...navigationPreference, mode: document.querySelector('input[name="navigation-mode"]:checked')?.value || "top" });
     localStorage.setItem("crm_cfg", JSON.stringify(cfg));
-    closeModal(); toast(cfg.url && cfg.anonKey ? "Conectando…" : "Usando dados de exemplo."); await init();
+    closeModal();
+    if (cfg.url !== c.url || cfg.anonKey !== c.anonKey) {
+      toast(cfg.url && cfg.anonKey ? "Conectando…" : "Usando dados de exemplo.");
+      await init();
+    } else {
+      toast("Configurações salvas.");
+      render();
+    }
   });
 }
 
@@ -16638,21 +16704,48 @@ document.getElementById("login-form")?.addEventListener("submit", async (event) 
   }
 });
 document.getElementById("brand-home")?.addEventListener("click", () => {
+  closeMobileNavigation();
   closeFloaters();
   state.tab = "home"; state.sortK = null; state.sortDir = 1; state.q = ""; state.view = "table";
   state.selectedConversations.clear();
   document.getElementById("search").value = "";
   render();
 });
-document.querySelectorAll(".tab").forEach((t) =>
+document.querySelectorAll("#tabs .tab").forEach((t) => {
+  const name = t.textContent.trim();
+  t.title = name;
+  t.setAttribute("aria-label", name);
+  t.innerHTML = `<span class="nav-short" aria-hidden="true">${esc(name.slice(0, 2).toLocaleUpperCase("pt-BR"))}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
     if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
     closeFloaters();
+    closeMobileNavigation();
     state.tab = t.dataset.tab; state.sortK = null; state.sortDir = 1; state.q = "";
     state.view = "table";
     if (state.tab !== "conversations") state.selectedConversations.clear();
     document.getElementById("search").value = ""; render();
-  }));
+  });
+});
+document.getElementById("sidebar-collapse")?.addEventListener("click", () => {
+  if (window.matchMedia("(max-width:760px)").matches) {
+    closeMobileNavigation();
+    document.getElementById("sidebar-toggle").focus();
+    return;
+  }
+  saveNavigationPreference({ ...navigationPreference, collapsed: !navigationPreference.collapsed });
+});
+document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
+  const open = document.body.classList.toggle("navigation-open");
+  document.getElementById("app-sidebar").inert = !open;
+  document.getElementById("sidebar-toggle").setAttribute("aria-expanded", String(open));
+});
+window.matchMedia("(max-width:760px)").addEventListener("change", closeMobileNavigation);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.body.classList.contains("navigation-open")) {
+    closeMobileNavigation();
+    document.getElementById("sidebar-toggle").focus();
+  }
+});
 document.querySelectorAll(".view").forEach((v) =>
   v.addEventListener("click", () => {
     if (v.disabled) return;
@@ -16764,6 +16857,7 @@ async function init() {
         showLogin("Este usuário não possui um perfil ativo no CMS.");
         return;
       }
+      loadNavigationPreference();
       await loadRemoteColumnPreferences();
       if (currentUserIsAdmin()) {
         await migrateLocalOperationalData();
@@ -16773,6 +16867,7 @@ async function init() {
         refreshActivityCache();
       }
     }
+    if (!isLive()) loadNavigationPreference();
     await migrateLocalConversations();
     syncRedditQueue();
     syncWhatsAppQueue();
