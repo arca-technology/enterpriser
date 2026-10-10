@@ -2589,12 +2589,16 @@ function applyNavigationPreference() {
   document.getElementById("sidebar-toggle").hidden = !lateral;
   const brand = document.getElementById("brand-home");
   const actions = document.querySelector("#app-header > .actions,#app-sidebar .actions");
+  const footer = document.getElementById("app-footer");
+  const footerModules = document.querySelector("#app-footer > .foot-right,#app-sidebar .foot-right");
+  footerModules.querySelectorAll("[aria-haspopup]").forEach((button) => button.setAttribute("aria-haspopup", lateral ? "menu" : "dialog"));
   if (lateral) {
     sidebar.querySelector(".sidebar-head").prepend(brand);
-    sidebar.insertBefore(tabs, sidebar.querySelector(".sidebar-bottom"));
+    sidebar.querySelector(".sidebar-modules").append(tabs, footerModules);
     sidebar.querySelector(".sidebar-bottom").appendChild(actions);
   } else {
     header.append(brand, tabs, actions);
+    footer.appendChild(footerModules);
   }
   const button = document.getElementById("sidebar-collapse");
   const label = navigationPreference.collapsed ? "Expandir navegação" : "Recolher navegação";
@@ -2611,10 +2615,70 @@ function saveNavigationPreference(value) {
   applyNavigationPreference();
 }
 function closeMobileNavigation() {
+  closeSidebarSubmodules();
   document.body.classList.remove("navigation-open");
   document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "false");
   const sidebar = document.getElementById("app-sidebar");
   if (sidebar) sidebar.inert = window.matchMedia("(max-width:760px)").matches;
+}
+function sidebarSubmodules(action) {
+  if (action === "registrations") return Object.entries(REGISTRATION_LABEL).map(([id, label]) => ({ id, label, permission: REGISTRATION_PERMISSION_MODULE[id] }));
+  if (action === "tools") return [["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].map(([id, label]) => ({ id, label, permission: id }));
+  if (action === "social") return Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => ({ id, label, permission: id }));
+  return [];
+}
+function closeSidebarSubmodules() {
+  document.getElementById("sidebar-submodules")?.remove();
+  document.querySelectorAll('#app-sidebar [aria-expanded="true"][data-action]').forEach((button) => button.setAttribute("aria-expanded", "false"));
+}
+function positionSidebarSubmodules() {
+  const panel = document.getElementById("sidebar-submodules");
+  if (!panel) return;
+  const button = document.querySelector(`#app-sidebar [data-action="${panel.dataset.parent}"]`);
+  const left = document.getElementById("app-sidebar").getBoundingClientRect().right;
+  panel.style.left = `${left}px`;
+  panel.style.width = `${Math.min(220, window.innerWidth - left - 8)}px`;
+  panel.style.top = `${Math.max(8, Math.min(button.getBoundingClientRect().top, window.innerHeight - panel.offsetHeight - 8))}px`;
+}
+function openSidebarSubmodules(button) {
+  const action = button.dataset.action;
+  const wasOpen = document.getElementById("sidebar-submodules")?.dataset.parent === action;
+  closeSidebarSubmodules();
+  if (wasOpen) return;
+  const items = sidebarSubmodules(action).filter((item) => currentUserCan(item.permission, "view"));
+  if (!items.length) return;
+  const panel = document.createElement("div");
+  panel.id = "sidebar-submodules";
+  panel.className = "sidebar-flyout";
+  panel.dataset.parent = action;
+  panel.setAttribute("role", "menu");
+  panel.setAttribute("aria-label", button.title);
+  panel.innerHTML = `<div class="sidebar-flyout-title">${esc(button.title)}</div>${items.map((item) => `<button class="sidebar-submodule" role="menuitem" type="button" data-section="${esc(item.id)}"><span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[item.id] || window.CRM_NAV_ICONS?.[action] || ""}</span><span>${esc(item.label)}</span></button>`).join("")}`;
+  document.body.appendChild(panel);
+  positionSidebarSubmodules();
+  button.setAttribute("aria-expanded", "true");
+  panel.querySelectorAll(".sidebar-submodule").forEach((child) => child.addEventListener("click", () => {
+    const item = items.find((item) => item.id === child.dataset.section);
+    if (!requireCurrentUserPermission(item.permission, "view", item.label)) return;
+    closeMobileNavigation();
+    if (action === "registrations") openRegistrationsModal(item.id);
+    else if (action === "tools") openToolsModal(item.id);
+    else openSocialModal(item.id);
+  }));
+  const buttons = [...panel.querySelectorAll(".sidebar-submodule")];
+  panel.addEventListener("keydown", (event) => {
+    const index = buttons.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      buttons[event.key === "Home" ? 0 : buttons.length - 1]?.focus();
+    }
+    if (event.key === "Escape") { event.stopPropagation(); closeSidebarSubmodules(); button.focus(); }
+  });
+  buttons[0]?.focus();
 }
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
@@ -16748,6 +16812,12 @@ document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
 });
 window.matchMedia("(max-width:760px)").addEventListener("change", closeMobileNavigation);
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.getElementById("sidebar-submodules")) {
+    const action = document.getElementById("sidebar-submodules").dataset.parent;
+    closeSidebarSubmodules();
+    document.querySelector(`#app-sidebar [data-action="${action}"]`)?.focus();
+    return;
+  }
   if (event.key === "Escape" && document.body.classList.contains("navigation-open")) {
     closeMobileNavigation();
     document.getElementById("sidebar-toggle").focus();
@@ -16806,8 +16876,34 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
 });
 document.getElementById("associate-contact").addEventListener("click", () => openAssociateContactModal());
 document.getElementById("create-deal-from-selection").addEventListener("click", () => createDealFromSelectedConversations());
+document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
+  const label = button.textContent.trim();
+  const nested = ["registrations", "tools", "social"].includes(button.dataset.action);
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  if (nested) {
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-controls", "sidebar-submodules");
+    button.setAttribute("aria-expanded", "false");
+  }
+  button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.action] || ""}</span><span class="nav-label">${esc(label)}</span>${nested ? '<span class="nav-chevron" aria-hidden="true">›</span>' : ""}`;
+});
 document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
-  b.addEventListener("click", () => handleAction(b.dataset.action)));
+  b.addEventListener("click", () => {
+    if (navigationPreference.mode === "sidebar" && b.closest("#app-sidebar") && ["registrations", "tools", "social"].includes(b.dataset.action)) {
+      openSidebarSubmodules(b);
+      return;
+    }
+    if (!b.dataset.action) return;
+    closeMobileNavigation();
+    handleAction(b.dataset.action);
+  }));
+document.addEventListener("pointerdown", (event) => {
+  const panel = document.getElementById("sidebar-submodules");
+  if (panel && !panel.contains(event.target) && !event.target.closest(`#app-sidebar [data-action="${panel.dataset.parent}"]`)) closeSidebarSubmodules();
+});
+window.addEventListener("resize", closeSidebarSubmodules);
+document.querySelector(".sidebar-modules")?.addEventListener("scroll", positionSidebarSubmodules);
 
 // ---------- Bootstrap ----------
 function setConn() {

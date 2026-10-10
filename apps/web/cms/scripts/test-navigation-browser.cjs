@@ -30,7 +30,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar #tabs').count(), 1);
     assert.equal(await page.locator('#app-header').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .sidebar-bottom .actions').count(), 1);
-    assert.equal(await page.locator('#app-sidebar .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar .foot-right .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-footer').isVisible(), false);
+    assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => el.getBoundingClientRect().height), 28);
     assert.equal(await page.locator('#app-sidebar #brand-home').count(), 1);
     await page.locator('#tabs [data-tab="contacts"]').click();
     assert.equal(await page.evaluate(() => state.tab), 'contacts');
@@ -52,6 +55,16 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert(actions.bottom <= height);
         assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
         assert.equal(await page.locator('#app-sidebar [data-action="notifications"]').isVisible(), true);
+        for (const parent of ['registrations', 'tools', 'social']) {
+          await page.locator(`#app-sidebar [data-action="${parent}"]`).click();
+          assert(await page.locator('#sidebar-submodules .sidebar-submodule').count() > 0);
+          const menu = await page.locator('#sidebar-submodules').evaluate((el) => ({ left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, bottom: el.getBoundingClientRect().bottom }));
+          assert.equal(menu.left, 208);
+          assert(menu.right <= width && menu.bottom <= height);
+          await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-submenu-${parent}-${width}.png`) });
+          await page.keyboard.press('Escape');
+          assert.equal(await page.locator('#sidebar-submodules').count(), 0);
+        }
         await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-${light ? 'light' : 'dark'}-${width}.png`) });
         if (width < 761) {
           await page.locator('#tabs [data-tab="companies"]').click();
@@ -66,13 +79,29 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#sidebar-collapse').click();
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
-    assert.equal(await page.locator('#app-sidebar .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
     await page.setViewportSize({ width: 1024, height: 600 });
     assert(await page.locator('#app-sidebar .actions').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight));
     await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'navigation-collapsed-short.png') });
     await page.evaluate(() => loadNavigationPreference());
     assert.equal(await page.evaluate(() => navigationPreference.collapsed), true);
+    await page.evaluate(() => {
+      const oldCan = currentUserCan;
+      currentUserCan = (id) => id === 'emails';
+      try { openSidebarSubmodules(document.querySelector('#app-sidebar [data-action="tools"]')); }
+      finally { currentUserCan = oldCan; }
+    });
+    assert.deepEqual(await page.locator('#sidebar-submodules [data-section]').evaluateAll((buttons) => buttons.map((button) => button.dataset.section)), ['emails']);
+    await page.evaluate(() => closeSidebarSubmodules());
+    await page.locator('#app-sidebar [data-action="registrations"]').click();
+    await page.locator('#sidebar-submodules [data-section="activities"]').click();
+    assert.equal(await page.evaluate(() => registrationsState.section), 'activities');
+    await page.evaluate(() => closeModal());
+    await page.locator('#app-sidebar [data-action="tools"]').click();
+    await page.locator('#sidebar-submodules [data-section="tables"]').click();
+    assert.equal(await page.evaluate(() => toolsState.section), 'tables');
+    await page.evaluate(() => closeModal());
     await page.evaluate(() => { currentProfile = { id: 'second-user' }; loadNavigationPreference(); });
     assert.equal(await page.locator('#app-header #tabs').count(), 1);
     await page.evaluate(() => { currentProfile = null; loadNavigationPreference(); });
@@ -95,6 +124,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-header .actions').count(), 1);
     assert.equal(await page.locator('#app-header #brand-home').count(), 1);
     assert.equal(await page.locator('#app-header').isVisible(), true);
+    assert.equal(await page.locator('#app-footer .foot-right').count(), 1);
+    assert.equal(await page.locator('#app-footer').isVisible(), true);
     assert.deepEqual(errors, []);
     console.log('Navigation settings, existing module actions, desktop/mobile layout, collapse, per-user isolation and remote preferences passed.');
   } finally { await browser.close(); }
