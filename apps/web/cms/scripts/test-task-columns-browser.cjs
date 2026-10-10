@@ -29,6 +29,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       for (const scope of ['main', 'registration', 'delivery']) {
         await page.evaluate((scope) => {
           document.querySelectorAll('.overlay,.cols-dd').forEach((item) => item.remove());
+          colPrefs.activities = {};
+          secondaryColPrefs['registrations:activities'] = {};
+          secondaryColPrefs['delivery:activities'] = {};
           if (scope === 'main') { state.tab = 'activities'; state.sortK = null; renderTable(cache); }
           else if (scope === 'registration') openRegistrationsModal('activities');
           else {
@@ -42,7 +45,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         const result = await page.locator(table).evaluate((table) => ({
           labels: [...table.querySelectorAll('thead th.task-frozen-column')].filter((cell) => !cell.hidden).map((cell) => (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase()),
           columns: [...table.querySelectorAll('thead th.task-frozen-column')].filter((cell) => !cell.hidden).map((cell) => ({ label: (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase(), width: cell.getBoundingClientRect().width, shadow: getComputedStyle(cell).boxShadow })),
-          statusOverflow: [...table.querySelectorAll('.inline-task-status,.project-inline-task-status')].some((select) => select.getBoundingClientRect().width > select.parentElement.getBoundingClientRect().width)
+          statusOverflow: [...table.querySelectorAll('.inline-task-status,.project-inline-task-status')].some((select) => select.getBoundingClientRect().width > select.parentElement.getBoundingClientRect().width),
+          multiColumns: [...table.querySelectorAll('thead th.task-sized-multi-column')].map((cell) => ({ label: (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase(), width: cell.getBoundingClientRect().width }))
         }));
         assert.deepEqual(result.labels, scope === 'registration' ? ['PRODUTO', 'TAREFA', 'STATUS'] : ['CLIENTE', 'PRODUTO', 'TAREFA', 'STATUS']);
         for (const column of result.columns) {
@@ -50,6 +54,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
           assert.equal(column.shadow, 'none');
         }
         assert.equal(result.statusOverflow, false);
+        assert.equal(result.multiColumns.length, 2);
+        for (const column of result.multiColumns) assert(Math.abs(column.width - (column.label === 'DEPENDE DE' ? 240 : 120)) < 1);
         await page.evaluate((scope) => {
           if (scope === 'main') openColumnManager();
           else if (scope === 'registration') openRegistrationColumnManager(document.querySelector('#registrations-root table'));
@@ -61,6 +67,12 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         await page.screenshot({ path: path.join(require('node:os').tmpdir(), `task-columns-${scope}-${width}.png`) });
       }
     }
+    await page.evaluate(() => {
+      const probe = document.createElement('table');
+      probe.innerHTML = '<thead><tr><th class="result-name-sticky">Objetivo</th><th>Categoria</th></tr></thead><tbody><tr><td class="result-name-sticky">Nome comprido</td><td>Canal</td></tr></tbody>';
+      document.body.appendChild(probe);
+    });
+    for (const shadow of await page.locator('.result-name-sticky').evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).boxShadow))) assert.equal(shadow, 'none');
     assert.deepEqual(errors, []);
     console.log('All three task tables: reduced widths, no frozen shadow, status controls and presets passed at desktop/mobile widths.');
   } finally { await browser.close(); }

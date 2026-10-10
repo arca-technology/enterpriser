@@ -3059,6 +3059,14 @@ function styleTaskFrozenColumns(table, keyAttribute, definitions, omitClient = f
     });
     left += width;
   });
+  [{ label: "DEPENDE DE", width: 240 }, { label: "RESPONSÁVEIS", width: 120 }].forEach(({ label, width }) => {
+    const col = definitions.find((item) => taskColumnLabel(item.h) === label);
+    if (!col) return;
+    table.querySelectorAll(`[${keyAttribute}="${col.k}"]`).forEach((cell) => {
+      cell.classList.add("task-sized-multi-column");
+      cell.style.width = cell.style.minWidth = cell.style.maxWidth = `${width}px`;
+    });
+  });
 }
 function orderedColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
