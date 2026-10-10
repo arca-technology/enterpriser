@@ -1751,20 +1751,30 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   }
   #app-sidebar[hidden],#sidebar-toggle[hidden]{display:none}
   #sidebar-toggle{display:none}
-  #app-sidebar{position:fixed;inset:0 auto 0 0;width:208px;z-index:30;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:0 10px;overflow:auto}
+  #app-sidebar{position:fixed;inset:0 auto 0 0;width:208px;z-index:30;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:0 10px;overflow:hidden}
   .sidebar-head{display:flex;align-items:center;justify-content:space-between;height:49px;flex-shrink:0;border-bottom:1px solid var(--border);margin-bottom:12px}
-  .sidebar-head strong{font-size:13px;color:var(--blue)}
+  #app-sidebar .brand-home{min-width:0;flex:1;font-size:11px;overflow:hidden}
   #sidebar-collapse{width:32px;height:32px;font-size:24px}
-  #app-sidebar #tabs{position:static;transform:none;display:flex;flex-direction:column;align-items:stretch;gap:6px;overflow:visible}
-  #app-sidebar .tab{display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:40px;text-align:left;text-transform:none;padding:0 10px;font-size:12px}
+  #app-sidebar #tabs{position:static;transform:none;display:flex;flex-direction:column;align-items:stretch;gap:6px;flex:1;min-height:0;overflow-y:auto;padding-bottom:12px}
+  #app-sidebar .tab{display:flex;align-items:center;gap:10px;width:100%;min-width:0;height:40px;flex-shrink:0;text-align:left;text-transform:none;padding:0 10px;font-size:12px}
   #app-sidebar .tab[hidden]{display:none}
-  .nav-short{display:none}
-  #app-sidebar .nav-short{display:grid;place-items:center;width:24px;height:24px;flex-shrink:0;font-size:10px;font-weight:800}
+  .nav-icon{display:none}
+  #app-sidebar .nav-icon{display:grid;place-items:center;width:24px;height:24px;flex-shrink:0}
+  .nav-icon svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  body.navigation-sidebar #app-header{display:none}
+  .sidebar-bottom{margin-top:auto;flex-shrink:0;padding:12px 0;border-top:1px solid var(--border)}
+  #app-sidebar .actions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;margin:0;min-width:0;justify-items:center}
+  #app-sidebar .actions .ico{width:36px;height:36px;position:relative}
+  #app-sidebar .actions .ico[hidden]{display:none}
   body.navigation-sidebar{padding-left:208px}
   body.navigation-collapsed{padding-left:64px}
   body.navigation-collapsed #app-sidebar{width:64px;padding:0 6px}
-  body.navigation-collapsed .sidebar-head{justify-content:center}
-  body.navigation-collapsed .sidebar-head strong,body.navigation-collapsed .nav-label{display:none}
+  body.navigation-collapsed .sidebar-head{justify-content:space-evenly;flex-direction:column;height:88px}
+  body.navigation-collapsed .nav-label{display:none}
+  body.navigation-collapsed #app-sidebar .brand-home{flex:0 0 32px;width:32px;font-size:0;text-align:center}
+  body.navigation-collapsed #app-sidebar .brand-home span{font-size:0}
+  body.navigation-collapsed #app-sidebar .brand-home:before{content:"E";font-size:16px;font-weight:800;color:var(--blue)}
+  body.navigation-collapsed #app-sidebar .actions{grid-template-columns:1fr}
   body.navigation-collapsed #app-sidebar .tab{justify-content:center;padding:0}
   .field.navigation-options{display:flex;flex-direction:row;gap:8px}
   .navigation-options input[type="radio"]{width:16px;height:16px;margin:0;padding:0;flex-shrink:0;accent-color:var(--blue)}
@@ -1772,18 +1782,19 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .navigation-options label:has(input:checked){border-color:var(--blue);background:var(--row-hover)}
   @media(max-width:760px){
     body.navigation-sidebar,body.navigation-collapsed{padding-left:0}
-    body.navigation-sidebar #app-header{height:49px;flex:0 0 49px;flex-wrap:nowrap;align-content:normal}
-    body.navigation-sidebar #app-header .brand-home{min-width:0;flex:1;font-size:12px}
-    body.navigation-sidebar #app-header .actions{min-width:0;height:48px}
-    body.navigation-sidebar #app-sidebar{width:208px;top:49px;bottom:38px;transform:translateX(-100%);box-shadow:8px 0 20px var(--overlay)}
+    body.navigation-sidebar #app-sidebar{width:208px;top:0;bottom:0;transform:translateX(-100%);box-shadow:8px 0 20px var(--overlay)}
     body.navigation-sidebar.navigation-open #app-sidebar{transform:none}
-    body.navigation-sidebar #sidebar-toggle{display:flex;width:32px;height:32px;flex-shrink:0}
-    body.navigation-sidebar .sidebar-head{justify-content:space-between}
-    body.navigation-sidebar .sidebar-head strong,body.navigation-sidebar .nav-label{display:block}
+    body.navigation-sidebar #sidebar-toggle{position:fixed;left:8px;bottom:46px;z-index:31;display:flex;width:36px;height:36px;border:1px solid var(--border);background:var(--panel);box-shadow:0 2px 8px var(--overlay)}
+    body.navigation-sidebar.navigation-open #sidebar-toggle{display:none}
+    body.navigation-sidebar .sidebar-head{justify-content:space-between;flex-direction:row;height:49px}
+    body.navigation-sidebar .nav-label{display:block}
+    body.navigation-sidebar #app-sidebar .brand-home{flex:1;width:auto;font-size:11px;text-align:left}
+    body.navigation-sidebar #app-sidebar .brand-home span{font-size:inherit}
+    body.navigation-sidebar #app-sidebar .brand-home:before{content:none}
+    body.navigation-sidebar #app-sidebar .actions{grid-template-columns:repeat(4,minmax(0,1fr))}
     body.navigation-sidebar #app-sidebar .tab{justify-content:flex-start;padding:0 10px}
     body.navigation-sidebar #app-sidebar #tabs{width:100%;height:auto;order:initial}
     body.navigation-sidebar #app-sidebar .tab{height:40px;font-size:12px}
-    body.navigation-sidebar #app-header [data-action="settings"]{display:flex}
   }
 </style>
 </head>
@@ -1819,10 +1830,11 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </form>
   </div>
   <aside id="app-sidebar" aria-label="Navegação principal" hidden>
-    <div class="sidebar-head"><strong>CMS</strong><button class="ico" id="sidebar-collapse" type="button" title="Recolher navegação" aria-label="Recolher navegação">‹</button></div>
+    <div class="sidebar-head"><button class="ico" id="sidebar-collapse" type="button" title="Recolher navegação" aria-label="Recolher navegação">‹</button></div>
+    <div class="sidebar-bottom"></div>
   </aside>
+  <button class="ico" id="sidebar-toggle" type="button" title="Abrir navegação" aria-label="Abrir navegação" aria-controls="app-sidebar" aria-expanded="false" hidden>☰</button>
   <header id="app-header">
-    <button class="ico" id="sidebar-toggle" type="button" title="Abrir navegação" aria-label="Abrir navegação" aria-controls="app-sidebar" aria-expanded="false" hidden>☰</button>
     <button class="brand-home active" id="brand-home" title="Ir para Home">ENTERPRISER <span>• CMS</span></button>
     <nav id="tabs">
       <button class="tab" data-tab="contacts">Pessoas</button>
@@ -1896,6 +1908,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   <div id="toast"></div>
 
   <script src="config.js"></script>
+  <script src="public/legacy/navigation-icons.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

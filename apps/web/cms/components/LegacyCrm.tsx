@@ -8,6 +8,7 @@ import { legacyMarkup } from "./legacy-markup";
 
 export function LegacyCrm({ assetVersion }: { assetVersion: string }) {
   const [configReady, setConfigReady] = useState(false);
+  const [iconsReady, setIconsReady] = useState(false);
 
   useEffect(() => {
     window.CRM_CONFIG = legacyConfig;
@@ -21,7 +22,8 @@ export function LegacyCrm({ assetVersion }: { assetVersion: string }) {
   return (
     <>
       <div id="legacy-root" dangerouslySetInnerHTML={{ __html: legacyMarkup }} />
-      {configReady ? <Script src={`/legacy/app.js?v=${encodeURIComponent(assetVersion)}`} strategy="afterInteractive" /> : null}
+      {configReady ? <Script src={`/legacy/navigation-icons.js?v=${encodeURIComponent(assetVersion)}`} strategy="afterInteractive" onReady={() => setIconsReady(true)} /> : null}
+      {configReady && iconsReady ? <Script src={`/legacy/app.js?v=${encodeURIComponent(assetVersion)}`} strategy="afterInteractive" /> : null}
     </>
   );
 }

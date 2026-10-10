@@ -14,6 +14,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.route('**/*', (route) => route.request().url() === 'http://navigation-test.local/' ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
     await page.goto('http://navigation-test.local/');
     await page.evaluate(() => { window.CRM_CONFIG = {}; });
+    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
     await page.addScriptTag({ content: source });
     await page.evaluate(async () => {
       await loadAll();
@@ -27,18 +28,30 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('input[name="navigation-mode"][value="sidebar"]').check();
     await page.locator('#save').click();
     assert.equal(await page.locator('#app-sidebar #tabs').count(), 1);
+    assert.equal(await page.locator('#app-header').isVisible(), false);
+    assert.equal(await page.locator('#app-sidebar .sidebar-bottom .actions').count(), 1);
+    assert.equal(await page.locator('#app-sidebar .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar #brand-home').count(), 1);
     await page.locator('#tabs [data-tab="contacts"]').click();
     assert.equal(await page.evaluate(() => state.tab), 'contacts');
     for (const light of [false, true]) {
       await page.evaluate((light) => setTheme(light), light);
       for (const width of [1440, 1024, 390]) {
-        await page.setViewportSize({ width, height: 900 });
+        const height = width < 761 ? 600 : 900;
+        await page.setViewportSize({ width, height });
         if (width < 761) await page.locator('#sidebar-toggle').click();
         const geometry = await page.locator('#app-sidebar').evaluate((el) => ({ x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width }));
         assert.equal(geometry.x, 0);
         assert.equal(geometry.width, 208);
         assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), width < 761 ? 0 : 208);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        assert.equal(await page.locator('#app-header').isVisible(), false);
+        const actions = await page.locator('#app-sidebar .actions').evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom }));
+        const tabsBottom = await page.locator('#tabs').evaluate((el) => el.getBoundingClientRect().bottom);
+        assert(actions.top > tabsBottom);
+        assert(actions.bottom <= height);
+        assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
+        assert.equal(await page.locator('#app-sidebar [data-action="notifications"]').isVisible(), true);
         await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-${light ? 'light' : 'dark'}-${width}.png`) });
         if (width < 761) {
           await page.locator('#tabs [data-tab="companies"]').click();
@@ -53,6 +66,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#sidebar-collapse').click();
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
+    assert.equal(await page.locator('#app-sidebar .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
+    await page.setViewportSize({ width: 1024, height: 600 });
+    assert(await page.locator('#app-sidebar .actions').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight));
+    await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'navigation-collapsed-short.png') });
     await page.evaluate(() => loadNavigationPreference());
     assert.equal(await page.evaluate(() => navigationPreference.collapsed), true);
     await page.evaluate(() => { currentProfile = { id: 'second-user' }; loadNavigationPreference(); });
@@ -74,6 +92,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.evaluate(() => saveNavigationPreference({ mode: 'top' }));
     assert.equal(await page.locator('#app-header #tabs').count(), 1);
     assert.equal(await page.locator('#app-sidebar').isVisible(), false);
+    assert.equal(await page.locator('#app-header .actions').count(), 1);
+    assert.equal(await page.locator('#app-header #brand-home').count(), 1);
+    assert.equal(await page.locator('#app-header').isVisible(), true);
     assert.deepEqual(errors, []);
     console.log('Navigation settings, existing module actions, desktop/mobile layout, collapse, per-user isolation and remote preferences passed.');
   } finally { await browser.close(); }

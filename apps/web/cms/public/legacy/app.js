@@ -2587,8 +2587,15 @@ function applyNavigationPreference() {
   closeMobileNavigation();
   sidebar.hidden = !lateral;
   document.getElementById("sidebar-toggle").hidden = !lateral;
-  if (lateral) sidebar.appendChild(tabs);
-  else header.insertBefore(tabs, header.querySelector(".actions"));
+  const brand = document.getElementById("brand-home");
+  const actions = document.querySelector("#app-header > .actions,#app-sidebar .actions");
+  if (lateral) {
+    sidebar.querySelector(".sidebar-head").prepend(brand);
+    sidebar.insertBefore(tabs, sidebar.querySelector(".sidebar-bottom"));
+    sidebar.querySelector(".sidebar-bottom").appendChild(actions);
+  } else {
+    header.append(brand, tabs, actions);
+  }
   const button = document.getElementById("sidebar-collapse");
   const label = navigationPreference.collapsed ? "Expandir navegação" : "Recolher navegação";
   button.textContent = navigationPreference.collapsed ? "›" : "‹";
@@ -16715,7 +16722,7 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   const name = t.textContent.trim();
   t.title = name;
   t.setAttribute("aria-label", name);
-  t.innerHTML = `<span class="nav-short" aria-hidden="true">${esc(name.slice(0, 2).toLocaleUpperCase("pt-BR"))}</span><span class="nav-label">${esc(name)}</span>`;
+  t.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[t.dataset.tab] || ""}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
     if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
     closeFloaters();
