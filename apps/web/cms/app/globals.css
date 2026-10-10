@@ -317,7 +317,7 @@
   .task-table-wrap .select-head,.task-table-wrap .select-cell{position:sticky;left:0;z-index:5;background:var(--panel)}
   .task-table-wrap .expand-head,.task-table-wrap .expand-cell{position:sticky;left:42px;z-index:5;background:var(--panel)}
   .task-table-wrap thead .select-head,.task-table-wrap thead .expand-head{z-index:8;background:var(--panel2)}
-  .task-table-wrap .project-task-name-col{position:sticky;left:72px;z-index:4;width:320px;min-width:320px;max-width:320px;background:var(--panel);white-space:normal;overflow-wrap:anywhere;box-shadow:8px 0 14px rgba(0,0,0,.14)}
+  .task-table-wrap .project-task-name-col{position:sticky;left:72px;z-index:4;width:240px;min-width:240px;max-width:240px;background:var(--panel);white-space:normal;overflow-wrap:anywhere;box-shadow:none}
   .task-table-wrap thead .project-task-name-col{z-index:7;background:var(--panel2)}
   .task-table-wrap tbody tr:nth-child(even) .select-cell,.task-table-wrap tbody tr:nth-child(even) .expand-cell,.task-table-wrap tbody tr:nth-child(even) .project-task-name-col{background:var(--row-alt)}
   .task-table-wrap tbody tr:hover .select-cell,.task-table-wrap tbody tr:hover .expand-cell,.task-table-wrap tbody tr:hover .project-task-name-col{background:var(--row-hover)}
@@ -480,7 +480,7 @@
   .data-table .sticky-col-1{left:72px}
   .data-table .sticky-col-2{left:282px;width:105px;min-width:105px;max-width:105px}
   .data-table .sticky-col-3{left:387px;width:96px;min-width:96px;max-width:96px}
-  .data-table .sticky-col-4{left:483px;width:320px;min-width:320px;max-width:320px;box-shadow:8px 0 14px rgba(0,0,0,.16)}
+  .data-table .sticky-col-4{left:483px;width:240px;min-width:240px;max-width:240px;box-shadow:none}
   .data-table .task-name-col{white-space:normal;overflow-wrap:anywhere;line-height:1.35}
   .data-table tbody tr:nth-child(even) .sticky-col{background:var(--row-alt)}
   .data-table tbody tr:hover .sticky-col{background:var(--row-hover)}
@@ -1187,7 +1187,7 @@
   body.light .product-activity-list .pa-delete,body.light .product-activity-list .po-delete,body.light .product-activity-list .pg-delete{color:#b4232f}
   .registration-activities-table .select-head,.registration-activities-table .select-cell{position:sticky;left:0;z-index:4;background:var(--panel)}
   .registration-activities-table .select-head{z-index:7;background:var(--panel2)}
-  .registration-activities-table .registration-task-sticky{position:sticky;left:72px;z-index:3;width:320px;min-width:320px;max-width:320px;white-space:normal;overflow-wrap:anywhere;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
+  .registration-activities-table .registration-task-sticky{position:sticky;left:72px;z-index:3;width:240px;min-width:240px;max-width:240px;white-space:normal;overflow-wrap:anywhere;background:var(--panel);box-shadow:none}
   .result-name-sticky{position:sticky;left:42px;z-index:3;min-width:220px;background:var(--panel);box-shadow:8px 0 14px rgba(0,0,0,.12)}
   thead th.result-name-sticky{z-index:6;background:var(--panel2)}
   tbody tr:nth-child(even) td.result-name-sticky{background:var(--row-alt)}
@@ -1730,7 +1730,8 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .admin-log-body tr.log-row-error td{background:color-mix(in srgb,#e5484d 6%,transparent)}
   .user-activities-user{height:30px;max-width:220px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--text);font:inherit;font-size:11px;padding:0 8px}
   .unified-task-table th.task-frozen-column,.unified-task-table td.task-frozen-column{position:sticky;z-index:4;background:var(--panel);white-space:normal;overflow-wrap:anywhere;line-height:1.35;box-sizing:border-box;box-shadow:none}
-  .unified-task-table thead th.task-frozen-column{z-index:7;background:var(--panel2)}
+  .unified-task-table thead th.task-frozen-column{z-index:7;background:var(--panel2);padding-inline:4px}
+  .unified-task-table .inline-task-status,.unified-task-table .project-inline-task-status{min-width:0;width:100%;max-width:100%;box-sizing:border-box;font-size:10px;padding:2px 12px 2px 4px}
   .unified-task-table [hidden]{display:none!important}
   .unified-task-table tbody tr:nth-child(even) td.task-frozen-column{background:var(--row-alt)}
   .unified-task-table tbody tr:hover td.task-frozen-column{background:var(--row-hover)}

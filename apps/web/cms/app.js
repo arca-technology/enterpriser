@@ -3049,12 +3049,13 @@ function styleTaskFrozenColumns(table, keyAttribute, definitions, omitClient = f
   TASK_FROZEN_LABELS.forEach((label) => {
     const col = definitions.find((item) => taskColumnLabel(item.h) === label);
     if (!col || (omitClient && label === "CLIENTE")) return;
-    const width = { CLIENTE: 210, PRODUTO: 140, TAREFA: 320, STATUS: 130 }[label];
+    const width = { CLIENTE: 105, PRODUTO: 70, TAREFA: 240, STATUS: 97.5 }[label];
     table.querySelectorAll(`[${keyAttribute}="${col.k}"]`).forEach((cell) => {
       cell.classList.add("task-frozen-column");
       if (label === "TAREFA" && cell.tagName === "TH") cell.title = "Coluna fixa. Ctrl+clique para filtrar.";
       cell.style.left = `${left}px`;
       cell.style.width = cell.style.minWidth = cell.style.maxWidth = `${width}px`;
+      if (label === "STATUS") cell.style.paddingInline = "4px";
     });
     left += width;
   });

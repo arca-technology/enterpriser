@@ -41,10 +41,15 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         const table = scope === 'registration' ? '#registrations-root table' : '#main table';
         const result = await page.locator(table).evaluate((table) => ({
           labels: [...table.querySelectorAll('thead th.task-frozen-column')].filter((cell) => !cell.hidden).map((cell) => (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase()),
-          taskWidth: [...table.querySelectorAll('thead th.task-frozen-column')].find((cell) => (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase() === 'TAREFA').getBoundingClientRect().width
+          columns: [...table.querySelectorAll('thead th.task-frozen-column')].filter((cell) => !cell.hidden).map((cell) => ({ label: (cell.dataset.registrationLabel || cell.dataset.projectLabel || cell.textContent).trim().toUpperCase(), width: cell.getBoundingClientRect().width, shadow: getComputedStyle(cell).boxShadow })),
+          statusOverflow: [...table.querySelectorAll('.inline-task-status,.project-inline-task-status')].some((select) => select.getBoundingClientRect().width > select.parentElement.getBoundingClientRect().width)
         }));
         assert.deepEqual(result.labels, scope === 'registration' ? ['PRODUTO', 'TAREFA', 'STATUS'] : ['CLIENTE', 'PRODUTO', 'TAREFA', 'STATUS']);
-        assert(Math.abs(result.taskWidth - 320) < 1, `${scope}: task width ${result.taskWidth}`);
+        for (const column of result.columns) {
+          assert(Math.abs(column.width - { CLIENTE: 105, PRODUTO: 70, TAREFA: 240, STATUS: 97.5 }[column.label]) < 1, `${scope}: ${column.label} width ${column.width}`);
+          assert.equal(column.shadow, 'none');
+        }
+        assert.equal(result.statusOverflow, false);
         await page.evaluate((scope) => {
           if (scope === 'main') openColumnManager();
           else if (scope === 'registration') openRegistrationColumnManager(document.querySelector('#registrations-root table'));
@@ -57,6 +62,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       }
     }
     assert.deepEqual(errors, []);
-    console.log('All three task tables: frozen order, 320px width and presets passed at desktop/mobile widths.');
+    console.log('All three task tables: reduced widths, no frozen shadow, status controls and presets passed at desktop/mobile widths.');
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });
