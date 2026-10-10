@@ -5437,11 +5437,13 @@ function openProjectBoard(projectId) {
   </div>`;
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
     cls: "full registrations-modal",
+    navigationModule: "projects",
     headerCenter,
     headerActions: liveRefreshButtonHtml(),
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
+    closeMobileNavigation();
     projectBoardState.section = button.dataset.projectSection;
     projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : "table";
     projectBoardState.search = "";
@@ -8904,9 +8906,33 @@ function closeModal() {
 }
 function syncSidebarModuleNavigation() {
   const moduleId = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
+  document.getElementById("sidebar-module-context")?.remove();
   document.body.classList.toggle("sidebar-module-open", Boolean(moduleId));
   document.querySelectorAll("#app-sidebar .foot-btn").forEach((button) => button.classList.toggle("sidebar-current", button.dataset.action === moduleId));
-  document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", !moduleId && button.dataset.tab === state.tab));
+  document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", moduleId === button.dataset.tab || (!moduleId && button.dataset.tab === state.tab)));
+  if (moduleId) {
+    const context = document.createElement("div");
+    context.id = "sidebar-module-context";
+    context.setAttribute("aria-label", "Navegação do módulo aberto");
+    const header = document.querySelector(".sidebar-module > h3");
+    const sections = header?.querySelector(".modal-header-tabs");
+    if (moduleId === "projects" && sections) {
+      sections.querySelectorAll("button").forEach((button) => {
+        const label = button.textContent.trim();
+        button.title = label;
+        button.setAttribute("aria-label", label);
+        const key = button.dataset.projectSection;
+        button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[key] || window.CRM_NAV_ICONS?.projects || ""}</span><span class="sidebar-context-label">${esc(label)}</span>`;
+      });
+      context.appendChild(sections);
+    }
+    const close = header?.querySelector("#shell-close");
+    if (close) {
+      close.setAttribute("aria-label", "Fechar módulo (Esc)");
+      context.appendChild(close);
+    }
+    document.querySelector("#app-sidebar .sidebar-modules")?.appendChild(context);
+  }
 }
 function closeSidebarModuleView() {
   if (document.querySelector("#modal-root > .sidebar-module-overlay")) closeModal();

@@ -134,6 +134,26 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.locator('.sidebar-module-overlay').count(), 0);
     }
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => openProjectBoard(cache.projects[0].id));
+    assert.equal(await page.locator('.sidebar-module > h3').isVisible(), false);
+    assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), 208);
+    assert.equal(await page.locator('#sidebar-module-context [data-project-section]').count(), 5);
+    await page.locator('#sidebar-module-context [data-project-section="activities"]').click();
+    assert.equal(await page.evaluate(() => projectBoardState.section), 'activities');
+    await page.locator('#sidebar-module-context [data-project-section="overview"]').click();
+    await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'navigation-delivery-sidebar.png') });
+    await page.locator('#sidebar-module-context #shell-close').click();
+    assert.equal(await page.locator('#sidebar-module-context').count(), 0);
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.evaluate(() => openProjectBoard(cache.projects[0].id));
+    assert.equal(await page.locator('.sidebar-module > h3').isVisible(), false);
+    await page.locator('#sidebar-toggle').click();
+    await page.locator('#sidebar-module-context [data-project-section="activities"]').click();
+    assert.equal(await page.evaluate(() => projectBoardState.section), 'activities');
+    assert.equal(await page.locator('#sidebar-toggle').getAttribute('aria-expanded'), 'false');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#sidebar-module-context').count(), 0);
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.evaluate(() => { currentProfile = { id: 'second-user' }; loadNavigationPreference(); });
     assert.equal(await page.locator('#app-header #tabs').count(), 1);
     await page.evaluate(() => { currentProfile = null; loadNavigationPreference(); });

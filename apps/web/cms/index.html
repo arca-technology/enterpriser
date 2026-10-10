@@ -1768,7 +1768,14 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   body.navigation-sidebar .sidebar-module-overlay{left:208px;width:calc(100% - 208px);background:var(--panel)}
   body.navigation-collapsed .sidebar-module-overlay{left:64px;width:calc(100% - 64px)}
   .modal.sidebar-module{width:100%;height:100%}
-  .modal.sidebar-module>h3{height:34px;min-height:34px;font-size:11px}
+  .modal.sidebar-module>h3{display:none}
+  #sidebar-module-context{border-top:1px solid var(--border);padding:6px 0;display:flex;flex-direction:column;gap:4px;flex-shrink:0}
+  #sidebar-module-context .modal-header-tabs{position:static;transform:none;display:flex;flex-direction:column;gap:4px;width:100%;max-width:none;height:auto;overflow:visible;padding:0}
+  #sidebar-module-context .modal-header-tab{display:flex;align-items:center;gap:8px;width:100%;min-width:0;height:32px;justify-content:flex-start;padding:6px 8px}
+  #sidebar-module-context .modal-close-x{position:static;align-self:flex-end;width:32px;height:28px}
+  body.navigation-collapsed #sidebar-module-context .sidebar-context-label{display:none}
+  body.navigation-collapsed #sidebar-module-context .modal-header-tab{justify-content:center}
+  @media(max-width:760px){body.navigation-collapsed #sidebar-module-context .sidebar-context-label{display:inline}body.navigation-collapsed #sidebar-module-context .modal-header-tab{justify-content:flex-start}}
   .modal.sidebar-module>h3>.modal-title{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .modal.sidebar-module>h3 .modal-header-tabs,.modal.sidebar-module>.registrations-footer{display:none}
   @media(max-width:900px){
