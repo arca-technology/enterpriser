@@ -5597,40 +5597,124 @@ function renderTaskDashboard(tasks) {
 }
 
 function renderDeliveryOverview(project) {
-  const tasks = operationalProjectTasks(project.id).filter((task) => task.status !== "canceled");
-  const objectives = loadDeliveryObjectives().filter((item) => item.project_id === project.id && item.status !== "canceled");
-  const goals = loadDeliveryGoals().filter((item) => item.project_id === project.id && item.status !== "canceled");
   const today = isoDay(new Date());
-  const taskDone = tasks.filter((item) => item.status === "done").length;
-  const taskDoing = tasks.filter((item) => item.status === "doing").length;
-  const taskLate = tasks.filter((item) => taskPlannedEnd(item) && item.status !== "done" && taskPlannedEnd(item) < today).length;
+  const model = deliveryOverviewModel(project, operationalProjectTasks(project.id), loadDeliveryObjectives(), loadDeliveryGoals(), today);
+  const { tasks, objectives, goals, lateTasks, blockedTasks, upcoming, planned, plannedDone, weekTasks, pendingObjectives, pendingGoals, metrics, currentMonth, previousMonth } = model;
+  const ratio = (done, total) => total ? Math.round(done / total * 100) : null;
+  const taskPercent = ratio(plannedDone.length, planned.length);
   const objectiveDone = objectives.filter((item) => item.status === "done").length;
-  const objectiveAverage = objectives.length
-    ? Math.round(objectives.reduce((sum, item) => sum + deliveryObjectivePercent(item, tasks), 0) / objectives.length)
-    : 0;
-  const goalReached = goals.filter((item) => deliveryGoalReached(item)).length;
-  const goalAverage = goals.length
-    ? Math.round(goals.reduce((sum, item) => sum + deliveryGoalPercent(item), 0) / goals.length)
-    : 0;
-  const currentRevenue = deliveryMetricsTotal(project);
-  const continuityRevenue = deliveryContinuityChain(project).reduce((sum, item) => sum + deliveryMetricsTotal(item), 0);
-  const taskPercent = tasks.length ? Math.round(taskDone / tasks.length * 100) : 0;
-  const metric = (label, value, hint = "") => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div>${hint ? `<div class="metric-hint">${esc(hint)}</div>` : ""}</div>`;
-  const section = (id, title, metrics, progress, action) => `<section class="delivery-overview-section">
-    <header><div><strong>${esc(title)}</strong><span>${esc(action)}</span></div><button class="btn delivery-overview-open" type="button" data-overview-section="${id}">Abrir</button></header>
-    <div class="project-dashboard">${metrics.join("")}</div>
-    <div class="delivery-overview-progress"><span style="width:${Math.max(0, Math.min(100, progress))}%"></span><b>${progress}%</b></div>
+  const reached = goals.filter((item) => item.status === "done" || deliveryGoalReached(item)).length;
+  const objectiveRisk = pendingObjectives.filter((item) => (item.due_date && item.due_date < today) || deliveryObjectiveDependencyState(item).blocked).length;
+  const revenue = deliveryOverviewRevenue(currentMonth);
+  const previousRevenue = deliveryOverviewRevenue(previousMonth);
+  const variation = revenue != null && previousRevenue > 0 ? `${((revenue - previousRevenue) / previousRevenue * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1, signDisplay: "always" })}%` : "Sem base";
+  const metric = (label, value, tone = "", action = "") => `<div class="metric ${tone}"><div class="k">${esc(label)}</div><div class="v">${action || esc(value)}</div></div>`;
+  const next = (item, section) => item ? overviewItemButton(item, section, `${item.name}${item.due_date ? ` · ${dt(item.due_date)}` : " · Sem prazo"}`) : "—";
+  const section = (id, title, values, progress = null) => `<section class="delivery-overview-section">
+    <header><strong>${esc(title)}</strong><button class="btn delivery-overview-open" type="button" data-overview-section="${id}">Abrir</button></header>
+    <div class="project-dashboard">${values.join("")}</div>
+    ${progress == null ? "" : `<div class="delivery-overview-progress"><span style="width:${progress}%"></span><b>${progress}%</b></div>`}
   </section>`;
+  const attainment = `<details class="overview-attainment"><summary>Ver indicadores</summary><div>${goals.map((goal) => `<div>${overviewItemButton(goal, "goals", goal.metric || goal.name)}<span>${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${esc(goal.unit || "")} · ${deliveryGoalPercent(goal)}%</span></div>`).join("") || '<span class="muted">Sem metas.</span>'}</div></details>`;
+  const attention = (title, rows, section, caption) => {
+    const entry = (item) => `<div class="overview-attention-item">${overviewItemButton(item, item.overviewSection || section)}<small>${esc(caption(item))}</small></div>`;
+    return `<section class="overview-attention-section"><h4>${esc(title)} <span>${rows.length}</span></h4>${rows.slice(0, 5).map(entry).join("") || '<p class="muted">Nenhuma pendência.</p>'}${rows.length > 5 ? `<details class="overview-more"><summary>Ver mais ${rows.length - 5}</summary>${rows.slice(5).map(entry).join("")}</details>` : ""}</section>`;
+  };
+  const channelOptions = [...new Set(metrics.flatMap((row) => Object.keys(row.channel_revenue)))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   return `<div class="delivery-overview">
     <div class="delivery-overview-heading"><div><span>Visão geral da entrega</span><strong>${esc(project.name || "Entrega")}</strong></div><small>${project.start_date ? dt(project.start_date) : "—"} a ${project.end_date ? dt(project.end_date) : "—"}</small></div>
     <div class="delivery-overview-grid">
-      ${section("activities", "Tarefas", [metric("Total", tasks.length), metric("Em andamento", taskDoing), metric("Atendidas", taskDone), metric("Atrasadas", taskLate)], taskPercent, "Tabela, calendário, Gantt e mapa mental")}
-      ${section("objectives", "Objetivos", [metric("Total", objectives.length), metric("Concluídos", objectiveDone), metric("Em andamento", objectives.filter((item) => item.status === "doing").length), metric("Progresso médio", `${objectiveAverage}%`)], objectiveAverage, "Acompanhamento dos objetivos")}
-      ${section("goals", "Metas", [metric("Total", goals.length), metric("Atingidas", goalReached), metric("Em andamento", goals.filter((item) => item.status === "doing").length), metric("Atingimento médio", `${goalAverage}%`)], goalAverage, "Indicadores e resultados-chave")}
-      ${section("data", "Dados", [metric("Faturamento da entrega", brl(currentRevenue)), metric("Continuidade", brl(continuityRevenue)), metric("Meses acompanhados", normalizeProjectBusinessMetrics(project.business_metrics).length), metric("Entregas na sequência", deliveryContinuityChain(project).length)], continuityRevenue > 0 ? Math.round(currentRevenue / continuityRevenue * 100) : 0, "Faturamento, SKUs e fornecedores")}
+      ${section("activities", "Tarefas", [metric("Atendidas / previstas até hoje", `${plannedDone.length} / ${planned.length}`), metric("Em andamento", tasks.filter((item) => item.status === "doing").length), metric("Atrasadas", lateTasks.length, lateTasks.length ? "overview-danger" : ""), metric("Vencem nesta semana", weekTasks.length)], taskPercent)}
+      ${section("objectives", "Objetivos", [metric("Concluídos / total", `${objectiveDone} / ${objectives.length}`), metric("Em andamento", objectives.filter((item) => item.status === "doing").length), metric("Em risco", objectiveRisk, objectiveRisk ? "overview-danger" : ""), metric("Próximo a concluir", "", "", next(pendingObjectives[0], "objectives"))], ratio(objectiveDone, objectives.length))}
+      ${section("goals", "Metas", [metric("Atingidas / total", `${reached} / ${goals.length}`), metric("Atingimento por indicador", "", "", attainment), metric("Fora do prazo", pendingGoals.filter((item) => item.due_date && item.due_date < today).length), metric("Próxima a vencer", "", "", next(pendingGoals.find((item) => item.due_date && item.due_date >= today), "goals"))], ratio(reached, goals.length))}
+      ${section("data", "Dados", [metric(`Faturamento · ${today.slice(0, 7).split("-").reverse().join("/")}`, revenue == null ? "Não informado" : brl(revenue)), metric("Variação sobre mês anterior", variation), metric("SKUs ativos", currentMonth?.skus == null ? "Não informado" : currentMonth.skus.toLocaleString("pt-BR")), metric("Fornecedores ativos", currentMonth ? currentMonth.supplier_company_ids.length : "Não informado")])}
     </div>
-    <section class="dashboard-block delivery-overview-okr"><h4>OKR <small>Objetivos e metas agrupados por Categoria e Canal</small></h4>${deliveryOkrBoardHtml(objectives, goals, tasks)}</section>
+    <section class="overview-band"><h3>Atenção primeiro</h3><div class="overview-attention-grid">
+      ${attention("Tarefas atrasadas", lateTasks, "activities", (item) => `${assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client)} · ${dt(taskPlannedEnd(item))}`)}
+      ${attention("Bloqueadas por dependências", blockedTasks, "activities", (item) => taskDependencies(item, model.allTasks).filter((row) => row.status !== "done").map(activityDisplayName).join("; "))}
+      ${attention("Objetivos e metas · próximos 7 dias", upcoming, "objectives", (item) => `${item.overviewSection === "goals" ? "Meta" : "Objetivo"} · ${dt(item.due_date)}`)}
+    </div></section>
+    <section class="overview-band"><h3>Evolução</h3><div class="overview-charts">
+      <section><header><h4>Execução semanal</h4><span>Últimas 8 semanas</span></header>${overviewExecutionChart(tasks, today)}</section>
+      <section><header><h4>Faturamento mensal</h4><select id="overview-revenue-channel" aria-label="Canal do faturamento"><option value="">Todos os canais</option>${channelOptions.map((channel) => `<option value="${esc(channel)}">${esc(channel)}</option>`).join("")}</select></header><div id="overview-revenue-chart">${overviewRevenueChart(metrics)}</div></section>
+    </div></section>
+    <section class="overview-band"><h3>Resumo por canal</h3>${overviewChannelSummary(tasks, objectives, goals, today)}</section>
   </div>`;
+}
+
+function deliveryOverviewRevenue(row, channel = "") {
+  if (!row) return null;
+  if (channel) return row.channel_revenue?.[channel] ?? null;
+  const values = Object.values(row.channel_revenue || {});
+  return values.length ? values.reduce((sum, value) => sum + Number(value), 0) : row.revenue ?? null;
+}
+
+function deliveryOverviewModel(project, allTasks, allObjectives, allGoals, today) {
+  const tasks = allTasks.filter((item) => item.status !== "canceled");
+  const objectives = allObjectives.filter((item) => item.project_id === project.id && item.status !== "canceled");
+  const goals = allGoals.filter((item) => item.project_id === project.id && item.status !== "canceled");
+  const pending = (rows) => rows.filter((item) => item.status !== "done")
+    .sort((a, b) => (a.due_date || "9999-12-31").localeCompare(b.due_date || "9999-12-31") || String(a.name || "").localeCompare(b.name || ""));
+  const pendingObjectives = pending(objectives);
+  const pendingGoals = pending(goals).filter((item) => !deliveryGoalReached(item));
+  const weekStart = new Date(`${today}T12:00:00`);
+  weekStart.setDate(weekStart.getDate() - (weekStart.getDay() + 6) % 7);
+  const weekEnd = addDays(isoDay(weekStart), 6);
+  const planned = tasks.filter((item) => taskPlannedEnd(item) && String(taskPlannedEnd(item)).slice(0, 10) <= today);
+  const metrics = normalizeProjectBusinessMetrics(project.business_metrics).sort((a, b) => a.month.localeCompare(b.month));
+  const previous = new Date(`${today.slice(0, 7)}-01T12:00:00`);
+  previous.setMonth(previous.getMonth() - 1);
+  return {
+    allTasks, tasks, objectives, goals, pendingObjectives, pendingGoals, metrics, planned,
+    plannedDone: planned.filter((item) => item.status === "done"),
+    lateTasks: tasks.filter((item) => item.status !== "done" && taskPlannedEnd(item) && String(taskPlannedEnd(item)).slice(0, 10) < today)
+      .sort((a, b) => taskPlannedEnd(a).localeCompare(taskPlannedEnd(b))),
+    blockedTasks: tasks.filter((item) => item.status !== "done" && taskIsBlocked(item, allTasks)),
+    weekTasks: tasks.filter((item) => item.status !== "done" && taskPlannedEnd(item) && taskPlannedEnd(item) >= today && taskPlannedEnd(item) <= weekEnd),
+    upcoming: [...pendingObjectives.map((item) => ({ ...item, overviewSection: "objectives" })), ...pendingGoals.map((item) => ({ ...item, overviewSection: "goals" }))]
+      .filter((item) => item.due_date && item.due_date >= today && item.due_date <= addDays(today, 7)).sort((a, b) => a.due_date.localeCompare(b.due_date)),
+    currentMonth: metrics.find((row) => row.month === today.slice(0, 7)),
+    previousMonth: metrics.find((row) => row.month === isoDay(previous).slice(0, 7))
+  };
+}
+
+function overviewItemButton(item, section, label = "") {
+  return `<button type="button" class="overview-item-link delivery-overview-open" data-overview-section="${esc(section)}" data-overview-search="${esc(section === "activities" ? activityDisplayName(item) : item.name || "")}">${esc(label || item.name || activityDisplayName(item))}</button>`;
+}
+
+function overviewExecutionChart(tasks, today) {
+  const monday = new Date(`${today}T12:00:00`);
+  monday.setDate(monday.getDate() - (monday.getDay() + 6) % 7);
+  const rows = Array.from({ length: 8 }, (_, index) => {
+    const start = addDays(isoDay(monday), (index - 7) * 7);
+    const end = addDays(start, 6);
+    const inWeek = (value) => value && String(value).slice(0, 10) >= start && String(value).slice(0, 10) <= end;
+    return { start, planned: tasks.filter((item) => inWeek(taskPlannedEnd(item))).length, done: tasks.filter((item) => item.status === "done" && inWeek(item.actual_end_date)).length };
+  });
+  const max = Math.max(1, ...rows.flatMap((row) => [row.planned, row.done]));
+  const missing = tasks.filter((item) => item.status === "done" && !item.actual_end_date).length;
+  return `<div class="overview-chart-legend"><span>Previstas</span><span>Atendidas</span></div><div class="overview-chart-rows">${rows.map((row) => `<div class="overview-chart-row"><time>${dt(row.start)}</time><div class="overview-bar-pair"><div class="overview-chart-track" title="${row.planned} previstas"><span style="width:${row.planned / max * 100}%"></span></div><div class="overview-chart-track done" title="${row.done} atendidas"><span style="width:${row.done / max * 100}%"></span></div></div><strong>${row.planned} / ${row.done}</strong></div>`).join("")}</div>${missing ? `<p class="overview-chart-note">${missing} atendida(s) sem data real de término, fora do gráfico.</p>` : ""}`;
+}
+
+function overviewRevenueChart(metrics, channel = "") {
+  if (!metrics.length) return '<p class="muted">Nenhum dado mensal registrado.</p>';
+  const rows = metrics.slice(-12).map((row) => ({ ...row, amount: deliveryOverviewRevenue(row, channel) }));
+  const max = Math.max(1, ...rows.map((row) => Math.max(0, row.amount || 0)));
+  return `<div class="overview-chart-legend"><span>Faturamento${channel ? ` · ${esc(channel)}` : ""}</span><span>SKUs</span></div><div class="overview-chart-rows">${rows.map((row) => `<div class="overview-chart-row revenue"><time>${row.month.split("-").reverse().join("/")}</time><div class="overview-chart-track revenue"><span style="width:${Math.max(0, row.amount || 0) / max * 100}%"></span></div><strong>${row.amount == null ? "Não informado" : brl(row.amount)}</strong><span>${row.skus == null ? "—" : row.skus.toLocaleString("pt-BR")}</span></div>`).join("")}</div>`;
+}
+
+function overviewChannelSummary(tasks, objectives, goals, today) {
+  const groups = new Map();
+  for (const [section, items] of [["activities", tasks], ["objectives", objectives], ["goals", goals]]) {
+    for (const item of items) {
+      const label = String(item.channel || "Sem canal").trim() || "Sem canal";
+      const key = normalizeDeliveryChannel(label);
+      if (!groups.has(key)) groups.set(key, { label, activities: [], objectives: [], goals: [] });
+      groups.get(key)[section].push(item);
+    }
+  }
+  if (!groups.size) return '<p class="muted">Nenhuma atividade vinculada à entrega.</p>';
+  return `<div class="overview-channel-table"><div class="overview-channel-head"><span>Canal</span><span>Tarefas atendidas</span><span>Atrasadas</span><span>Objetivos concluídos</span><span>Metas atingidas</span></div>${[...groups.values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR")).map((group) => `<details class="overview-channel"><summary><strong>${esc(group.label)}</strong><span>${group.activities.filter((item) => item.status === "done").length} / ${group.activities.length}</span><span>${group.activities.filter((item) => item.status !== "done" && taskPlannedEnd(item) && taskPlannedEnd(item) < today).length}</span><span>${group.objectives.filter((item) => item.status === "done").length} / ${group.objectives.length}</span><span>${group.goals.filter((item) => item.status === "done" || deliveryGoalReached(item)).length} / ${group.goals.length}</span></summary><div class="overview-channel-detail">${[["activities", "Tarefas"], ["objectives", "Objetivos"], ["goals", "Metas"]].map(([section, label]) => `<section><h4>${label}</h4>${group[section].map((item) => `<div>${overviewItemButton(item, section)}<span>${esc(taskStatusLabel(item.status || "todo"))}${section === "goals" ? ` · ${deliveryGoalPercent(item)}%` : ""}</span></div>`).join("") || '<p class="muted">Nenhum item.</p>'}</section>`).join("")}</div></details>`).join("")}</div>`;
 }
 
 function renderDeliveryStatusMatrix(rows, kind, tasks = []) {
@@ -5858,13 +5942,16 @@ function renderProjectBoard(projectId) {
     root.querySelectorAll(".delivery-overview-open").forEach((button) => button.addEventListener("click", () => {
       projectBoardState.section = button.dataset.overviewSection;
       projectBoardState.view = "table";
-      projectBoardState.search = "";
+      projectBoardState.search = button.dataset.overviewSearch || "";
       projectBoardState.page = 1;
       projectBoardState.sortKey = null;
       projectBoardState.filters = {};
       document.querySelectorAll("[data-project-section]").forEach((tab) => tab.classList.toggle("active", tab.dataset.projectSection === projectBoardState.section));
       renderProjectBoard(projectId);
     }));
+    root.querySelector("#overview-revenue-channel")?.addEventListener("change", (event) => {
+      root.querySelector("#overview-revenue-chart").innerHTML = overviewRevenueChart(normalizeProjectBusinessMetrics(project.business_metrics).sort((a, b) => a.month.localeCompare(b.month)), event.target.value);
+    });
     return;
   }
   if (projectBoardState.section === "data") {
@@ -9731,6 +9818,7 @@ const HELP_PAGES = {
       HELP_TASK_OPERATIONS_SECTION,
       HELP_TASK_WINDOWS_SECTION,
       HELP_TASK_SETUP_SECTION,
+      { title: "Visão geral · acompanhamento do cliente", lead: "Separe execução, resultados e dados do negócio. Atendidas / previstas até hoje considera apenas tarefas com término previsto até a data atual; tarefas futuras e canceladas não reduzem esse percentual. Sem tarefas previstas, não há percentual de execução.", cards: [["Atenção primeiro", "Atrasos, dependências pendentes e objetivos ou metas com prazo nos próximos sete dias. Clique no item para abrir a aba correspondente com seu nome na busca."], ["Objetivos em risco", "Objetivos ainda não concluídos com prazo vencido ou dependências pendentes. É um sinal operacional, não uma previsão automática do resultado."], ["Execução semanal", "Compara o término previsto com conclusões pela data real de término nas últimas oito semanas. Atendidas sem data real ficam fora do gráfico e são informadas separadamente."], ["Dados do mês", "Faturamento, SKUs e fornecedores registrados no mês atual da entrega. A variação exige faturamento do mês anterior maior que zero. Dado ausente não significa zero; Dados não tem barra de conclusão."], ["Metas por indicador", "Cada meta mantém seu valor atual, alvo e atingimento. Não há média de indicadores de unidades diferentes."], ["Resumo por canal", "Expanda um canal para consultar tarefas, objetivos e metas. O gráfico de faturamento permite escolher um canal e mostra até os últimos doze meses registrados."]] },
       { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
       { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Os itens ativos são comparados com Requer no Setup das tarefas. Todos os requisitos devem estar ativos; o campo Canal não controla mais a liberação. Canais ativados não podem ser desativados depois de salvo.",
         cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
