@@ -8896,20 +8896,32 @@ function escCloseHandler(e) {
 }
 function closeModal() {
   document.getElementById("modal-root").innerHTML = "";
+  syncSidebarModuleNavigation();
   document.getElementById("registration-filter-dd")?.remove();
   modalCloseOverride = null;
   modalLayerStack = [];
   document.removeEventListener("keydown", escCloseHandler);
 }
+function syncSidebarModuleNavigation() {
+  const moduleId = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
+  document.body.classList.toggle("sidebar-module-open", Boolean(moduleId));
+  document.querySelectorAll("#app-sidebar .foot-btn").forEach((button) => button.classList.toggle("sidebar-current", button.dataset.action === moduleId));
+  document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", !moduleId && button.dataset.tab === state.tab));
+}
+function closeSidebarModuleView() {
+  if (document.querySelector("#modal-root > .sidebar-module-overlay")) closeModal();
+}
 function shell(title, inner, opts = {}) {
-  const cls = "modal" + (opts.cls ? ` ${opts.cls}` : "");
-  const overlayCls = opts.cls?.split(/\s+/).includes("full") ? "overlay full-overlay" : "overlay";
-  const titleHtml = opts.titleHtml || esc(title);
+  const sidebarModule = navigationPreference.mode === "sidebar" && opts.navigationModule;
+  const cls = "modal" + (opts.cls ? ` ${opts.cls}` : "") + (sidebarModule ? " sidebar-module" : "");
+  const overlayCls = (opts.cls?.split(/\s+/).includes("full") ? "overlay full-overlay" : "overlay") + (sidebarModule ? " sidebar-module-overlay" : "");
+  const titleHtml = sidebarModule ? esc(opts.navigationTitle || title) : opts.titleHtml || esc(title);
   document.getElementById("modal-root").innerHTML =
-    `<div class="${overlayCls}" id="ov"><div class="${cls}">
+    `<div class="${overlayCls}" id="ov"${sidebarModule ? ` data-navigation-module="${esc(opts.navigationModule)}"` : ""}><div class="${cls}">
       <h3><span class="modal-title">${titleHtml}</span>${opts.headerCenter || ""}<span class="modal-header-actions">${opts.headerActions || ""}<button class="modal-close-x" id="shell-close" title="Fechar (Esc)">✕</button></span></h3>
       ${inner}
     </div></div>`;
+  syncSidebarModuleNavigation();
   modalCloseOverride = typeof opts.onClose === "function" ? opts.onClose : null;
   const closeAction = () => modalCloseOverride ? modalCloseOverride() : closeModal();
   document.getElementById("shell-close").addEventListener("click", closeAction);
@@ -8924,6 +8936,7 @@ function sidePanel(title, inner, opts = {}) {
       <h3>${esc(title)}<button class="modal-close-x" id="side-close" title="Fechar (Esc)">✕</button></h3>
       ${inner}
     </div></div>`;
+  syncSidebarModuleNavigation();
   const closeAction = () => modalCloseOverride ? modalCloseOverride() : closeModal();
   document.getElementById("side-close").addEventListener("click", closeAction);
   document.addEventListener("keydown", escCloseHandler);
@@ -10619,6 +10632,8 @@ function openRegistrationsModal(section = "products") {
     <button class="foot-btn" disabled>ATUALIZAÇÕES</button>
   </div>`;
   shell("Cadastros", `<div id="registrations-root" class="full-body registrations-root"></div>${disabledFooter}`, {
+    navigationModule: "registrations",
+    navigationTitle: `Cadastros · ${REGISTRATION_LABEL[section]}`,
     cls: "full registrations-modal",
     headerCenter,
     headerActions: liveRefreshButtonHtml(),
@@ -12579,6 +12594,8 @@ function openToolsModal(section = "files") {
     ${[["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${section === id ? " active" : ""}" data-tools-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
+    navigationModule: "tools",
+    navigationTitle: `Ferramentas · ${[["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].find(([id]) => id === section)?.[1] || section}`,
     cls: "full registrations-modal",
     headerCenter,
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
@@ -12835,6 +12852,8 @@ function openSocialModal(section = "home") {
     ${Object.entries(SOCIAL_MODULE_LABELS).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === socialState.section ? " active" : ""}" data-social-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Social", `<div id="social-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
+    navigationModule: "social",
+    navigationTitle: `Social · ${SOCIAL_MODULE_LABELS[socialState.section] || "Visão geral"}`,
     cls: "full registrations-modal",
     headerCenter,
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
@@ -16775,6 +16794,7 @@ document.getElementById("login-form")?.addEventListener("submit", async (event) 
   }
 });
 document.getElementById("brand-home")?.addEventListener("click", () => {
+  closeSidebarModuleView();
   closeMobileNavigation();
   closeFloaters();
   state.tab = "home"; state.sortK = null; state.sortDir = 1; state.q = ""; state.view = "table";
@@ -16789,6 +16809,7 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   t.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[t.dataset.tab] || ""}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
     if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
+    closeSidebarModuleView();
     closeFloaters();
     closeMobileNavigation();
     state.tab = t.dataset.tab; state.sortK = null; state.sortDir = 1; state.q = "";
@@ -16813,6 +16834,8 @@ document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
 window.matchMedia("(max-width:760px)").addEventListener("change", closeMobileNavigation);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.getElementById("sidebar-submodules")) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
     const action = document.getElementById("sidebar-submodules").dataset.parent;
     closeSidebarSubmodules();
     document.querySelector(`#app-sidebar [data-action="${action}"]`)?.focus();

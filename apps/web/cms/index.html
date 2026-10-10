@@ -1764,6 +1764,19 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .nav-chevron{display:none}
   #app-sidebar .nav-chevron{display:block;margin-left:auto}
   #app-sidebar .foot-btn[aria-expanded="true"]{border-color:var(--blue);color:var(--blue);background:var(--row-hover)}
+  #app-sidebar .foot-btn.sidebar-current{border-color:var(--cyan);background:var(--cyan);color:#061313}
+  body.navigation-sidebar .sidebar-module-overlay{left:208px;width:calc(100% - 208px);background:var(--panel)}
+  body.navigation-collapsed .sidebar-module-overlay{left:64px;width:calc(100% - 64px)}
+  .modal.sidebar-module{width:100%;height:100%}
+  .modal.sidebar-module>h3{height:34px;min-height:34px;font-size:11px}
+  .modal.sidebar-module>h3>.modal-title{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal.sidebar-module>h3 .modal-header-tabs,.modal.sidebar-module>.registrations-footer{display:none}
+  @media(max-width:900px){
+    .sidebar-module .modal-toolbar.registration-toolbar,.sidebar-module .tools-toolbar{height:auto;min-height:40px;flex:0 0 auto;grid-template-columns:minmax(0,1fr);gap:6px}
+    .sidebar-module .registration-toolbar-center .search{width:100%;max-width:none;min-width:0;flex:1}
+    .sidebar-module .registration-toolbar-center .plus{position:static;flex-shrink:0}
+    .sidebar-module .registration-toolbar-right{justify-content:flex-end;flex-wrap:wrap;padding-left:0}
+  }
   .sidebar-flyout{position:fixed;z-index:60;width:220px;max-height:calc(100vh - 16px);overflow:auto;padding:6px;border:1px solid var(--border);border-radius:5px;background:var(--panel);box-shadow:0 5px 20px var(--overlay)}
   .sidebar-flyout-title{padding:8px 10px;color:var(--muted);font-size:11px;font-weight:700;border-bottom:1px solid var(--border);margin-bottom:4px}
   .sidebar-submodule{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:8px;border:0;border-radius:4px;background:transparent;color:var(--text);font:inherit;font-size:12px;text-align:left;cursor:pointer;overflow-wrap:anywhere}
@@ -1795,6 +1808,11 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .navigation-options label:has(input:checked){border-color:var(--blue);background:var(--row-hover)}
   @media(max-width:760px){
     body.navigation-sidebar,body.navigation-collapsed{padding-left:0}
+    body.navigation-sidebar .sidebar-module-overlay{left:0;width:100%}
+    .sidebar-module .registration-toolbar-left{display:none}
+    body.navigation-sidebar.sidebar-module-open #sidebar-toggle{z-index:65}
+    body.navigation-sidebar.sidebar-module-open.navigation-open #app-sidebar{z-index:70}
+    .sidebar-flyout{z-index:75}
     body.navigation-sidebar #app-sidebar{width:208px;top:0;bottom:0;transform:translateX(-100%);box-shadow:8px 0 20px var(--overlay)}
     body.navigation-sidebar.navigation-open #app-sidebar{transform:none}
     body.navigation-sidebar #sidebar-toggle{position:fixed;left:8px;bottom:8px;z-index:31;display:flex;width:36px;height:36px;border:1px solid var(--border);background:var(--panel);box-shadow:0 2px 8px var(--overlay)}
