@@ -51,7 +51,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.deepEqual(result.labels, scope === 'registration' ? ['PRODUTO', 'TAREFA', 'STATUS'] : ['CLIENTE', 'PRODUTO', 'TAREFA', 'STATUS']);
         for (const column of result.columns) {
           assert(Math.abs(column.width - { CLIENTE: 105, PRODUTO: 70, TAREFA: 240, STATUS: 97.5 }[column.label]) < 1, `${scope}: ${column.label} width ${column.width}`);
-          assert.equal(column.shadow, 'none');
+          if (column.label === 'STATUS') assert.notEqual(column.shadow, 'none');
+          else assert.equal(column.shadow, 'none');
         }
         assert.equal(result.statusOverflow, false);
         assert.equal(result.multiColumns.length, 2);
@@ -72,8 +73,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       probe.innerHTML = '<thead><tr><th class="result-name-sticky">Objetivo</th><th>Categoria</th></tr></thead><tbody><tr><td class="result-name-sticky">Nome comprido</td><td>Canal</td></tr></tbody>';
       document.body.appendChild(probe);
     });
-    for (const shadow of await page.locator('.result-name-sticky').evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).boxShadow))) assert.equal(shadow, 'none');
+    for (const shadow of await page.locator('.result-name-sticky').evaluateAll((cells) => cells.map((cell) => getComputedStyle(cell).boxShadow))) assert.notEqual(shadow, 'none');
     assert.deepEqual(errors, []);
-    console.log('All three task tables: reduced widths, no frozen shadow, status controls and presets passed at desktop/mobile widths.');
+    console.log('All three task tables: compact widths, frozen boundary shadow, status controls and presets passed at desktop/mobile widths.');
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

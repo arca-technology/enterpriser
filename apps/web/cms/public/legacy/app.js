@@ -3052,6 +3052,7 @@ function styleTaskFrozenColumns(table, keyAttribute, definitions, omitClient = f
     const width = { CLIENTE: 105, PRODUTO: 70, TAREFA: 240, STATUS: 97.5 }[label];
     table.querySelectorAll(`[${keyAttribute}="${col.k}"]`).forEach((cell) => {
       cell.classList.add("task-frozen-column");
+      if (label === "STATUS") cell.classList.add("task-frozen-edge");
       if (label === "TAREFA" && cell.tagName === "TH") cell.title = "Coluna fixa. Ctrl+clique para filtrar.";
       cell.style.left = `${left}px`;
       cell.style.width = cell.style.minWidth = cell.style.maxWidth = `${width}px`;
