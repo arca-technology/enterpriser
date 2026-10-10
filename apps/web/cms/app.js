@@ -2217,7 +2217,7 @@ function columns(tab, c) {
     case "activities": return [
       { k: "client_name", h: "CLIENTE", cls: "sticky-col sticky-col-1", thCls: "sticky-col sticky-col-1" },
       { k: "product_name", h: "PRODUTO", cls: "sticky-col sticky-col-2", thCls: "sticky-col sticky-col-2" },
-      { k: "activity_origin", h: "ORIGEM", cls: "sticky-col sticky-col-3", thCls: "sticky-col sticky-col-3", fmt: (v, row) => row.parent_activity_id ? badge("lead", "Subtarefa") : badge(v === "product" ? "qualification" : "proposal", v === "product" ? "Produto" : "Dia a dia") },
+      { k: "activity_origin", h: "ORIGEM", fmt: (v, row) => row.parent_activity_id ? badge("lead", "Subtarefa") : badge(v === "product" ? "qualification" : "proposal", v === "product" ? "Produto" : "Dia a dia") },
       { k: "title", h: "TAREFA", cls: "sticky-col sticky-col-4 task-name-col", thCls: "sticky-col sticky-col-4 task-name-col", fmt: (_v, row) => `${row.parent_activity_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(row))}` },
       { k: "priority", h: "PRIORIDADE", fmt: (v) => priorityBadge(v) },
       { k: "dependency_ids", h: "DEPENDE DE", fmt: (v, row) => stackedCell(dependencyNameList(v, row.depends_on_activity_id, c.activityRecords)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
@@ -3015,6 +3015,50 @@ function tabFilters(tab = state.tab) {
   if (!state.filters[tab]) state.filters[tab] = {};
   return state.filters[tab];
 }
+const TASK_COLUMN_ORDER = ["CLIENTE", "PRODUTO", "TAREFA", "STATUS", "ORIGEM", "PRIORIDADE", "DEPENDE DE", "INFORMAÇÃO", "GRUPO", "SUBGRUPO", "SETOR", "SUBSETOR", "MÓDULO", "SUBMÓDULO", "CATEGORIA", "CANAL", "TIPO", "RECORRÊNCIA", "DIAS ÚTEIS", "REQUER NO SETUP", "PRAZO SUGERIDO", "CHECKLIST", "SUBTAREFAS", "OBJETIVO", "RESPONSÁVEIS", "REFERÊNCIAS", "INÍCIO PREVISTO", "TÉRMINO PREVISTO", "INÍCIO REAL", "TÉRMINO REAL", "PRAZO", "COMENTÁRIOS"];
+const TASK_FROZEN_LABELS = TASK_COLUMN_ORDER.slice(0, 4);
+const TASK_COLUMN_PRESETS = {
+  resumo: { label: "Resumo", columns: ["PRIORIDADE", "RESPONSÁVEIS", "TÉRMINO PREVISTO", "PRAZO"] },
+  operacao: { label: "Operação", columns: ["PRIORIDADE", "DEPENDE DE", "INFORMAÇÃO", "CANAL", "CHECKLIST", "SUBTAREFAS", "RESPONSÁVEIS", "REFERÊNCIAS", "TÉRMINO PREVISTO", "PRAZO", "COMENTÁRIOS"] },
+  planejamento: { label: "Planejamento", columns: ["DEPENDE DE", "RECORRÊNCIA", "DIAS ÚTEIS", "REQUER NO SETUP", "PRAZO SUGERIDO", "OBJETIVO", "RESPONSÁVEIS", "INÍCIO PREVISTO", "TÉRMINO PREVISTO", "INÍCIO REAL", "TÉRMINO REAL", "PRAZO"] },
+  classificacao: { label: "Classificação", columns: ["ORIGEM", "GRUPO", "SUBGRUPO", "SETOR", "SUBSETOR", "MÓDULO", "SUBMÓDULO", "CATEGORIA", "CANAL", "TIPO", "REQUER NO SETUP"] },
+  completo: { label: "Completo", columns: TASK_COLUMN_ORDER }
+};
+function taskColumnLabel(label) {
+  const normalized = String(label).trim().toLocaleUpperCase("pt-BR");
+  return normalized === "PRODUTOS" ? "PRODUTO" : normalized === "RESPONSÁVEIS PADRÃO" ? "RESPONSÁVEIS" : normalized;
+}
+function taskColumnOrder(definitions, savedOrder = []) {
+  const rank = (col) => TASK_COLUMN_ORDER.indexOf(taskColumnLabel(col.h));
+  const defaults = [...definitions].sort((a, b) => (rank(a) < 0 ? 999 : rank(a)) - (rank(b) < 0 ? 999 : rank(b)));
+  const remaining = [...savedOrder.map((key) => definitions.find((col) => col.k === key)).filter(Boolean), ...defaults.filter((col) => !savedOrder.includes(col.k))];
+  return [...defaults.filter((col) => TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h))), ...remaining.filter((col) => !TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h)))];
+}
+function taskPresetControl() {
+  return `<select class="task-column-preset" aria-label="Predefinição de colunas"><option value="">Predefinições</option>${Object.entries(TASK_COLUMN_PRESETS).map(([key, preset]) => `<option value="${key}">${preset.label}</option>`).join("")}</select>`;
+}
+function applyTaskPreset(definitions, prefs, presetKey) {
+  const preset = TASK_COLUMN_PRESETS[presetKey];
+  if (!preset) return;
+  definitions.forEach((col) => { prefs[col.k] = TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h)) || preset.columns.includes(taskColumnLabel(col.h)); });
+  prefs.__order = taskColumnOrder(definitions).map((col) => col.k);
+}
+function styleTaskFrozenColumns(table, keyAttribute, definitions, omitClient = false) {
+  let left = 72;
+  table.classList.add("unified-task-table");
+  TASK_FROZEN_LABELS.forEach((label) => {
+    const col = definitions.find((item) => taskColumnLabel(item.h) === label);
+    if (!col || (omitClient && label === "CLIENTE")) return;
+    const width = { CLIENTE: 210, PRODUTO: 140, TAREFA: 320, STATUS: 130 }[label];
+    table.querySelectorAll(`[${keyAttribute}="${col.k}"]`).forEach((cell) => {
+      cell.classList.add("task-frozen-column");
+      if (label === "TAREFA" && cell.tagName === "TH") cell.title = "Coluna fixa. Ctrl+clique para filtrar.";
+      cell.style.left = `${left}px`;
+      cell.style.width = cell.style.minWidth = cell.style.maxWidth = `${width}px`;
+    });
+    left += width;
+  });
+}
 function orderedColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
   const cols = columns(tab, c);
@@ -3029,12 +3073,11 @@ function orderedColumns(tab, c) {
     ordered.splice(previous ? ordered.indexOf(previous) + 1 : 0, 0, col);
   });
   if (tab !== "activities") return ordered;
-  const frozen = new Set(["client_name", "product_name", "activity_origin", "title"]);
-  return [...cols.filter((col) => frozen.has(col.k)), ...ordered.filter((col) => !frozen.has(col.k))];
+  return taskColumnOrder(cols, savedOrder);
 }
 function visibleColumns(tab, c) {
   const prefs = colPrefs[tab] || {};
-  const frozen = tab === "activities" ? new Set(["client_name", "product_name", "activity_origin", "title"]) : new Set();
+  const frozen = tab === "activities" ? new Set(["client_name", "product_name", "title", "status"]) : new Set();
   return orderedColumns(tab, c).filter((col) => frozen.has(col.k) || prefs[col.k] !== false);
 }
 function displayValue(row, col, c) {
@@ -3264,11 +3307,13 @@ function renderTable(c) {
   const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
   const tableBody = body || `<tr><td colspan="${emptyColspan}" class="empty">Nenhum registro. Clique em <b>+</b> para criar.</td></tr>`;
   document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table${selectable && selectedSet.size ? " has-selection" : ""}" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
+  if (state.tab === "activities") styleTaskFrozenColumns(document.querySelector("#main table"), "data-k", cols);
 
   document.querySelectorAll("thead th[data-k]").forEach((th) =>
     th.addEventListener("click", (e) => {
       const k = th.dataset.k;
       if (e.ctrlKey || e.metaKey) { openColumnFilter(th, k); return; }
+      if (state.tab === "activities" && k === "title") return;
       if (state.sortK === k) state.sortDir *= -1; else { state.sortK = k; state.sortDir = 1; }
       if (state.pages[state.tab]) state.pages[state.tab] = 1;
       render();
@@ -5383,6 +5428,7 @@ function renderTaskMatrix(tasks) {
 }
 
 function renderTaskTable(tasks) {
+  const project = cache.projectById?.[projectBoardState.projectId] || cache.projects.find((item) => item.id === projectBoardState.projectId);
   const allTasks = operationalProjectTasks(projectBoardState.projectId);
   const totalPages = Math.max(1, Math.ceil(tasks.length / projectBoardState.pageSize));
   projectBoardState.page = Math.min(Math.max(1, projectBoardState.page || 1), totalPages);
@@ -5422,6 +5468,10 @@ function renderTaskTable(tasks) {
       <td>${inlineTaskStatus(task, "project-inline-task-status")}</td>
       <td>${taskDeadlineBadge(task)}</td>
       <td>${taskCommentsButton(task)}</td>
+      <td>${esc(project?.client_name || "—")}</td>
+      <td>${esc(cache.productById?.[project?.product_id]?.name || "—")}</td>
+      <td class="compact-multi-cell">${stackedCell(taskSetupRequirements(task))}</td>
+      <td>${task.target_days == null ? "—" : `${esc(task.target_days)} dia(s)`}</td>
       <td class="table-actions-cell">${tableActionButtons({
         open: terminal && checklist.total ? { className: "checklist-open", attrs: { "data-id": task.id }, title: "Abrir checklist" } : null,
         edit: { className: "task-edit", attrs: { "data-id": task.id }, title: "Editar tarefa" },
@@ -5431,8 +5481,9 @@ function renderTaskTable(tasks) {
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap">
     <table><thead><tr>
-      <th class="project-task-name-col">Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>${tableActionsHead()}
-    </tr></thead><tbody>${rows || '<tr><td colspan="29" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
+      <th class="project-task-name-col">Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>
+      <th>Cliente</th><th>Produto</th><th>Requer no Setup</th><th>Prazo sugerido</th>${tableActionsHead()}
+    </tr></thead><tbody>${rows || '<tr><td colspan="33" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
   </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
@@ -5831,13 +5882,14 @@ function projectSectionRows(projectId, section = projectBoardState.section) {
 }
 
 const PROJECT_TABLE_LABELS = {
-  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários"],
+  activities: ["Tarefa", "Origem", "Prioridade", "Depende de", "Informação", "Grupo", "Subgrupo", "Setor", "Subsetor", "Módulo", "Submódulo", "Categoria", "Canal", "Tipo", "Recorrência", "Dias úteis", "Checklist", "Subtarefas", "Objetivo", "Responsáveis", "Referências", "Início previsto", "Término previsto", "Início real", "Término real", "Status", "Prazo", "Comentários", "Cliente", "Produto", "Requer no Setup", "Prazo sugerido"],
   objectives: ["Objetivo", "Categoria", "Canal", "Critério de conclusão", "Comentários", "Observações", "Progresso das tarefas", "Depende de", "Responsável", "Prazo", "Status"],
   goals: ["Meta", "Categoria", "Canal", "Indicador", "Valor atual", "Valor-alvo", "Comentários", "Observações", "Atingimento", "Depende de", "Responsável", "Prazo", "Status"]
 };
 
 function projectSectionValues(item, tasks = []) {
   if (projectBoardState.section === "activities") {
+    const project = cache.projectById?.[item.project_id] || cache.projects.find((entry) => entry.id === item.project_id);
     const checklist = checklistProgress(item.checklist);
     const subtasks = taskSubtaskProgress(item.id, tasks);
     return [
@@ -5857,7 +5909,11 @@ function projectSectionValues(item, tasks = []) {
       item.actual_end_date ? dt(item.actual_end_date) : "—",
       taskStatusLabel(item.status || "todo"),
       taskDeadlineState(item) || "—",
-      `${taskCommentCount(item)} comentário(s)`
+      `${taskCommentCount(item)} comentário(s)`,
+      project?.client_name || "—",
+      cache.productById?.[project?.product_id]?.name || "—",
+      taskSetupRequirements(item).join("; ") || "—",
+      item.target_days == null ? "—" : `${item.target_days} dia(s)`
     ];
   }
   if (projectBoardState.section === "objectives") {
@@ -6522,7 +6578,7 @@ function applyProjectTableColumnPreferences(table) {
   const prefs = secondaryColumnPrefs(scope);
   const definitions = projectTableDefinitions(table);
   const savedOrder = orderedColumnDefinitions(definitions, prefs);
-  const ordered = ["activities", "goals", "objectives"].includes(projectBoardState.section)
+  const ordered = projectBoardState.section === "activities" ? taskColumnOrder(definitions, prefs.__order) : ["goals", "objectives"].includes(projectBoardState.section)
     ? [...definitions.filter((column) => column.k === "d0"), ...savedOrder.filter((column) => column.k !== "d0")]
     : savedOrder;
   const headRow = table.tHead?.rows?.[0];
@@ -6538,7 +6594,7 @@ function applyProjectTableColumnPreferences(table) {
     orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
-    const visible = col.k === "d0" || prefs[col.k] !== false;
+    const visible = col.k === "d0" || (projectBoardState.section === "activities" && TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h))) || prefs[col.k] !== false;
     headers[col.k].hidden = !visible;
     if (["goals", "objectives"].includes(projectBoardState.section) && col.k === "d0") headers[col.k].classList.add("result-name-sticky");
     projectTableRows(table).forEach((row) => {
@@ -6549,6 +6605,7 @@ function applyProjectTableColumnPreferences(table) {
       }
     });
   });
+  if (projectBoardState.section === "activities") styleTaskFrozenColumns(table, "data-project-column", definitions);
 }
 
 function wireProjectTableColumns(table) {
@@ -6571,6 +6628,7 @@ function wireProjectTableColumns(table) {
         openProjectColumnFilter(header, key);
         return;
       }
+      if (projectBoardState.section === "activities" && taskColumnLabel(header.dataset.projectLabel) === "TAREFA") return;
       if (projectBoardState.sortKey === key) projectBoardState.sortDir *= -1;
       else {
         projectBoardState.sortKey = key;
@@ -7168,8 +7226,8 @@ function openColumnManager() {
   const draw = () => {
     const listed = colsInOrder().filter((col) => listMode === "all" || (listMode === "visible" ? prefs[col.k] !== false : prefs[col.k] === false));
     panel.querySelector("#cols-dd-list").innerHTML = listed.map((col) => {
-      const on = prefs[col.k] !== false;
-      const locked = state.tab === "activities" && ["client_name", "product_name", "activity_origin", "title"].includes(col.k);
+      const locked = state.tab === "activities" && TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h));
+      const on = locked || prefs[col.k] !== false;
       return `<div class="column-manager-row${on ? "" : " off"}${locked ? " locked" : ""}" data-k="${esc(col.k)}" draggable="${!locked}">
         <span class="column-drag-handle" title="${locked ? "Coluna congelada" : "Arrastar para reordenar"}">⠿</span>
         <button class="column-switch${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}" title="${locked ? "Coluna congelada" : `${on ? "Ocultar" : "Exibir"} ${col.h}`}"${locked ? " disabled" : ""}></button>
@@ -7205,7 +7263,7 @@ function openColumnManager() {
         event.preventDefault();
         const targetKey = item.dataset.k;
         item.classList.remove("drag-over");
-        if (!draggedKey || draggedKey === targetKey) return;
+        if (!draggedKey || draggedKey === targetKey || item.classList.contains("locked")) return;
         const from = order.indexOf(draggedKey);
         const to = order.indexOf(targetKey);
         order.splice(from, 1);
@@ -7231,7 +7289,7 @@ function openColumnManager() {
   });
   panel.querySelector("#cols-dd-reset").addEventListener("click", () => {
     Object.keys(prefs).forEach((key) => delete prefs[key]);
-    order = baseCols.map((col) => col.k);
+    order = (state.tab === "activities" ? taskColumnOrder(baseCols) : baseCols).map((col) => col.k);
     colPrefs[state.tab] = prefs;
     saveColPrefs();
     listMode = "all";
@@ -7239,6 +7297,17 @@ function openColumnManager() {
     draw();
     render();
   });
+  if (state.tab === "activities") {
+    panel.querySelector(".column-manager-controls").insertAdjacentHTML("beforeend", taskPresetControl());
+    panel.querySelector(".task-column-preset").addEventListener("change", (event) => {
+      applyTaskPreset(baseCols, prefs, event.target.value);
+      order = [...prefs.__order];
+      colPrefs[state.tab] = prefs;
+      saveColPrefs();
+      draw();
+      render();
+    });
+  }
   setTimeout(() => {
     const outside = (e) => {
       if (!panel.contains(e.target) && e.target.id !== "cols-btn") {
@@ -7296,10 +7365,12 @@ function orderedColumnDefinitions(definitions, prefs) {
 function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
   document.getElementById("cols-dd")?.remove();
   const prefs = secondaryColumnPrefs(scope);
-  const frozenKeys = scope === "delivery:activities" ? new Set(["d0"]) : new Set();
+  const isTaskTable = ["delivery:activities", "registrations:activities"].includes(scope);
+  if (scope === "registrations:activities") definitions = definitions.filter((col) => taskColumnLabel(col.h) !== "CLIENTE");
+  const frozenKeys = isTaskTable ? new Set(definitions.filter((col) => TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h))).map((col) => col.k)) : new Set();
   let order = [
-    ...definitions.filter((col) => frozenKeys.has(col.k)).map((col) => col.k),
-    ...orderedColumnDefinitions(definitions, prefs).filter((col) => !frozenKeys.has(col.k)).map((col) => col.k)
+    ...(isTaskTable ? taskColumnOrder(definitions) : definitions).filter((col) => frozenKeys.has(col.k)).map((col) => col.k),
+    ...(isTaskTable ? taskColumnOrder(definitions, prefs.__order) : orderedColumnDefinitions(definitions, prefs)).filter((col) => !frozenKeys.has(col.k)).map((col) => col.k)
   ];
   let listMode = "all";
   let draggedKey = null;
@@ -7360,7 +7431,7 @@ function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
         event.preventDefault();
         const targetKey = item.dataset.k;
         item.classList.remove("drag-over");
-        if (!draggedKey || draggedKey === targetKey) return;
+        if (!draggedKey || draggedKey === targetKey || frozenKeys.has(targetKey)) return;
         const from = order.indexOf(draggedKey);
         const to = order.indexOf(targetKey);
         order.splice(from, 1);
@@ -7383,12 +7454,21 @@ function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
   });
   panel.querySelector(".column-manager-preset").addEventListener("click", () => {
     Object.keys(prefs).forEach((key) => delete prefs[key]);
-    order = definitions.map((col) => col.k);
+    order = (isTaskTable ? taskColumnOrder(definitions) : definitions).map((col) => col.k);
     listMode = "all";
     panel.querySelector(".column-manager-filter").value = "all";
     persist();
     draw();
   });
+  if (isTaskTable) {
+    panel.querySelector(".column-manager-controls").insertAdjacentHTML("beforeend", taskPresetControl());
+    panel.querySelector(".task-column-preset").addEventListener("change", (event) => {
+      applyTaskPreset(definitions, prefs, event.target.value);
+      order = [...prefs.__order];
+      persist();
+      draw();
+    });
+  }
   setTimeout(() => {
     const outside = (event) => {
       if (!panel.contains(event.target) && !event.target.closest(".registration-cols-btn,.tools-cols-btn,.project-cols-btn")) {
@@ -11281,6 +11361,7 @@ function wireRegistrationTable() {
         openRegistrationColumnFilter(header, table, key);
         return;
       }
+      if (registrationsState.section === "activities" && taskColumnLabel(header.dataset.registrationLabel) === "TAREFA") return;
       const tableState = registrationTableState();
       if (tableState.sortKey === key) tableState.sortDir *= -1;
       else { tableState.sortKey = key; tableState.sortDir = 1; }
@@ -11422,7 +11503,8 @@ function applyRegistrationColumnPreferences(table) {
   const definitions = registrationColumnDefinitions(table);
   const savedOrder = orderedColumnDefinitions(definitions, prefs);
   const freezeName = ["goals", "objectives"].includes(registrationsState.section);
-  const ordered = freezeName ? [...definitions.filter((col) => col.k === "c0"), ...savedOrder.filter((col) => col.k !== "c0")] : savedOrder;
+  const isTaskTable = registrationsState.section === "activities";
+  const ordered = isTaskTable ? taskColumnOrder(definitions, prefs.__order) : freezeName ? [...definitions.filter((col) => col.k === "c0"), ...savedOrder.filter((col) => col.k !== "c0")] : savedOrder;
   const headRow = table.tHead?.rows?.[0];
   if (!headRow) return;
   const headerByKey = Object.fromEntries([...headRow.cells].filter((cell) => cell.dataset.registrationKey).map((cell) => [cell.dataset.registrationKey, cell]));
@@ -11436,7 +11518,8 @@ function applyRegistrationColumnPreferences(table) {
     orderLeadingTableCells(row, fixedCells);
   });
   ordered.forEach((col) => {
-    const visible = (freezeName && col.k === "c0") || prefs[col.k] !== false;
+    const label = taskColumnLabel(col.h);
+    const visible = isTaskTable && label === "CLIENTE" ? false : (isTaskTable && TASK_FROZEN_LABELS.includes(label)) || (freezeName && col.k === "c0") || prefs[col.k] !== false;
     headerByKey[col.k].hidden = !visible;
     if (freezeName && col.k === "c0") headerByKey[col.k].classList.add("result-name-sticky");
     registrationTableRows(table, true).forEach((row) => {
@@ -11447,6 +11530,7 @@ function applyRegistrationColumnPreferences(table) {
       }
     });
   });
+  if (isTaskTable) styleTaskFrozenColumns(table, "data-registration-key", definitions, true);
 }
 
 function openRegistrationColumnManager(table) {
