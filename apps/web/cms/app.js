@@ -2034,7 +2034,7 @@ const taskStatusTone = (status) => status === "done" ? "won" : status === "cance
 const taskStatusClass = (status) => `task-status-${["todo", "doing", "done", "canceled"].includes(status) ? status : "todo"}`;
 function inlineTaskStatus(task, className = "inline-task-status") {
   const disabled = !currentUserCan("activities", "operate") || taskStatusLocked(task);
-  return `<select class="${className} ${taskStatusClass(task.status || "todo")}" data-id="${esc(task.id)}" title="${taskStatusLocked(task) ? "Somente administradores alteram esta tarefa" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
+  return `<select class="${className} ${taskStatusClass(task.status || "todo")}" data-id="${esc(task.id)}" title="${task.status === "done" ? "Atendido: status definitivo" : taskStatusLocked(task) ? "Somente administradores reabrem tarefas canceladas" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
 }
 function taskDeadlineState(task) {
   const planned = String(taskPlannedEnd(task) || "").slice(0, 10);
@@ -2734,7 +2734,7 @@ function taskBulkProvider(rows, rerender, keys = null) {
         if (changes.status && taskStatusTransitionError(task.status || "todo", changes.status)) { refused += 1; continue; }
         if (await updateProjectTask(id, changes)) { updated += 1; projects.add(task.project_id); }
       }
-      if (refused) toast(`${refused} tarefa(s) mantida(s) pelo fluxo de status: Em andamento não volta para Em aberto e cancelar ou reabrir é só para administradores.`, true);
+      if (refused) toast(`${refused} tarefa(s) mantida(s) pelo fluxo de status: inicie antes de atender; Atendido é definitivo e Em andamento não volta para Em aberto.`, true);
       if (dates) for (const projectId of projects) await recalculateDependencySchedules(projectId);
       return updated;
     },
@@ -3460,7 +3460,7 @@ function renderActivityKanban(c) {
   }).join("");
   document.getElementById("main").innerHTML = `<div class="kanban">${columnsHtml}</div>`;
   document.querySelectorAll("#main .card").forEach((card) => {
-    card.draggable = true;
+    card.draggable = !taskStatusLocked(tasks.find((task) => task.id === card.dataset.id));
     card.addEventListener("dragstart", (event) => {
       event.dataTransfer.setData("text/plain", card.dataset.id);
       card.classList.add("dragging");
@@ -5207,23 +5207,21 @@ document.addEventListener("click", (event) => {
   });
 });
 
-// Fluxo de status das tarefas: Em andamento não volta para Em aberto,
-// Atendido e Cancelado só são reabertos por administradores e só
-// administradores cancelam tarefas em aberto ou em andamento.
+// Atendimento e irreversivel; somente tarefas iniciadas podem ser atendidas.
 function taskStatusTransitionError(from = "todo", to = "todo") {
   if (!to || to === from) return "";
-  const admin = currentUserIsAdmin();
-  if (from === "done" && !admin) return "Tarefa Atendida só pode ser alterada por administradores.";
-  if (from === "canceled" && !admin) return "Tarefa Cancelada só pode ser reaberta por administradores.";
-  if (from === "doing" && to === "todo") return "Tarefa Em andamento não pode voltar para Em aberto.";
-  if (to === "canceled" && ["todo", "doing"].includes(from) && !admin) return "Somente administradores podem cancelar tarefas.";
+  if (!TASK_STATUS.some((status) => status.id === to)) return "Status de tarefa inválido.";
+  if (from === "done") return "Tarefa Atendida não pode ter o status alterado.";
+  if (from === "canceled" && !currentUserIsAdmin()) return "Tarefa Cancelada só pode ser reaberta por administradores.";
+  if (from === "todo" && !["doing", "canceled"].includes(to)) return "Inicie a tarefa antes de marcar como Atendido.";
+  if (from === "doing" && !["done", "canceled"].includes(to)) return "Tarefa Em andamento só pode passar para Atendido ou Cancelado.";
   return "";
 }
-const taskStatusLocked = (task) => ["done", "canceled"].includes(task?.status) && !currentUserIsAdmin();
+const taskStatusLocked = (task) => task?.status === "done" || (task?.status === "canceled" && !currentUserIsAdmin());
 
 function taskStatusOptions(selected = "todo", blocked = false, flow = false) {
-  return TASK_STATUS.map((s) => {
-    const disabled = (blocked && !["todo", "canceled"].includes(s.id)) || (flow && taskStatusTransitionError(selected, s.id));
+  return TASK_STATUS.filter((s) => !flow || !taskStatusTransitionError(selected, s.id)).map((s) => {
+    const disabled = s.id !== selected && blocked && !["todo", "canceled"].includes(s.id);
     return `<option value="${s.id}"${s.id === selected ? " selected" : ""}${disabled ? " disabled" : ""}>${s.label}</option>`;
   }).join("");
 }
@@ -5271,7 +5269,7 @@ function taskCardHtml(task) {
       ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}" type="button">Checklist ${checklist.done}/${checklist.total}</button>`
       : `<div class="task-subtask-summary">Subtarefas ${subtasks.done}/${subtasks.total} · checklist nas subtarefas</div>`}
     <div class="task-actions">
-      <select class="task-status"${taskStatusLocked(task) ? ' title="Somente administradores alteram esta tarefa" disabled' : blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked, true)}</select>
+      <select class="task-status"${taskStatusLocked(task) ? ` title="${task.status === "done" ? "Atendido: status definitivo" : "Somente administradores reabrem tarefas canceladas"}" disabled` : blocked ? ' title="Conclua a tarefa anterior para liberar"' : ""}>${taskStatusOptions(task.status || "todo", blocked, true)}</select>
       ${parent ? "" : '<button class="rowbtn task-add-subtask" title="Adicionar subtarefa">＋</button>'}
       <button class="rowbtn task-edit" title="Editar tarefa">✎</button>
       ${task.source_template_id ? '<span class="muted">Produto</span>' : '<button class="rowbtn del-task" title="Excluir tarefa">✕</button>'}
@@ -6188,18 +6186,10 @@ async function updateProjectTask(taskId, patch) {
     toast(`Conclua "${dependency ? activityDisplayName(dependency) : "a tarefa anterior"}" antes de iniciar esta tarefa.`, true);
     return false;
   }
-  if (patch.status && patch.status !== "done" && task.status === "done") {
-    const activeDependent = operationalTasks.find((item) => normalizeIdList(item.dependency_ids, item.depends_on_activity_id).includes(task.id) && item.status !== "todo");
-    if (activeDependent) {
-      toast(`"${activityDisplayName(activeDependent)}" depende desta tarefa e já foi iniciada; não é possível reabrir.`, true);
-      return false;
-    }
-  }
   const today = new Date().toISOString().slice(0, 10);
   const changes = { ...patch, updated_at: new Date().toISOString() };
   if (["doing", "done"].includes(patch.status) && !task.actual_start_date) changes.actual_start_date = today;
   if (patch.status === "done" && !task.actual_end_date) changes.actual_end_date = today;
-  if (patch.status && patch.status !== "done" && task.status === "done") changes.actual_end_date = null;
   if (isLive()) await updateRow("activities", taskId, changes);
   Object.assign(task, changes);
   if (isLive()) cache.activityRecords = tasks;
