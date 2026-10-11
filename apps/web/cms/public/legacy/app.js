@@ -331,7 +331,73 @@ function checklistProgress(value) {
   const items = normalizeChecklist(value);
   return { total: items.length, done: items.filter((item) => item.checked).length };
 }
-const ENTITY_LABEL = { home: "Home", contacts: "Pessoas", companies: "Empresas", conversations: "Conversas", deals: "Negócios", products: "Produtos", projects: "Entregas", activities: "Tarefas" };
+const ENTITY_LABEL = { home: "Home", contacts: "Pessoas", companies: "Empresas", conversations: "Interações", deals: "Negócios", products: "Produtos", projects: "Entregas", activities: "Tarefas", goals: "Metas", objectives: "Objetivos" };
+const PM_TEMPLATE_MODULE = { activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates" };
+const REGISTRATION_SECTIONS = ["products", "pipelines", "users"];
+
+function mainModuleCan(tab, action = "view") {
+  if (!PM_TEMPLATE_MODULE[tab]) return currentUserCan(tab, action);
+  if (action === "create") return (currentUserIsAdmin() || tab !== "activities")
+    ? currentUserCan(PM_TEMPLATE_MODULE[tab], action) : currentUserCan("activities", action);
+  return currentUserCan(tab === "activities" ? "activities" : "projects", action)
+    || currentUserCan(PM_TEMPLATE_MODULE[tab], action);
+}
+
+function mainPmCatalogActive() {
+  return Boolean(PM_TEMPLATE_MODULE[state.tab]) && state.pmScopes[state.tab] === "catalog"
+    && currentUserCan(PM_TEMPLATE_MODULE[state.tab], "view");
+}
+
+function openMainPmCatalog(section) {
+  if (!requireCurrentUserPermission(PM_TEMPLATE_MODULE[section], "view", ENTITY_LABEL[section])) return;
+  closeModal();
+  closeFloaters();
+  state.tab = section;
+  state.pmScopes[section] = "catalog";
+  state.view = "table";
+  state.q = "";
+  state.sortK = null;
+  state.selectedConversations.clear();
+  document.getElementById("search").value = "";
+  render();
+}
+
+function openMainPmTemplate(section = state.tab) {
+  if (!requireCurrentUserPermission(PM_TEMPLATE_MODULE[section], "create", ENTITY_LABEL[section])) return;
+  const product = cache.products?.[0];
+  if (!product) { toast("Cadastre um produto antes de criar este cadastro.", true); return; }
+  state.pmScopes[section] = "catalog";
+  render();
+  openRegistrationTemplateEditor(section, product.id);
+}
+
+function productDrawerHost() {
+  return document.querySelector("#ov .modal.full") || document.getElementById("modal-root");
+}
+
+function mainTemplateProductField(prefix, editId, cloneSourceId) {
+  if (!mainPmCatalogActive() || editId || cloneSourceId) return "";
+  return `<div class="field"><label>Produto *</label><select id="${prefix}-product">${cache.products.map((product) => `<option value="${esc(product.id)}"${product.id === productActivityState.productId ? " selected" : ""}>${esc(product.name)}</option>`).join("")}</select></div>`;
+}
+
+function mainTemplateOriginField() {
+  return mainPmCatalogActive() ? '<div class="field"><label>Origem</label><input value="Projeto" readonly></div>' : "";
+}
+
+function wireMainTemplateProduct(prefix, section) {
+  document.getElementById(`${prefix}-product`)?.addEventListener("change", (event) => {
+    productActivityState.productId = event.target.value;
+    const results = section === "goals" ? loadProductGoals() : loadProductObjectives();
+    const updatePicker = (id, options, placeholder) => {
+      const root = document.getElementById(id);
+      const selected = new Set(multiPickerValues(id).filter((value) => options.some((option) => option.value === value)));
+      root.outerHTML = multiPickerHtml(id, options, selected, placeholder);
+      wireMultiPicker(id);
+    };
+    updatePicker(`${prefix}-${section === "goals" ? "goal" : "objective"}-dependencies`, results.filter((item) => item.product_id === event.target.value).map((item) => ({ value: item.id, label: item.name })), `Selecionar ${section === "goals" ? "metas" : "objetivos"}`);
+    updatePicker(`${prefix}-activity-dependencies`, loadProductActivities().filter((item) => item.product_id === event.target.value).map((item) => ({ value: item.id, label: activityDisplayName(item) })), "Selecionar tarefas");
+  });
+}
 const SINGULAR = { contacts: "pessoa", companies: "empresa", conversations: "conversa", deals: "negócio", products: "produto", projects: "entrega" };
 const PERMISSION_ACTIONS = [
   { id: "view", label: "Ver" }, { id: "create", label: "Cadastrar" },
@@ -340,7 +406,7 @@ const PERMISSION_ACTIONS = [
 ];
 const PERMISSION_GROUPS = [
   { label: "CMS", modules: [
-    ["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"],
+    ["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Interações"],
     ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]
   ] },
   { label: "Cadastros", modules: [
@@ -2474,6 +2540,33 @@ function columns(tab, c) {
       { k: "status", h: "STATUS", fmt: (_v, row) => inlineTaskStatus(row) },
       { k: "deadline_state", h: "PRAZO", fmt: (_v, row) => taskDeadlineBadge(row) },
       { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
+    case "goals":
+    case "objectives": return [
+      { k: "name", h: tab === "goals" ? "META" : "OBJETIVO", cls: "main-result-name", thCls: "main-result-name" },
+      { k: "client_name", h: "CLIENTE" },
+      { k: "product_name", h: "PRODUTO" },
+      { k: "status", h: "STATUS", fmt: (v) => `<span class="badge ${taskStatusClass(v || "todo")}">${esc(taskStatusLabel(v || "todo"))}</span>` },
+      { k: "category", h: "CATEGORIA" },
+      { k: "channel", h: "CANAL" },
+      ...(tab === "goals" ? [
+        { k: "metric", h: "INDICADOR" },
+        { k: "current_value", h: "VALOR ATUAL", num: true, fmt: (v) => Number(v || 0).toLocaleString("pt-BR") },
+        { k: "target_value", h: "VALOR-ALVO", fmt: (v, row) => esc(`${GOAL_COMPARISON_LABEL[row.comparison] || "No mínimo"} ${Number(v || 0).toLocaleString("pt-BR")} ${row.unit || ""}`.trim()) },
+        { k: "progress", h: "ATINGIMENTO", fmt: (_v, row) => `${deliveryGoalPercent(row)}%` }
+      ] : [
+        { k: "completion_criteria", h: "CRITÉRIO DE CONCLUSÃO" },
+        { k: "progress", h: "PROGRESSO DAS TAREFAS", fmt: (_v, row) => {
+          const tasks = operationalProjectTasks(row.project_id).filter((task) => task.objective_id === row.id);
+          const done = tasks.filter((task) => task.status === "done").length;
+          return `${done}/${tasks.length} · ${tasks.length ? Math.round(done / tasks.length * 100) : 0}%`;
+        } }
+      ]),
+      { k: "due_date", h: "PRAZO", fmt: dt },
+      { k: "dependency_names", h: "DEPENDE DE", cls: "compact-multi-cell", fmt: stackedCell },
+      { k: "assignee_ids", h: "RESPONSÁVEIS", cls: "compact-multi-cell", fmt: (v, row) => stackedCell(assigneeNameList(v, row.owner_id, row.assign_to_client)) },
+      { k: "comments", h: "COMENTÁRIOS" },
+      { k: "notes", h: "OBSERVAÇÕES" }
+    ];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
       { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => conversationDealsCell(row, c) },
@@ -2854,7 +2947,7 @@ function closeMobileNavigation() {
 }
 function sidebarSubmodules(action) {
   if (action === "projects" && document.body.classList.contains("sidebar-delivery-open")) return [...document.querySelectorAll('.sidebar-module [data-project-section]')].map((button) => ({ id: button.dataset.projectSection, label: button.textContent.trim(), permission: "projects" })).concat([{ id: "back", label: "Voltar para Entregas", permission: "projects" }]);
-  if (action === "registrations") return Object.entries(REGISTRATION_LABEL).map(([id, label]) => ({ id, label, permission: REGISTRATION_PERMISSION_MODULE[id] }));
+  if (action === "registrations") return REGISTRATION_SECTIONS.map((id) => ({ id, label: REGISTRATION_LABEL[id], permission: REGISTRATION_PERMISSION_MODULE[id] }));
   if (action === "tools") return [["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].map(([id, label]) => ({ id, label, permission: id }));
   if (action === "social") return Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => ({ id, label, permission: id }));
   return [];
@@ -2935,13 +3028,14 @@ function openSidebarSubmodules(button, hover = false) {
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
   groupActivitiesByClient: false,
+  pmScopes: {},
   expandedActivityClients: new Set(),
   selectedConversations: new Set(),
   bulkSelections: {
     contacts: new Set(), companies: new Set(), deals: new Set(), products: new Set(),
     projects: new Set(), activities: new Set()
   },
-  pages: { contacts: 1, companies: 1, conversations: 1, deals: 1, products: 1, projects: 1, activities: 1 },
+  pages: { contacts: 1, companies: 1, conversations: 1, deals: 1, products: 1, projects: 1, activities: 1, goals: 1, objectives: 1 },
   pageSize: 50, kanbanPipelineId: null, calendarCursor: null
 };
 const secondaryTableSelections = new Map();
@@ -3662,6 +3756,11 @@ function renderTable(c) {
         edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
       })}</td></tr>`;
     }
+    if (["goals", "objectives"].includes(state.tab)) {
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+        open: { className: "main-result-open", attrs: { "data-id": rid, "data-project-id": r.project_id, "data-section": state.tab }, title: `Abrir ${state.tab === "goals" ? "meta" : "objetivo"} da entrega`, enabled: currentUserCan("projects", "view") }
+      })}</td></tr>`;
+    }
     if (state.tab === "products") {
       return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: { className: "product-activities-btn", attrs: { "data-id": rid }, title: "Abrir estrutura do produto", enabled: currentUserCan("products", "view") },
@@ -3737,6 +3836,8 @@ function renderTable(c) {
     button.addEventListener("click", () => openTaskComments(button.dataset.id)));
   document.querySelectorAll(".main-task-edit").forEach((button) =>
     button.addEventListener("click", () => openDeliveryTaskDrawer(button.dataset.projectId, button.dataset.id)));
+  document.querySelectorAll("#main .main-result-open").forEach((button) =>
+    button.addEventListener("click", () => openMainDeliveryResult(button.dataset.section, button.dataset.id)));
   document.querySelectorAll(".row-select").forEach((box) =>
     box.addEventListener("change", () => {
       if (box.checked) selectedSet.add(box.dataset.id);
@@ -3901,6 +4002,10 @@ function deliveryGanttProgressLabel(progress) {
 }
 
 function timelineItem(tab, row, c) {
+  if (["goals", "objectives"].includes(tab)) return {
+    id: row.id, title: row.name, detail: `${row.client_name || "Sem cliente"} · ${row.product_name || "Sem produto"}`,
+    start: row.due_date, end: row.due_date, status: row.status
+  };
   if (tab === "deals") return {
     id: row.id, title: row.title, detail: c.companyById[row.company_id]?.legal_name || c.companyById[row.company_id]?.name || "Sem empresa",
     start: row.expected_close_date, end: row.expected_close_date, status: row.status
@@ -4054,6 +4159,7 @@ function wireGanttScrolling(root = document) {
 }
 
 function openTimelineRecord(tab, id) {
+  if (["goals", "objectives"].includes(tab)) { openMainDeliveryResult(tab, id); return; }
   if (tab === "deals") openForm("deals", id);
   else if (tab === "projects") openProjectBoard(id);
   else if (tab === "activities") openActivityChecklist(id);
@@ -4233,6 +4339,23 @@ function refreshActivityCache() {
       comment_count: taskCommentCount(task)
     };
   });
+  [ ["goals", loadDeliveryGoals()], ["objectives", objectives] ].forEach(([section, results]) => {
+    cache[section] = results.filter((item) => cache.projectById[item.project_id]).map((item) => {
+      const project = cache.projectById[item.project_id];
+      return { ...item, client_name: project.client_name || cache.companyById[project.company_id]?.legal_name || "Sem cliente",
+        product_name: cache.productById[project.product_id]?.name || "Sem produto",
+        dependency_names: section === "goals" ? deliveryGoalDependencyLabel(item) : deliveryObjectiveDependencyLabel(item) };
+    });
+  });
+}
+
+function openMainDeliveryResult(section, id) {
+  const row = (section === "goals" ? loadDeliveryGoals() : loadDeliveryObjectives()).find((item) => item.id === id);
+  if (!row || !requireCurrentUserPermission("projects", "view", "Entregas")) return;
+  openProjectBoard(row.project_id);
+  document.querySelector(`[data-project-section="${section}"]`)?.click();
+  const target = document.querySelector(`#project-board-root tr[data-${section === "goals" ? "goal" : "objective"}-id="${CSS.escape(id)}"]`);
+  target?.scrollIntoView({ block: "center", inline: "nearest" });
 }
 
 function renderHome(c) {
@@ -4546,6 +4669,8 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   overlay.innerHTML = `<aside class="activity-form-drawer">
     <h3>${editId ? "Editar objetivo" : cloneSource ? "Clonar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
+      ${mainTemplateProductField("po", editId, cloneSourceId)}
+      ${mainTemplateOriginField()}
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
       <div class="field"><label>Categoria</label><input id="po-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="po-channel" value="${esc(current.channel || "")}"></div>
@@ -4559,13 +4684,14 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     </div>
     <div class="modal-foot"><button class="btn" id="po-cancel">Cancelar</button><button class="btn primary" id="po-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
-  document.querySelector("#ov .modal.full")?.appendChild(overlay);
+  productDrawerHost()?.appendChild(overlay);
   document.getElementById("po-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("po-save").addEventListener("click", saveProductObjective);
   wireMultiPicker("po-assignees");
   wireMultiPicker("po-objective-dependencies");
   wireMultiPicker("po-activity-dependencies");
+  wireMainTemplateProduct("po", "objectives");
   document.getElementById("po-name")?.focus();
 }
 
@@ -4735,6 +4861,8 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   overlay.innerHTML = `<aside class="activity-form-drawer">
     <h3>${editId ? "Editar meta" : cloneSource ? "Clonar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
+      ${mainTemplateProductField("pg", editId, cloneSourceId)}
+      ${mainTemplateOriginField()}
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
       <div class="field"><label>Categoria</label><input id="pg-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="pg-channel" value="${esc(current.channel || "")}"></div>
@@ -4751,13 +4879,14 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     </div>
     <div class="modal-foot"><button class="btn" id="pg-cancel">Cancelar</button><button class="btn primary" id="pg-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
-  document.querySelector("#ov .modal.full")?.appendChild(overlay);
+  productDrawerHost()?.appendChild(overlay);
   document.getElementById("pg-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pg-save").addEventListener("click", saveProductGoal);
   wireMultiPicker("pg-assignees");
   wireMultiPicker("pg-goal-dependencies");
   wireMultiPicker("pg-activity-dependencies");
+  wireMainTemplateProduct("pg", "goals");
   document.getElementById("pg-name")?.focus();
 }
 
@@ -5148,6 +5277,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
     <h3>${current.id ? (productActivityParentGroupId ? "Editar subtarefa" : "Editar tarefa") : cloneSource ? "Clonar tarefa" : productActivityParentGroupId ? "Nova subtarefa" : "Nova tarefa"}<button class="modal-close-x" id="pa-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form task-form-grid">
       ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
+      ${mainTemplateOriginField()}
       <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent))}</div>
       <div class="field"><label>Grupo</label><select id="pa-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group, "Sem grupo")}</select></div>
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
@@ -5182,7 +5312,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
     </div>
     <div class="modal-foot">${editing && !productActivityParentGroupId ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
-  document.querySelector("#ov .modal.full")?.appendChild(overlay);
+  productDrawerHost()?.appendChild(overlay);
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-save").addEventListener("click", saveProductActivity);
@@ -6784,6 +6914,7 @@ function openProjectDataMenu(anchor) {
 }
 
 function openTaskDeliveryPicker() {
+  if (currentUserIsAdmin()) { openMainPmTemplate("activities"); return; }
   const deliveries = cache?.projects || [];
   if (!deliveries.length) { toast("Cadastre uma entrega antes de criar tarefas.", true); return; }
   const options = deliveries.map((project) => `<option value="${esc(project.id)}">${esc(project.name || project.client_name || "Entrega sem nome")}</option>`).join("");
@@ -7197,9 +7328,9 @@ function closeFloaters() {
 const VIEW_MODES = [
   { id: "table", label: "Tabela", icon: "▦" },
   { id: "kanban", label: "Quadro", icon: "▥", tabs: ["deals", "activities"] },
-  { id: "calendar", label: "Calendário", icon: "□", tabs: ["deals", "projects", "activities"] },
-  { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities"] },
-  { id: "schedule", label: "Cronograma", icon: "≡", tabs: ["deals", "projects", "activities"] }
+  { id: "calendar", label: "Calendário", icon: "□", tabs: ["deals", "projects", "activities", "goals", "objectives"] },
+  { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities", "goals", "objectives"] },
+  { id: "schedule", label: "Cronograma", icon: "≡", tabs: ["deals", "projects", "activities", "goals", "objectives"] }
 ];
 
 const VIEW_ICON_PATHS = {
@@ -9107,16 +9238,24 @@ async function createDealFromSelectedConversations() {
 
 function render() {
   if (!cache) return;
-  if (state.tab !== "home" && !currentUserCan(state.tab, "view")) state.tab = "home";
+  if (state.tab !== "home" && !mainModuleCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
   document.querySelector('[data-action="chat"]')?.toggleAttribute("hidden", !currentUserCanUseChat());
-  document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !currentUserCan(tab.dataset.tab, "view")));
-  document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.values(REGISTRATION_PERMISSION_MODULE)));
+  document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !mainModuleCan(tab.dataset.tab, "view")));
+  document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(REGISTRATION_SECTIONS.map((id) => REGISTRATION_PERMISSION_MODULE[id])));
   document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(["files", "emails", "processes", "documents", "tables"]));
   document.querySelector('[data-action="social"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.keys(SOCIAL_MODULE_LABELS)));
   const hasConversationSelection = state.selectedConversations.size > 0;
   const isHome = state.tab === "home";
+  const pmModule = Boolean(PM_TEMPLATE_MODULE[state.tab]);
+  const canViewExecution = pmModule && currentUserCan(state.tab === "activities" ? "activities" : "projects", "view");
+  const canViewCatalog = pmModule && currentUserCan(PM_TEMPLATE_MODULE[state.tab], "view");
+  if (pmModule && !canViewExecution && canViewCatalog) state.pmScopes[state.tab] = "catalog";
+  const catalog = mainPmCatalogActive();
+  document.body.classList.toggle("pm-catalog-mode", catalog);
+  document.getElementById("pm-scope").hidden = !pmModule || !canViewExecution || !canViewCatalog;
+  document.querySelectorAll('[data-pm-scope]').forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.pmScope === (catalog ? "catalog" : "deliveries"))));
   document.querySelector(".subbar")?.classList.toggle("home-hidden", isHome);
   const requestedMode = VIEW_MODES.find((mode) => mode.id === state.view);
   if (!requestedMode || !viewModeAvailable(requestedMode)) state.view = "table";
@@ -9137,7 +9276,7 @@ function render() {
   document.getElementById("view-menu-text").textContent = activeMode.label;
   viewMenuButton.title = `Modo de visualização: ${activeMode.label}`;
   document.getElementById("search").disabled = isHome;
-  document.getElementById("new").disabled = isHome || !currentUserCan(state.tab, "create");
+  document.getElementById("new").disabled = isHome || !mainModuleCan(state.tab, "create");
   document.getElementById("cols-btn").disabled = isHome;
   document.getElementById("data-btn").disabled = isHome;
   const groupClientButton = document.getElementById("group-client-btn");
@@ -9146,10 +9285,15 @@ function render() {
   groupClientButton.disabled = !canGroupClients;
   groupClientButton.classList.toggle("active", canGroupClients && state.groupActivitiesByClient);
   groupClientButton.setAttribute("aria-pressed", String(canGroupClients && state.groupActivitiesByClient));
-  document.getElementById("filter-strip").classList.toggle("home-hidden", isHome);
-  if (!isHome) renderActiveFilterBadges();
+  document.getElementById("filter-strip").classList.toggle("home-hidden", isHome || catalog);
+  if (!isHome && !catalog) renderActiveFilterBadges();
 
   if (isHome) renderHome(cache);
+  else if (catalog) {
+    registrationsState.section = state.tab;
+    document.getElementById("main").innerHTML = '<div id="registrations-root" class="registrations-root main-pm-catalog"></div>';
+    renderRegistrationsSection();
+  }
   else if (state.view === "kanban" && state.tab === "deals") renderKanban(cache);
   else if (state.view === "kanban" && state.tab === "activities") renderActivityKanban(cache);
   else if (state.view === "calendar") renderCalendar(cache);
@@ -9160,7 +9304,7 @@ function render() {
   if (isHome) {
     document.getElementById("count").textContent = "Visão geral";
   } else {
-  const total = (cache[state.tab] || []).length;
+  const total = catalog ? (state.tab === "activities" ? loadProductActivities() : state.tab === "goals" ? loadProductGoals() : loadProductObjectives()).length : (cache[state.tab] || []).length;
   const shown = rowsFor(state.tab, cache).length;
   document.getElementById("count").textContent = shown === total ? `${total} itens` : `${shown}/${total}`;
   }
@@ -10584,8 +10728,8 @@ function openSettings() {
 // Mesma organização do sistema: os 6 módulos principais no cabeçalho e os
 // submódulos de Cadastros, Ferramentas e Social na barra de ferramentas.
 // Cada página tem apresentação e seções com passo a passo, recursos e dicas.
-const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Conversas"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]];
-const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["reg-activities", "Tarefas"], ["reg-goals", "Metas"], ["reg-objectives", "Objetivos"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
+const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Interações"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"], ["goals", "Metas"], ["objectives", "Objetivos"]];
+const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
 const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
@@ -10606,15 +10750,15 @@ const HELP_TASK_OPERATIONS_SECTION = { title: "Executar e acompanhar", steps: ["
     ["Em dia, Atrasado e Adiantado", "Sem conclusão, o atraso começa no dia seguinte ao término previsto. Com término real, o sistema compara a conclusão com o prazo: dentro da janela é Em dia, depois é Atrasado e antes da abertura é Adiantado. Em Data específica, concluir antes do vencimento é Adiantado."],
     ["Subtarefas e checklist", "Subtarefas são trabalhos separados, com acompanhamento próprio. Checklist são verificações dentro de um trabalho; quando existem subtarefas, o checklist fica nelas."],
     ["Operar ou editar", "Operar acompanha a execução, como alterar status. Editar muda o cadastro e o planejamento. Os comandos disponíveis dependem das permissões do usuário."]] };
-const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> O campo fica em Cadastros › Tarefas › Editar, abaixo de Canal. Na entrega, a aba Setup ativa ERP, marketplaces, lojas, frete e contas financeiras; não é um segundo cadastro de requisitos. Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
-  cards: [["Integração BLING + SHEIN", "Mantenha Canal = BLING e marque BLING e SHEIN em Requer no Setup. A tarefa de integrar SHEIN só aparece quando os dois estiverem ativados."], ["Conciliação do BLING", "Marque somente BLING. Não precisa exigir nenhum marketplace para fazer a conciliação do ERP."], ["Instruções por canal", "Cada integração mantém sua própria tarefa, instruções, checklist e conclusão. Marcar vários requisitos não cria cópias nem uma tarefa por canal."], ["Alterar o modelo", "Edite os requisitos em Cadastros › Tarefas. As entregas vinculadas passam a usar essa regra, inclusive para tarefas já geradas. Tarefas ocultas não são apagadas; voltam quando o Setup atender aos requisitos."]],
+const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> O campo fica em Tarefas › Cadastro › Editar, abaixo de Canal. Na entrega, a aba Setup ativa ERP, marketplaces, lojas, frete e contas financeiras; não é um segundo cadastro de requisitos. Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
+  cards: [["Integração BLING + SHEIN", "Mantenha Canal = BLING e marque BLING e SHEIN em Requer no Setup. A tarefa de integrar SHEIN só aparece quando os dois estiverem ativados."], ["Conciliação do BLING", "Marque somente BLING. Não precisa exigir nenhum marketplace para fazer a conciliação do ERP."], ["Instruções por canal", "Cada integração mantém sua própria tarefa, instruções, checklist e conclusão. Marcar vários requisitos não cria cópias nem uma tarefa por canal."], ["Alterar o modelo", "Edite os requisitos em Tarefas › Cadastro. As entregas vinculadas passam a usar essa regra, inclusive para tarefas já geradas. Tarefas ocultas não são apagadas; voltam quando o Setup atender aos requisitos."]],
   tips: ["Os modelos existentes receberam o canal atual como requisito quando ele faz parte do Setup, preservando o filtro anterior. Revise as integrações e adicione o canal de destino; o sistema não deduz requisitos pelo nome."] };
 const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };
 const HELP_PAGES = {
   home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
     lead: "O CMS reúne relacionamento comercial, gestão das entregas e tarefas, processos e ferramentas do escritório. A ajuda desta tela explica o módulo aberto. Use a busca ou Todos os assuntos para consultar o manual completo sem sair do trabalho.",
     sections: [
-      { title: "Entenda o fluxo de trabalho", lead: "<b>Pessoas e Empresas</b> identificam com quem você se relaciona. <b>Conversas</b> guardam o histórico. <b>Negócios</b> acompanham uma oportunidade de venda. <b>Entregas</b> organizam o serviço vendido; suas <b>Tarefas</b> registram o trabalho, seus <b>Objetivos</b> o resultado esperado e suas <b>Metas</b> a medida desse resultado.", tips: ["Cadastros › Tarefas, Metas e Objetivos são modelos dos produtos. Dentro da entrega, são os registros reais daquele cliente. Não são duas listas para executar o mesmo trabalho."] },
+      { title: "Entenda o fluxo de trabalho", lead: "<b>Pessoas e Empresas</b> identificam com quem você se relaciona. <b>Interações</b> guardam o histórico. <b>Negócios</b> acompanham uma oportunidade de venda. <b>Entregas</b> organizam o serviço vendido; suas <b>Tarefas</b> registram o trabalho, seus <b>Objetivos</b> o resultado esperado e suas <b>Metas</b> a medida desse resultado.", tips: ["Tarefas, Metas e Objetivos reúnem Cadastro e Execução no próprio módulo. Cadastro define os modelos dos produtos; Execução acompanha os registros reais das entregas. Os vínculos existentes são preservados."] },
       HELP_RECORD_ACTIONS_SECTION,
       { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
         cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
@@ -10642,7 +10786,7 @@ const HELP_PAGES = {
         cards: [["Importar planilha", "Em ⬆⬇ Dados baixe o modelo e informe só CNPJ, tipo de contato, inscrição municipal e observações. A empresa entra na hora com a tag <b>Desatualizada</b> e o CMS busca os dados da Receita em segundo plano (cerca de 5 por minuto). Se a consulta falhar aparece <b>Erro na Receita</b>: use Atualizar da Receita."], ["Tipo de contato", "Cliente, Fornecedor e/ou Parceiro (ou vazio). Ao salvar, as pessoas vinculadas recebem os mesmos tipos e mantêm os próprios, como Colaborador e Network. Vazio não altera as pessoas. Empresa com entrega vira Cliente automaticamente e não pode deixar de ser."], ["Colunas fixas", "Nome fantasia e CNPJ ficam fixos ao rolar a tabela."]] },
       HELP_TABLE_SECTION
     ] },
-  conversations: { kicker: "Módulo", title: "Conversas", path: ["Cabeçalho", "Conversas"],
+  conversations: { kicker: "Módulo", title: "Interações", path: ["Cabeçalho", "Interações"],
     lead: "Histórico das conversas de WhatsApp e Reddit Chat, importado ou capturado pela extensão, ligado às pessoas e aos negócios.",
     sections: [
       { title: "Transforme histórico em contexto", lead: "Uma conversa registra o que foi discutido; não é, por si só, uma negociação nem uma tarefa concluída. Associe a pessoa correta para encontrar seu histórico e seus negócios.", cards: [["Quando criar um negócio", "Quando houver uma oportunidade comercial a acompanhar. Consulte os negócios da pessoa antes de criar outro para a mesma oportunidade."], ["Quando registrar uma tarefa", "Quando houver trabalho a executar na entrega. Registre prazo, responsável e resultado esperado; manter a mensagem na conversa não substitui esse acompanhamento."]] },
@@ -10682,7 +10826,7 @@ const HELP_PAGES = {
   activities: { kicker: "Módulo", title: "Tarefas", path: ["Cabeçalho", "Tarefas"],
     lead: "Todas as tarefas de todas as entregas em um só lugar, com cliente, entrega, origem, prioridade, estrutura, datas, status, prazo e comentários.",
     sections: [
-      { title: "Organize o dia de trabalho", lead: "Esta lista reúne o trabalho real dos clientes. Use-a para decidir o que executar e identificar bloqueios; os modelos ficam em Cadastros › Tarefas.", steps: ["Comece pelas tarefas do seu responsável e dos clientes que acompanha.", "Confira prazo e dependências. Prioridade indica importância; Atrasado indica que o limite passou. São informações diferentes.", "Atualize o status conforme executar e registre o resultado nos comentários."] },
+      { title: "Organize o dia de trabalho", lead: "Execução reúne o trabalho real dos clientes. Use-a para decidir o que executar e identificar bloqueios; os modelos ficam em Tarefas › Cadastro, conforme sua permissão.", steps: ["Comece pelas tarefas do seu responsável e dos clientes que acompanha.", "Confira prazo e dependências. Prioridade indica importância; Atrasado indica que o limite passou. São informações diferentes.", "Atualize o status conforme executar e registre o resultado nos comentários."] },
       HELP_TASK_DATES_SECTION,
       HELP_TASK_WINDOWS_SECTION,
       HELP_TASK_OPERATIONS_SECTION,
@@ -10700,7 +10844,7 @@ const HELP_PAGES = {
   "reg-users": { kicker: "Cadastros", title: "Usuários", path: ["Rodapé", "Cadastros", "Usuários"],
     lead: "Nome, apelido, e-mail, telefone, perfil, função, cargo, status, acesso ao login e permissões.",
     sections: [{ title: "Cadastrar e liberar acesso", steps: ["Clique no <b>+</b> e preencha os dados.", "Escolha o perfil: Administrador, Colaborador, Desenvolvedor, Cliente ou Fornecedor.", "Libere o acesso ao login.", "Marque por módulo: ver, criar, editar, clonar, excluir e operar."] }] },
-  "reg-activities": { kicker: "Cadastros", title: "Tarefas", path: ["Rodapé", "Cadastros", "Tarefas"],
+  "reg-activities": { kicker: "Cadastro", title: "Tarefas", path: ["Tarefas", "Cadastro"],
     lead: "Modelos de tarefa. A mesma tarefa pode valer para vários produtos e, ao salvar, as entregas desses produtos são sincronizadas.",
     sections: [
       { title: "Modelo ou tarefa do cliente?", lead: "Aqui você define <b>como o serviço deve ser executado</b>: estrutura, recorrência, prazo, responsáveis padrão e procedimento. Vinculado a um produto, o modelo gera tarefas nas entregas desse produto. A execução e a conclusão são acompanhadas nas tarefas da entrega, não no modelo.", tips: ["Ao alterar um modelo, confira as entregas vinculadas: a sincronização pode atualizar o planejamento das tarefas. As datas de tarefas já atendidas ou canceladas são preservadas."] },
@@ -10710,10 +10854,10 @@ const HELP_PAGES = {
         tips: ["Usar estrutura exige Categoria, Canal, Módulo e Tipo. A coluna Tarefa fica fixa ao rolar."] },
       HELP_MIND_MAP_SECTION
     ] },
-  "reg-goals": { kicker: "Cadastros", title: "Metas", path: ["Rodapé", "Cadastros", "Metas"],
+  "reg-goals": { kicker: "Cadastro", title: "Metas", path: ["Metas", "Cadastro"],
     lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. <b>Atingimento</b> mede o resultado: 40 SKUs de um alvo de 100 representam 40%, mesmo que as tarefas estejam concluídas. Prazo sugerido soma dias ao início da entrega e acompanha alterações do modelo nos itens pendentes. Ao editar o prazo diretamente na entrega, a data passa a ser manual; limpar esse campo retoma o prazo do cadastro. Metas atendidas e canceladas preservam suas datas.",
     sections: [{ title: "Defina uma medida de sucesso", lead: "Meta é um resultado mensurável, não uma ação. Exemplo: chegar a 500 SKUs ativos. Defina o indicador, a unidade, o valor-alvo e a comparação; acompanhe o valor atual na entrega do cliente.", cards: [["No mínimo", "O valor atual precisa alcançar ou superar o alvo. Exemplo: faturamento de pelo menos R$ 50 mil."], ["No máximo", "O resultado deve permanecer no limite ou abaixo dele. Exemplo: até 5 reclamações."], ["Exato", "O resultado esperado é o valor definido. Use quando atingir exatamente aquela quantidade faz sentido."], ["Modelo e resultado real", "O cadastro define a meta padrão do produto. Cada entrega acompanha os valores do seu cliente; o valor de um cliente não deve ser registrado no modelo."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
-  "reg-objectives": { kicker: "Cadastros", title: "Objetivos", path: ["Rodapé", "Cadastros", "Objetivos"],
+  "reg-objectives": { kicker: "Cadastro", title: "Objetivos", path: ["Objetivos", "Cadastro"],
     lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. O prazo sugerido soma dias ao início da entrega e acompanha alterações do cadastro nos objetivos pendentes. Uma data preenchida diretamente na entrega é manual; limpar o campo retoma o prazo do modelo. Objetivos atendidos e cancelados preservam suas datas.",
     sections: [{ title: "Defina o resultado esperado", lead: "Objetivo descreve o que se quer alcançar. Tarefa é o trabalho necessário; meta mede o resultado. Exemplo: objetivo = organizar o financeiro; tarefas = configurar contas e conciliar movimentos; meta = atingir a quantidade-alvo de movimentos conciliados.", cards: [["Critério de conclusão", "Descreva como reconhecer que o objetivo foi alcançado, com um resultado verificável, não apenas uma intenção."], ["Tarefas vinculadas", "O progresso do objetivo vem das tarefas associadas. Confira os vínculos antes de usar o percentual como evidência de conclusão."], ["Dependências", "Indicam resultados ou trabalhos anteriores necessários. Use para organizar a sequência, não apenas para agrupar itens com nomes semelhantes."], ["Modelo e cliente", "O cadastro é o objetivo padrão do produto. Dentro da entrega, acompanhe o resultado específico do cliente."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
@@ -10743,7 +10887,7 @@ const HELP_PAGES = {
     lead: "Abre na Home com os perfis configurados em Integrações: Facebook, Instagram, LinkedIn, Reddit, TikTok Shop e YouTube.",
     sections: [{ title: "Redes", lead: "Cada rede tem sua aba com a tabela do módulo, colunas, filtros e exportação de dados." }] }
 };
-const HELP_PAGE_BY_MAIN = { contacts: "contacts", companies: "companies", conversations: "conversations", deals: "deals", projects: "projects", activities: "activities" };
+const HELP_PAGE_BY_MAIN = { contacts: "contacts", companies: "companies", conversations: "conversations", deals: "deals", projects: "projects", activities: "activities", goals: "goals", objectives: "objectives" };
 let helpPageId = "home";
 let helpContextId = "home";
 let helpObserver = null;
@@ -10761,12 +10905,17 @@ function syncHelpMobileSurfaces() {
 }
 const HELP_DELIVERY_PAGES = {
   "delivery-overview": { kicker: "Entrega", title: "Visão geral", lead: "Acompanhe o trabalho previsto até hoje, as pendências e os resultados do cliente. Tarefas futuras não são atraso. Use os indicadores para decidir o que precisa de atenção agora.", sections: [{ title: "Como ler os indicadores", cards: [["Execução", "Compare tarefas atendidas com as previstas até hoje. Canceladas não representam trabalho entregue."], ["Atenção primeiro", "Confira atrasos e dependências antes de iniciar mais atividades. Abra o registro para consultar responsáveis e planejamento."], ["Resultados", "Objetivos descrevem resultados; metas medem o atingimento. Faturamento, SKUs e fornecedores são dados do negócio, não porcentagem de conclusão do projeto."]] }] },
-  "delivery-activities": { kicker: "Entrega", title: "Tarefas do cliente", lead: "Estas são as ocorrências reais desta entrega, não os modelos de Cadastros. Cada tarefa acompanha responsável, execução e prazo do cliente.", sections: [HELP_TASK_OPERATIONS_SECTION, HELP_TASK_DATES_SECTION, HELP_TASK_WINDOWS_SECTION, HELP_TASK_SETUP_SECTION] },
+  "delivery-activities": { kicker: "Entrega", title: "Tarefas do cliente", lead: "Estas são as ocorrências reais desta entrega, não os modelos de Tarefas › Cadastro. Cada tarefa acompanha responsável, execução e prazo do cliente.", sections: [HELP_TASK_OPERATIONS_SECTION, HELP_TASK_DATES_SECTION, HELP_TASK_WINDOWS_SECTION, HELP_TASK_SETUP_SECTION] },
   "delivery-goals": { kicker: "Entrega", title: "Metas do cliente", lead: "Registre o valor atual do indicador e compare com o alvo. Uma meta mede resultado: fazer uma tarefa não significa necessariamente atingir a meta.", sections: [{ title: "Acompanhar o resultado", cards: [["Valor atual e alvo", "Atualize o valor medido do cliente. Confira unidade e comparação: no mínimo, no máximo ou exato."], ["Atingimento", "O percentual compara a medida com o alvo. Não some nem faça média de indicadores com unidades diferentes como faturamento, SKUs e fornecedores."], ["Prazo", "O prazo sugerido do modelo é contado a partir do início da entrega. Uma data informada diretamente aqui é manual; limpar essa data retoma o prazo do modelo."]] }, HELP_RECORD_ACTIONS_SECTION] },
   "delivery-objectives": { kicker: "Entrega", title: "Objetivos do cliente", lead: "Acompanhe o resultado esperado para esta entrega. Confira o critério de conclusão e as tarefas vinculadas antes de interpretar o progresso.", sections: [{ title: "Trabalho e resultado", cards: [["Progresso", "Vem das tarefas associadas. Sem os vínculos corretos, o percentual não é evidência suficiente de que o resultado foi alcançado."], ["Critério de conclusão", "Use um resultado verificável, como financeiro configurado e conciliado, em vez de uma intenção genérica."], ["Planejamento", "Dependências organizam a sequência. O prazo do cadastro orienta os registros pendentes; uma data manual na entrega substitui esse cálculo."]] }, HELP_RECORD_ACTIONS_SECTION] },
   "delivery-data": { kicker: "Entrega", title: "Dados do cliente", lead: "Registre os resultados do negócio mês a mês. Esta área mede a evolução do cliente e não a execução das tarefas.", sections: [{ title: "Registrar e interpretar", cards: [["Faturamento por canal", "Informe os valores dos canais no mês correspondente. Confira a soma mensal e o acumulado do período; evite repetir o total em cada canal."], ["SKUs", "Registre a quantidade do mês de maneira consistente para comparar a evolução."], ["Fornecedores", "Selecione as empresas fornecedoras. O vínculo identifica os fornecedores acompanhados naquele mês."], ["Observações", "Explique mudanças relevantes, campanhas, sazonalidade ou dados incompletos."], ["Continuidade", "Entregas vinculadas do mesmo CNPJ permitem acompanhar o histórico do cliente. Diferencie os dados da entrega atual do acumulado da sequência."]] }] }
 };
 Object.assign(HELP_PAGES, HELP_DELIVERY_PAGES);
+const HELP_PM_CATALOG_SECTION = { title: "Cadastro e execução no mesmo módulo", cards: [["Cadastro", "Configure os modelos ligados aos produtos. O + do administrador abre o formulário diretamente, sem escolher uma entrega. Alterar o modelo mantém a sincronização existente com as entregas."], ["Execução", "Acompanhe o trabalho e os resultados de cada cliente. Em Tarefas, o funcionário escolhe a entrega para criar uma tarefa de origem Dia a dia. O status continua indicando a etapa do trabalho."], ["Origem e status", "Projeto identifica o cadastro-base. Dia a dia identifica uma tarefa criada para uma entrega específica. Em aberto, Em andamento, Atendido e Cancelado continuam sendo os status da execução."]] };
+HELP_PAGES.activities.sections.push(HELP_PM_CATALOG_SECTION);
+for (const section of ["goals", "objectives"]) {
+  HELP_PAGES[section] = { ...HELP_DELIVERY_PAGES[`delivery-${section}`], kicker: "Módulo", title: ENTITY_LABEL[section], path: [ENTITY_LABEL[section]], sections: [HELP_PM_CATALOG_SECTION, ...HELP_DELIVERY_PAGES[`delivery-${section}`].sections] };
+}
 
 function currentHelpContext() {
   if (document.getElementById("project-board-root")) return `delivery-${projectBoardState.section || "overview"}`;
@@ -11345,7 +11494,8 @@ const REGISTRATION_LABEL = {
 let registrationsState = { section: "products", tables: {} };
 
 function openRegistrationsModal(section = "products") {
-  const available = Object.keys(REGISTRATION_LABEL).filter((id) => currentUserCan(REGISTRATION_PERMISSION_MODULE[id], "view"));
+  if (PM_TEMPLATE_MODULE[section]) { openMainPmCatalog(section); return; }
+  const available = REGISTRATION_SECTIONS.filter((id) => currentUserCan(REGISTRATION_PERMISSION_MODULE[id], "view"));
   if (!available.length) { toast("Você não possui acesso aos Cadastros.", true); return; }
   if (!available.includes(section)) section = available[0];
   registrationsState = { section, tables: {} };
@@ -11652,7 +11802,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   const state = registrationTableState();
   const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Cadastros</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
@@ -12150,7 +12300,8 @@ function renderRegistrationsSection() {
       openProductActivityDrawer();
       return;
     }
-    openRegistrationProductPicker(section);
+    if (mainPmCatalogActive()) openMainPmTemplate(section);
+    else openRegistrationProductPicker(section);
   });
   root.querySelectorAll(".reg-template-edit").forEach((button) => button.addEventListener("click", () => openRegistrationTemplateEditor(section, button.dataset.product, button.dataset.id)));
   root.querySelectorAll(".reg-template-add-subtask").forEach((button) => button.addEventListener("click", () => {
@@ -12184,6 +12335,10 @@ function renderRegistrationsSection() {
     productActivityState = { productId: button.dataset.product, editId: null, objectiveEditId: null, goalEditId: null, tab: "objectives" };
     openProductObjectiveDrawer(null, button.dataset.id);
   }));
+  if (mainPmCatalogActive()) {
+    const originIndex = [...root.querySelectorAll("thead th")].findIndex((head) => head.textContent.trim() === "Origem");
+    if (originIndex >= 0) root.querySelectorAll("tbody tr").forEach((row) => { if (row.cells[originIndex] && !row.querySelector("td.empty")) row.cells[originIndex].textContent = "Projeto"; });
+  }
   if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
   wireRegistrationTable();
 }
@@ -12281,7 +12436,7 @@ function setupRegistrationToolbar(root, table) {
   center.className = "registration-toolbar-center";
   const right = document.createElement("div");
   right.className = "registration-toolbar-right";
-  if (toolbar.closest("#registrations-root")) left.insertAdjacentHTML("beforeend", '<span class="registration-toolbar-title">Cadastros</span>');
+  if (toolbar.closest("#registrations-root")) left.insertAdjacentHTML("beforeend", `<span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? ENTITY_LABEL[state.tab] : "Cadastros")}</span>`);
   if (count) left.appendChild(count);
   center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
   if (addButton) {
@@ -17568,7 +17723,7 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   t.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[t.dataset.tab] || ""}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
     if (t.disabled) return;
-    if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
+    if (!mainModuleCan(t.dataset.tab, "view")) return;
     if (t.dataset.tab === "projects" && document.body.classList.contains("sidebar-delivery-open")) { openSidebarSubmodules(t); return; }
     closeSidebarModuleView();
     closeFloaters();
@@ -17625,11 +17780,18 @@ document.addEventListener("keydown", (event) => {
   if (floater) closeFloaters();
 });
 document.getElementById("new").addEventListener("click", () => {
-  if (!requireCurrentUserPermission(state.tab, "create", ENTITY_LABEL[state.tab])) return;
+  if (!mainModuleCan(state.tab, "create")) return;
   if (state.tab === "conversations") document.getElementById("import-file").click();
   else if (state.tab === "activities") openTaskDeliveryPicker();
+  else if (PM_TEMPLATE_MODULE[state.tab]) openMainPmTemplate();
   else openForm(state.tab, null);
 });
+document.querySelectorAll('[data-pm-scope]').forEach((button) => button.addEventListener("click", () => {
+  closeFloaters();
+  state.pmScopes[state.tab] = button.dataset.pmScope;
+  state.view = "table";
+  render();
+}));
 document.getElementById("cols-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   document.getElementById("filter-dd")?.remove();

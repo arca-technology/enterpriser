@@ -63,7 +63,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar #tabs').count(), 1);
     assert.equal(await page.locator('#app-header').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .sidebar-bottom .actions').count(), 1);
-    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
     assert.equal(await page.locator('#app-sidebar .foot-btn .nav-icon svg').count(), 6);
     assert.equal(await page.locator('#sidebar-collapse').count(), 0);
     assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 3);
@@ -130,7 +130,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
-    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
     assert.equal((await page.locator('#tabs [data-tab="contacts"]').boundingBox()).width, (await page.locator('#app-sidebar [data-action="registrations"]').boundingBox()).width);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
     await page.setViewportSize({ width: 1024, height: 600 });
@@ -147,8 +147,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.deepEqual(await page.locator('#sidebar-submodules [data-section]').evaluateAll((buttons) => buttons.map((button) => button.dataset.section)), ['emails']);
     await page.evaluate(() => closeSidebarSubmodules());
     await page.locator('#app-sidebar [data-action="registrations"]').click();
-    await page.locator('#sidebar-submodules [data-section="activities"]').click();
-    assert.equal(await page.evaluate(() => registrationsState.section), 'activities');
+    await page.locator('#sidebar-submodules [data-section="products"]').click();
+    assert.equal(await page.evaluate(() => registrationsState.section), 'products');
     assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), 64);
     assert.equal(await page.locator('.sidebar-module .modal-header-tabs').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar').isVisible(), true);

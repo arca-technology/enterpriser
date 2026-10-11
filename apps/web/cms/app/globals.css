@@ -1243,7 +1243,7 @@
   .activity-form-overlay{position:absolute;inset:0;z-index:8;display:flex;justify-content:flex-end;background:var(--overlay)}
   .activity-form-drawer{width:440px;max-width:92vw;height:100%;background:var(--panel);border-left:1px solid var(--border);
     display:flex;flex-direction:column;animation:erc-slide-in .2s ease-out;box-shadow:-18px 0 36px rgba(0,0,0,.28)}
-  .activity-form-drawer h3{flex:0 0 52px}
+  .activity-form-drawer h3{flex:0 0 52px;margin:0;padding:0 12px;min-height:52px;border-bottom:1px solid var(--border2);font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:10px}
   .activity-form-drawer .product-activity-form{display:grid;grid-template-columns:1fr;padding:18px;overflow:auto;flex:1 1 auto;align-content:start}
   .activity-form-drawer .modal-foot{flex:0 0 auto}
   #pipeline-drawer-body{display:flex;flex:1 1 auto;min-height:0;flex-direction:column}
@@ -2017,7 +2017,36 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .toast{display:flex;align-items:center;gap:8px;max-width:min(560px,calc(100vw - 24px));overflow-wrap:anywhere}
   #toast{z-index:240;max-width:calc(100vw - 24px)}
   .document-mobile-pages{display:none}
+  #app-header #tabs{position:static;transform:none;flex:1;min-width:0;justify-content:center}
+  #app-header #tabs .tab{min-width:76px;padding:0 10px;flex-shrink:0}
+  .nav-module-divider{height:24px;border-left:1px solid var(--border);margin:0 5px;flex-shrink:0}
+  #app-sidebar .nav-module-divider{width:100%;height:0;margin:7px 0;border-left:0;border-top:1px solid var(--border)}
+  .pm-scope{display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:4px;flex-shrink:0}
+  .pm-scope[hidden]{display:none}
+  .pm-scope button{min-height:28px;border:0;border-radius:3px;background:transparent;color:var(--muted);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer}
+  .pm-scope button[aria-pressed="true"]{background:var(--blue);color:#fff;font-weight:700}
+  .pm-catalog-mode .subbar{display:flex;height:auto;min-height:40px}
+  .pm-catalog-mode .subbar #count,.pm-catalog-mode .subbar .sb-center,.pm-catalog-mode .subbar .sb-right{display:none}
+  .main-pm-catalog{display:flex;flex-direction:column;min-height:0;height:100%}
+  .main-pm-catalog .registration-toolbar-left{min-width:0}
+  .main-pm-catalog .registration-toolbar-right{padding-left:0}
+  #modal-root>.activity-form-overlay{position:fixed;z-index:90}
+  body.navigation-sidebar #modal-root>.activity-form-overlay{left:var(--navigation-panel-offset)}
+  .main-result-name{position:sticky;left:32px;z-index:3;width:240px;min-width:240px;max-width:240px;background:var(--panel);white-space:normal;overflow-wrap:anywhere;box-shadow:8px 0 14px rgba(0,0,0,.16)}
+  thead .main-result-name{z-index:7;background:var(--panel2)}
+  tbody tr:nth-child(even) .main-result-name{background:var(--row-alt)}
+  tbody tr:hover .main-result-name{background:var(--row-hover)}
+  @media(max-width:1200px) and (min-width:768px){#app-header{gap:8px}#app-header .brand-home{min-width:146px;font-size:11px}#app-header #tabs{justify-content:flex-start}#app-header #tabs .tab{min-width:70px;padding:0 7px;font-size:10px}}
   @media(max-width:767px){
+    #modal-root>.activity-form-overlay{bottom:calc(64px + env(safe-area-inset-bottom))}
+    #modal-root>.activity-form-overlay>.activity-form-drawer{width:100%;max-width:100%;min-width:0}
+    .pm-scope button{min-height:44px;padding:6px 12px;font-size:12px}
+    .main-pm-catalog .registration-toolbar{height:auto;grid-template-columns:minmax(0,1fr);padding:8px;gap:6px}
+    .main-pm-catalog .registration-toolbar-center .search{min-width:0;flex:1;max-width:none}
+    .main-pm-catalog .registration-toolbar-center .plus{position:static;flex-shrink:0}
+    .main-pm-catalog .registration-toolbar-left{display:none}
+    .main-pm-catalog .registration-toolbar-right{flex-wrap:wrap;justify-content:flex-end}
+    .main-result-name{position:static;min-width:0;width:auto;max-width:none;box-shadow:none}
     #toast{bottom:calc(76px + env(safe-area-inset-bottom));width:calc(100vw - 24px)}
     .ui-message-close{min-width:44px;min-height:44px}
     .ui-error-banner{padding-right:52px}
