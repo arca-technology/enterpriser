@@ -2622,27 +2622,39 @@ function closeMobileNavigation() {
   if (sidebar) sidebar.inert = window.matchMedia("(max-width:760px)").matches;
 }
 function sidebarSubmodules(action) {
+  if (action === "projects" && document.body.classList.contains("sidebar-delivery-open")) return [...document.querySelectorAll('.sidebar-module [data-project-section]')].map((button) => ({ id: button.dataset.projectSection, label: button.textContent.trim(), permission: "projects" })).concat([{ id: "back", label: "Voltar para Entregas", permission: "projects" }]);
   if (action === "registrations") return Object.entries(REGISTRATION_LABEL).map(([id, label]) => ({ id, label, permission: REGISTRATION_PERMISSION_MODULE[id] }));
   if (action === "tools") return [["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].map(([id, label]) => ({ id, label, permission: id }));
   if (action === "social") return Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => ({ id, label, permission: id }));
   return [];
 }
+let sidebarHoverCloseTimer;
+function sidebarHoverEnabled() {
+  return window.matchMedia("(hover:hover) and (pointer:fine)").matches && window.innerWidth > 760;
+}
+function sidebarSubmoduleParent(action) {
+  return document.querySelector(`#app-sidebar [data-action="${action}"],#app-sidebar [data-tab="${action}"]`);
+}
 function closeSidebarSubmodules() {
+  clearTimeout(sidebarHoverCloseTimer);
   document.getElementById("sidebar-submodules")?.remove();
-  document.querySelectorAll('#app-sidebar [aria-expanded="true"][data-action]').forEach((button) => button.setAttribute("aria-expanded", "false"));
+  document.querySelectorAll('#app-sidebar [aria-controls="sidebar-submodules"]').forEach((button) => button.setAttribute("aria-expanded", "false"));
 }
 function positionSidebarSubmodules() {
   const panel = document.getElementById("sidebar-submodules");
   if (!panel) return;
-  const button = document.querySelector(`#app-sidebar [data-action="${panel.dataset.parent}"]`);
+  const button = sidebarSubmoduleParent(panel.dataset.parent);
   const left = document.getElementById("app-sidebar").getBoundingClientRect().right;
   panel.style.left = `${left}px`;
   panel.style.width = `${Math.min(220, window.innerWidth - left - 8)}px`;
   panel.style.top = `${Math.max(8, Math.min(button.getBoundingClientRect().top, window.innerHeight - panel.offsetHeight - 8))}px`;
 }
-function openSidebarSubmodules(button) {
-  const action = button.dataset.action;
+function openSidebarSubmodules(button, hover = false) {
+  if (button.disabled) return;
+  const action = button.dataset.action || button.dataset.tab;
   const wasOpen = document.getElementById("sidebar-submodules")?.dataset.parent === action;
+  clearTimeout(sidebarHoverCloseTimer);
+  if (wasOpen && (hover || sidebarHoverEnabled())) return;
   closeSidebarSubmodules();
   if (wasOpen) return;
   const items = sidebarSubmodules(action).filter((item) => currentUserCan(item.permission, "view"));
@@ -2661,7 +2673,11 @@ function openSidebarSubmodules(button) {
     const item = items.find((item) => item.id === child.dataset.section);
     if (!requireCurrentUserPermission(item.permission, "view", item.label)) return;
     closeMobileNavigation();
-    if (action === "registrations") openRegistrationsModal(item.id);
+    if (action === "projects") {
+      if (item.id === "back") closeModal();
+      else document.querySelector(`.sidebar-module [data-project-section="${item.id}"]`)?.click();
+    }
+    else if (action === "registrations") openRegistrationsModal(item.id);
     else if (action === "tools") openToolsModal(item.id);
     else openSocialModal(item.id);
   }));
@@ -2678,7 +2694,9 @@ function openSidebarSubmodules(button) {
     }
     if (event.key === "Escape") { event.stopPropagation(); closeSidebarSubmodules(); button.focus(); }
   });
-  buttons[0]?.focus();
+  panel.addEventListener("pointerenter", () => clearTimeout(sidebarHoverCloseTimer));
+  panel.addEventListener("pointerleave", () => { if (sidebarHoverEnabled()) sidebarHoverCloseTimer = setTimeout(closeSidebarSubmodules, 180); });
+  if (!hover) buttons[0]?.focus();
 }
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
@@ -8897,6 +8915,7 @@ function escCloseHandler(e) {
   e.stopImmediatePropagation();
 }
 function closeModal() {
+  closeSidebarSubmodules();
   document.getElementById("modal-root").innerHTML = "";
   syncSidebarModuleNavigation();
   document.getElementById("registration-filter-dd")?.remove();
@@ -8908,6 +8927,21 @@ function syncSidebarModuleNavigation() {
   const moduleId = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
   document.getElementById("sidebar-module-context")?.remove();
   document.body.classList.toggle("sidebar-module-open", Boolean(moduleId));
+  document.body.classList.toggle("sidebar-delivery-open", moduleId === "projects");
+  document.querySelectorAll('#app-sidebar [data-delivery-disabled]').forEach((button) => { button.disabled = false; delete button.dataset.deliveryDisabled; });
+  const deliveryButton = document.querySelector('#tabs [data-tab="projects"]');
+  if (moduleId === "projects") {
+    deliveryButton?.setAttribute("aria-haspopup", "menu");
+    deliveryButton?.setAttribute("aria-controls", "sidebar-submodules");
+    deliveryButton?.setAttribute("aria-expanded", "false");
+    document.querySelectorAll('#app-sidebar .tab,#app-sidebar .foot-btn,#app-sidebar .actions .ico,#app-sidebar .brand-home').forEach((button) => {
+      if (button !== deliveryButton && !button.disabled) { button.dataset.deliveryDisabled = "true"; button.disabled = true; }
+    });
+  } else {
+    deliveryButton?.removeAttribute("aria-haspopup");
+    deliveryButton?.removeAttribute("aria-controls");
+    deliveryButton?.removeAttribute("aria-expanded");
+  }
   document.querySelectorAll("#app-sidebar .foot-btn").forEach((button) => button.classList.toggle("sidebar-current", button.dataset.action === moduleId));
   document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", moduleId === button.dataset.tab || (!moduleId && button.dataset.tab === state.tab)));
   if (moduleId) {
@@ -8915,17 +8949,6 @@ function syncSidebarModuleNavigation() {
     context.id = "sidebar-module-context";
     context.setAttribute("aria-label", "Navegação do módulo aberto");
     const header = document.querySelector(".sidebar-module > h3");
-    const sections = header?.querySelector(".modal-header-tabs");
-    if (moduleId === "projects" && sections) {
-      sections.querySelectorAll("button").forEach((button) => {
-        const label = button.textContent.trim();
-        button.title = label;
-        button.setAttribute("aria-label", label);
-        const key = button.dataset.projectSection;
-        button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[key] || window.CRM_NAV_ICONS?.projects || ""}</span><span class="sidebar-context-label">${esc(label)}</span>`;
-      });
-      context.appendChild(sections);
-    }
     const close = header?.querySelector("#shell-close");
     if (close) {
       close.setAttribute("aria-label", "Fechar módulo (Esc)");
@@ -16834,7 +16857,9 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   t.setAttribute("aria-label", name);
   t.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[t.dataset.tab] || ""}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
+    if (t.disabled) return;
     if (!requireCurrentUserPermission(t.dataset.tab, "view", ENTITY_LABEL[t.dataset.tab])) return;
+    if (t.dataset.tab === "projects" && document.body.classList.contains("sidebar-delivery-open")) { openSidebarSubmodules(t); return; }
     closeSidebarModuleView();
     closeFloaters();
     closeMobileNavigation();
@@ -16864,7 +16889,7 @@ document.addEventListener("keydown", (event) => {
     event.stopImmediatePropagation();
     const action = document.getElementById("sidebar-submodules").dataset.parent;
     closeSidebarSubmodules();
-    document.querySelector(`#app-sidebar [data-action="${action}"]`)?.focus();
+    sidebarSubmoduleParent(action)?.focus();
     return;
   }
   if (event.key === "Escape" && document.body.classList.contains("navigation-open")) {
@@ -16939,6 +16964,7 @@ document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
 });
 document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
   b.addEventListener("click", () => {
+    if (b.disabled) return;
     if (navigationPreference.mode === "sidebar" && b.closest("#app-sidebar") && ["registrations", "tools", "social"].includes(b.dataset.action)) {
       openSidebarSubmodules(b);
       return;
@@ -16949,7 +16975,17 @@ document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
   }));
 document.addEventListener("pointerdown", (event) => {
   const panel = document.getElementById("sidebar-submodules");
-  if (panel && !panel.contains(event.target) && !event.target.closest(`#app-sidebar [data-action="${panel.dataset.parent}"]`)) closeSidebarSubmodules();
+  if (panel && !panel.contains(event.target) && !sidebarSubmoduleParent(panel.dataset.parent)?.contains(event.target)) closeSidebarSubmodules();
+});
+document.querySelectorAll('#app-footer [data-action="registrations"],#app-footer [data-action="tools"],#app-footer [data-action="social"],#tabs [data-tab="projects"]').forEach((button) => {
+  button.addEventListener("pointerenter", () => {
+    if (navigationPreference.mode !== "sidebar" || !sidebarHoverEnabled() || button.disabled) return;
+    if (button.dataset.tab === "projects" && !document.body.classList.contains("sidebar-delivery-open")) return;
+    openSidebarSubmodules(button, true);
+  });
+  button.addEventListener("pointerleave", () => {
+    if (sidebarHoverEnabled()) sidebarHoverCloseTimer = setTimeout(closeSidebarSubmodules, 180);
+  });
 });
 window.addEventListener("resize", closeSidebarSubmodules);
 document.querySelector(".sidebar-modules")?.addEventListener("scroll", positionSidebarSubmodules);
