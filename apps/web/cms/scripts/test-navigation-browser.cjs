@@ -66,9 +66,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
     assert.equal(await page.locator('#app-sidebar .foot-btn .nav-icon svg').count(), 6);
     assert.equal(await page.locator('#sidebar-collapse').count(), 0);
-    assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 2);
+    assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 3);
+    assert.equal(await page.locator('#app-sidebar .sidebar-support [data-action="updates"]').count(), 1);
+    assert.equal(await page.locator('#app-sidebar .actions').evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1);
     assert.equal(await page.locator('#app-footer').isVisible(), false);
-    assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => el.getBoundingClientRect().height), 28);
+    assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => el.getBoundingClientRect().height), 44);
     assert.equal(await page.locator('#app-sidebar #brand-home').count(), 1);
     await page.locator('#tabs [data-tab="contacts"]').click();
     assert.equal(await page.evaluate(() => state.tab), 'contacts');
@@ -77,6 +79,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       for (const width of [1440, 1024, 390]) {
         const height = width < 761 ? 600 : 900;
         await page.setViewportSize({ width, height });
+        await page.locator('#app-sidebar .sidebar-modules').evaluate((el) => { el.scrollTop = 0; });
         const geometry = await page.locator('#app-sidebar').evaluate((el) => ({ x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width }));
         assert.equal(geometry.x, 0);
         assert.equal(geometry.width, 64);
@@ -95,7 +98,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         const actions = await page.locator('#app-sidebar .actions').evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom }));
         const tabsBottom = await page.locator('#tabs').evaluate((el) => el.getBoundingClientRect().bottom);
         assert(actions.top > tabsBottom);
-        assert(actions.bottom <= height);
+        await page.locator('#app-sidebar [data-action="logout"]').scrollIntoViewIfNeeded();
+        assert((await page.locator('#app-sidebar [data-action="logout"]').boundingBox()).y < height);
         assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
         assert.equal(await page.locator('#app-sidebar [data-action="notifications"]').isVisible(), true);
         for (const parent of ['registrations', 'tools', 'social']) {
@@ -126,7 +130,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal((await page.locator('#tabs [data-tab="contacts"]').boundingBox()).width, (await page.locator('#app-sidebar [data-action="registrations"]').boundingBox()).width);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
     await page.setViewportSize({ width: 1024, height: 600 });
-    assert(await page.locator('#app-sidebar .actions').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight));
+    await page.locator('#app-sidebar [data-action="logout"]').scrollIntoViewIfNeeded();
+    assert((await page.locator('#app-sidebar [data-action="logout"]').boundingBox()).y < 600);
     await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'navigation-collapsed-short.png') });
     await page.evaluate(() => loadNavigationPreference());
     assert.equal(await page.evaluate(() => navigationPreference.collapsed), true);
@@ -201,7 +206,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#sidebar-module-context [data-project-section]').count(), 0);
     assert.equal(await page.locator('#tabs [data-tab="contacts"]').isDisabled(), true);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isDisabled(), true);
-    assert.equal(await page.locator('#app-sidebar .sidebar-modules').evaluate((el) => el.scrollHeight <= el.clientHeight), true);
+    assert.equal(await page.locator('#app-sidebar .sidebar-modules .sidebar-bottom').count(), 1);
     await page.locator('#tabs [data-tab="projects"]').hover();
     assert.equal(await page.locator('#sidebar-submodules [data-section]').count(), 6);
     await page.locator('#sidebar-submodules [data-section="activities"]').click();
