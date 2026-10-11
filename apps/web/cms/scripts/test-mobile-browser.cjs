@@ -54,6 +54,28 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#main .record-primary-cell').first().click();
     assert.equal(await page.locator('#modal-root .modal').count(), 1);
     await page.keyboard.press('Escape');
+    for (const height of [844, 520]) {
+      await page.setViewportSize({ width: 390, height });
+      await page.evaluate(() => openForm('companies', cache.companies[0][pk('companies')]));
+      const assertFooter = async () => {
+        const navigation = await page.locator('#mobile-navigation').boundingBox();
+        for (const selector of ['#cancel', '#save']) {
+          const button = await page.locator(selector).boundingBox();
+          assert.ok(button && button.y >= 0 && button.y + button.height <= navigation.y,
+            `${selector} must remain fully above mobile navigation at height ${height}`);
+          assert.equal(await page.locator(selector).evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+          }), true);
+        }
+      };
+      await assertFooter();
+      await page.locator('#modal-root .form').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      await assertFooter();
+      await page.screenshot({ path: path.join(os.tmpdir(), `mobile-company-footer-${height}.png`) });
+      await page.locator('#cancel').click();
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#mobile-more').click();
     await page.locator('#mobile-navigation-menu summary').filter({ hasText: 'Cadastros' }).click();
     await page.locator('#mobile-navigation-menu details .mobile-menu-item').filter({ hasText: /^Produtos$/ }).click();
