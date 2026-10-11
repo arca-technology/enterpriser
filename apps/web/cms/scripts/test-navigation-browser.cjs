@@ -71,6 +71,13 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), width < 761 ? 0 : 208);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         assert.equal(await page.locator('#app-header').isVisible(), false);
+        const mainButton = await page.locator('#tabs [data-tab="contacts"]').boundingBox();
+        const lowerButton = await page.locator('#app-sidebar [data-action="registrations"]').boundingBox();
+        assert.equal(mainButton.x, lowerButton.x);
+        assert.equal(mainButton.width, lowerButton.width);
+        assert.equal(mainButton.height, lowerButton.height);
+        assert.equal(await page.locator('#app-sidebar [data-action="registrations"]').evaluate((el) => getComputedStyle(el).fontSize), '11px');
+        assert.equal(await page.locator('#tabs .nav-icon svg').first().evaluate((el) => el.getBoundingClientRect().width), 20);
         const actions = await page.locator('#app-sidebar .actions').evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom }));
         const tabsBottom = await page.locator('#tabs').evaluate((el) => el.getBoundingClientRect().bottom);
         assert(actions.top > tabsBottom);
@@ -80,6 +87,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         for (const parent of ['registrations', 'tools', 'social']) {
           await page.locator(`#app-sidebar [data-action="${parent}"]`).click();
           assert(await page.locator('#sidebar-submodules .sidebar-submodule').count() > 0);
+          assert.equal(await page.locator('#sidebar-submodules .sidebar-submodule').first().evaluate((el) => getComputedStyle(el).fontSize), '11px');
+          assert.equal(await page.locator(`#app-sidebar [data-action="${parent}"] .nav-chevron`).evaluate((el) => getComputedStyle(el).transform), 'none');
+          if (width < 761) assert((await page.locator('#sidebar-submodules .sidebar-submodule').first().boundingBox()).height >= 44);
           const menu = await page.locator('#sidebar-submodules').evaluate((el) => ({ left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, bottom: el.getBoundingClientRect().bottom }));
           assert.equal(menu.left, 208);
           assert(menu.right <= width && menu.bottom <= height);
@@ -102,6 +112,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
     assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
+    assert.equal((await page.locator('#tabs [data-tab="contacts"]').boundingBox()).width, (await page.locator('#app-sidebar [data-action="registrations"]').boundingBox()).width);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
     await page.setViewportSize({ width: 1024, height: 600 });
     assert(await page.locator('#app-sidebar .actions').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight));

@@ -2740,6 +2740,9 @@ function openSidebarSubmodules(button, hover = false) {
   panel.setAttribute("role", "menu");
   panel.setAttribute("aria-label", button.title);
   panel.innerHTML = `<div class="sidebar-flyout-title">${esc(button.title)}</div>${items.map((item) => `<button class="sidebar-submodule" role="menuitem" type="button" data-section="${esc(item.id)}"><span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[item.id] || window.CRM_NAV_ICONS?.[action] || ""}</span><span>${esc(item.label)}</span></button>`).join("")}`;
+  const currentModule = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
+  const currentSection = currentModule === action ? (action === "projects" ? projectBoardState.section : action === "registrations" ? registrationsState.section : action === "tools" ? toolsState.section : socialState.section) : null;
+  panel.querySelectorAll("[data-section]").forEach((item) => { if (item.dataset.section === currentSection) item.setAttribute("aria-current", "page"); });
   document.body.appendChild(panel);
   positionSidebarSubmodules();
   button.setAttribute("aria-expanded", "true");
@@ -17027,7 +17030,7 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
 document.getElementById("associate-contact").addEventListener("click", () => openAssociateContactModal());
 document.getElementById("create-deal-from-selection").addEventListener("click", () => createDealFromSelectedConversations());
 document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
-  const label = button.textContent.trim();
+  const label = { log: "Log", help: "Ajuda", registrations: "Cadastros", tools: "Ferramentas", social: "Social", updates: "Atualizações" }[button.dataset.action] || button.textContent.trim();
   const nested = ["registrations", "tools", "social"].includes(button.dataset.action);
   button.title = label;
   button.setAttribute("aria-label", label);
@@ -17036,7 +17039,7 @@ document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
     button.setAttribute("aria-controls", "sidebar-submodules");
     button.setAttribute("aria-expanded", "false");
   }
-  button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.action] || ""}</span><span class="nav-label">${esc(label)}</span>${nested ? '<span class="nav-chevron" aria-hidden="true">›</span>' : ""}`;
+  button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.action] || ""}</span><span class="nav-label">${esc(label)}</span>${nested ? `<span class="nav-chevron" aria-hidden="true">${window.CRM_NAV_ICONS?.chevronRight || "›"}</span>` : ""}`;
 });
 document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
   b.addEventListener("click", () => {
