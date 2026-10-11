@@ -60,14 +60,14 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar [data-action="help"]').isEnabled(), true);
     await page.screenshot({ path: path.join(os.tmpdir(), 'help-delivery-desktop.png') });
     await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await page.locator('#help-panel').evaluate((el) => el.getBoundingClientRect().left), 64);
+    assert.equal(await page.locator('#help-panel').evaluate((el) => el.getBoundingClientRect().left), 0);
     assert.equal(await page.locator('#help-panel').evaluate((el) => el.getBoundingClientRect().right), 390);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.equal(await page.locator('#modal-root').evaluate((el) => el.inert), true);
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.inert), false);
     await page.screenshot({ path: path.join(os.tmpdir(), 'help-delivery-mobile.png') });
-    await page.locator('#tabs [data-tab="projects"]').click();
-    await page.locator('#sidebar-submodules [data-section="activities"]').click();
+    await page.locator('[data-mobile-tab="projects"]').click();
+    await page.locator('#mobile-navigation-menu .mobile-menu-item').filter({ hasText: 'Tarefas' }).click();
     await page.waitForFunction(() => helpContextId === 'delivery-activities');
     assert.equal(await page.locator('#help-panel .help-panel-body h2').innerText(), 'Tarefas do cliente');
     await page.keyboard.press('Escape');

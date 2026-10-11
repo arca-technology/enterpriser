@@ -2000,6 +2000,137 @@ function wireRecordPrimaryCells(table) {
       event.preventDefault(); source.click();
     });
   });
+  decorateMobileTable(table, index);
+}
+
+function decorateMobileTable(table, primaryIndex) {
+  if (!table?.tHead || primaryIndex < 0) return;
+  table.classList.add("mobile-adaptive-table");
+  const headers = [...table.tHead.rows[0].cells];
+  const secondaryLabels = /TELEFONE|CELULAR|CLIENTE|EMPRESA|STATUS|PRAZO|CANAL|VALOR|PRODUTO|EMAIL|E-MAIL|ÚLTIMA|ORIGEM/;
+  const secondaryIndexes = headers.map((head, index) => ({ index, label: head.textContent.trim() })).filter(({ index, label }) => index !== primaryIndex && secondaryLabels.test(label.toUpperCase()) && !headers[index].classList.contains("table-actions-head")).slice(0, ["contacts", "companies"].includes(table.dataset.tab) ? 2 : 3);
+  table.querySelectorAll("tbody tr").forEach((row) => {
+    const primary = row.cells[primaryIndex];
+    if (!primary || primary.colSpan > 1) return;
+    row.classList.add("mobile-record-row");
+    primary.classList.add("mobile-record-title");
+    secondaryIndexes.forEach(({ index, label }) => {
+      const cell = row.cells[index];
+      if (cell && cell.textContent.trim() && cell.textContent.trim() !== "—") { cell.classList.add("mobile-record-detail"); cell.dataset.mobileLabel = label.replace(/[▲▼]/g, "").trim(); }
+    });
+  });
+}
+
+let mobilePresentation = "list";
+try { mobilePresentation = localStorage.getItem("crm_mobile_presentation") === "table" ? "table" : "list"; } catch (_) {}
+function syncMobilePresentation() {
+  document.body.classList.toggle("mobile-list-mode", mobilePresentation === "list");
+  const button = document.getElementById("mobile-presentation");
+  if (button) {
+    button.innerHTML = mobilePresentation === "list" ? (window.CRM_NAV_ICONS?.log || viewIcon("schedule")) : viewIcon("table");
+    button.title = mobilePresentation === "list" ? "Mostrar tabela" : "Mostrar lista";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-pressed", String(mobilePresentation === "list"));
+  }
+}
+function closeMobileMenu() {
+  document.getElementById("mobile-navigation-menu")?.close();
+  document.getElementById("mobile-navigation-menu")?.remove();
+  document.getElementById("mobile-more")?.setAttribute("aria-expanded", "false");
+}
+function openMobileFilters() {
+  closeMobileMenu();
+  const dialog = document.createElement("dialog");
+  dialog.id = "mobile-navigation-menu";
+  dialog.setAttribute("aria-labelledby", "mobile-menu-title");
+  dialog.innerHTML = `<div class="mobile-menu-heading"><h2 id="mobile-menu-title">Filtrar por coluna</h2><button type="button" class="ico" id="mobile-menu-close" aria-label="Fechar filtros">✕</button></div><div class="mobile-menu-content">${columns(state.tab, cache).map((column) => `<button type="button" class="mobile-menu-item" data-mobile-filter="${esc(column.k)}">${esc(column.h)}</button>`).join("")}</div>`;
+  document.body.appendChild(dialog);
+  dialog.querySelector("#mobile-menu-close").addEventListener("click", closeMobileMenu);
+  const columnsButton = document.createElement("button");
+  columnsButton.type = "button";
+  columnsButton.className = "mobile-menu-item";
+  columnsButton.textContent = "Colunas visíveis";
+  columnsButton.addEventListener("click", () => { closeMobileMenu(); openColumnManager(); });
+  dialog.querySelector(".mobile-menu-content").prepend(columnsButton);
+  dialog.querySelectorAll('[data-mobile-filter]').forEach((button) => button.addEventListener("click", () => {
+    const key = button.dataset.mobileFilter;
+    closeMobileMenu();
+    openColumnFilter(document.getElementById("mobile-filter-btn"), key);
+  }));
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeMobileMenu(); });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); closeMobileMenu(); } }, true);
+  dialog.showModal();
+}
+function openMobileMenu(deliveryOnly = false) {
+  closeMobileMenu();
+  const dialog = document.createElement("dialog");
+  dialog.id = "mobile-navigation-menu";
+  dialog.setAttribute("aria-labelledby", "mobile-menu-title");
+  dialog.innerHTML = `<div class="mobile-menu-heading"><h2 id="mobile-menu-title">${deliveryOnly ? "Entrega" : "Navegação"}</h2><button type="button" class="ico" aria-label="Fechar navegação" id="mobile-menu-close">${window.CRM_NAV_ICONS?.x || "✕"}</button></div><div class="mobile-menu-content"></div>`;
+  const content = dialog.querySelector(".mobile-menu-content");
+  const addButton = (label, icon, callback, disabled = false) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mobile-menu-item";
+    button.disabled = disabled;
+    button.innerHTML = `<span aria-hidden="true">${icon || ""}</span><span>${esc(label)}</span>`;
+    button.addEventListener("click", () => { closeMobileMenu(); callback(); });
+    content.appendChild(button);
+  };
+  if (document.getElementById("project-board-root")) {
+    document.querySelectorAll('[data-project-section]').forEach((source) => addButton(source.textContent.trim(), window.CRM_NAV_ICONS?.[source.dataset.projectSection] || window.CRM_NAV_ICONS?.projects, () => source.click()));
+    addButton("Voltar para Entregas", window.CRM_NAV_ICONS?.projects, () => closeModal());
+  } else if (!deliveryOnly) {
+    addButton("Visão geral", window.CRM_NAV_ICONS?.projects, () => document.getElementById("brand-home").click());
+    document.querySelectorAll('#tabs .tab:not([hidden])').forEach((source) => addButton(source.querySelector('.nav-label')?.textContent || source.title, window.CRM_NAV_ICONS?.[source.dataset.tab], () => source.click(), source.disabled));
+    for (const action of ["registrations", "tools", "social"]) {
+      const source = document.querySelector(`.foot-btn[data-action="${action}"]`);
+      if (!source || source.hidden || source.disabled) continue;
+      const items = sidebarSubmodules(action).filter((item) => currentUserCan(item.permission, "view"));
+      const details = document.createElement("details");
+      details.innerHTML = `<summary>${source.querySelector('.nav-label')?.textContent || esc(source.textContent.trim())}</summary>`;
+      content.appendChild(details);
+      items.forEach((item) => {
+        addButton(item.label, window.CRM_NAV_ICONS?.[item.id] || window.CRM_NAV_ICONS?.[action], () => action === "registrations" ? openRegistrationsModal(item.id) : action === "tools" ? openToolsModal(item.id) : openSocialModal(item.id));
+        details.appendChild(content.lastElementChild);
+      });
+    }
+  }
+  const utilities = document.createElement("div");
+  utilities.className = "mobile-menu-utilities";
+  content.appendChild(utilities);
+  document.querySelectorAll('.foot-btn[data-action="help"],.foot-btn[data-action="log"],.foot-btn[data-action="updates"],#app-header .actions .ico,#app-sidebar .actions .ico').forEach((source) => {
+    if (source.hidden) return;
+    addButton(source.title || source.querySelector('.nav-label')?.textContent || source.textContent.trim(), source.querySelector("svg")?.outerHTML || window.CRM_NAV_ICONS?.[source.dataset.action], () => source.click(), source.disabled);
+    utilities.appendChild(content.lastElementChild);
+  });
+  if (!deliveryOnly && !document.getElementById("project-board-root")) {
+    const dataButton = document.getElementById("data-btn");
+    if (dataButton && !dataButton.disabled) addButton("Importar e exportar dados", window.CRM_NAV_ICONS?.tools, () => dataButton.click());
+  }
+  document.body.appendChild(dialog);
+  dialog.querySelector("#mobile-menu-close").addEventListener("click", closeMobileMenu);
+  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeMobileMenu(); });
+  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); closeMobileMenu(); } }, true);
+  dialog.showModal();
+  document.getElementById("mobile-more")?.setAttribute("aria-expanded", "true");
+}
+function syncMobileNavigation() {
+  const bar = document.getElementById("mobile-navigation");
+  if (!bar) return;
+  const delivery = Boolean(document.getElementById("project-board-root"));
+  document.getElementById("mobile-presentation").disabled = state.view !== "table";
+  const caption = document.getElementById("mobile-module-caption");
+  if (caption) caption.textContent = document.querySelector(`#tabs [data-tab="${state.tab}"] .nav-label`)?.textContent || (state.tab === "home" ? "Visão geral" : "");
+  bar.querySelectorAll("[data-mobile-tab]").forEach((button) => {
+    const source = document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`);
+    button.hidden = !source || source.hidden;
+    button.disabled = Boolean(source?.disabled) || (delivery && button.dataset.mobileTab !== "projects");
+    const active = delivery ? button.dataset.mobileTab === "projects" : state.tab === button.dataset.mobileTab;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+    button.innerHTML = `<span aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.mobileTab] || ""}</span><span>${source?.querySelector('.nav-label')?.textContent || source?.title || ""}</span>`;
+  });
 }
 const tableActionsHead = () => '<th class="noclick table-actions-head">AÇÕES</th>';
 function splitMultiValues(value) {
@@ -10345,6 +10476,7 @@ function closeHelpPanel() {
 }
 function helpEscapeHandler(event) {
   if (event.key !== "Escape") return;
+  if (document.getElementById("mobile-navigation-menu")?.open) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   closeHelpPanel();
@@ -12132,6 +12264,22 @@ let socialChannelProfiles = (() => {
   try { return JSON.parse(localStorage.getItem(socialProfilesCacheKey()) || "{}"); }
   catch (e) { return {}; }
 })();
+
+syncMobilePresentation();
+document.getElementById("mobile-presentation")?.addEventListener("click", () => {
+  mobilePresentation = mobilePresentation === "list" ? "table" : "list";
+  try { localStorage.setItem("crm_mobile_presentation", mobilePresentation); } catch (_) {}
+  syncMobilePresentation();
+});
+document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEventListener("click", () => {
+  if (button.dataset.mobileTab === "projects" && document.getElementById("project-board-root")) openMobileMenu(true);
+  else document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`)?.click();
+}));
+document.getElementById("mobile-more")?.addEventListener("click", () => openMobileMenu());
+document.getElementById("mobile-filter-btn")?.addEventListener("click", openMobileFilters);
+const mobileNavigationObserver = new MutationObserver(syncMobileNavigation);
+["main", "modal-root"].forEach((id) => { const surface = document.getElementById(id); if (surface) mobileNavigationObserver.observe(surface, { childList: true, subtree: true }); });
+syncMobileNavigation();
 let socialChannelProfilesLoaded = false;
 
 function normalizeSocialUsername(value, channel) {

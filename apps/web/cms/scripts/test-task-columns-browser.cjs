@@ -24,7 +24,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       saveProjectTasks([{ id: 'column-task', project_id: project.id, title: 'Teste de uma tarefa com nome comprido para conferir quebra de linha', status: 'todo', required_setup: [], target_days: 7 }]);
       refreshActivityCache();
     });
-    for (const width of [1440, 390]) {
+    for (const width of [1440, 1024]) {
       await page.setViewportSize({ width, height: 900 });
       for (const scope of ['main', 'registration', 'delivery']) {
         await page.evaluate((scope) => {

@@ -1930,6 +1930,73 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   #help-panel button:focus-visible,#help-panel input:focus-visible,#help-panel summary:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
   @media(min-width:1100px){body.help-open{padding-right:420px}body.help-open #modal-root>.overlay{right:420px;width:auto}body.help-open.navigation-sidebar .sidebar-module-overlay{width:calc(100% - 64px - 420px)}}
   @media(max-width:760px){#help-panel{width:100%;border-left:0}body.navigation-sidebar #help-panel{left:64px;width:calc(100% - 64px)}.help-panel-header,.help-panel-controls{padding:10px 12px}.help-panel-body{padding:12px}.help-panel-controls button,.help-topic-list button{min-height:44px}}
+  #mobile-navigation,#mobile-presentation,#mobile-module-caption,#mobile-filter-btn{display:none}
+  #mobile-navigation-menu{width:min(480px,100%);max-width:100%;max-height:85dvh;margin:auto auto 0;padding:0;border:1px solid var(--border);border-radius:8px 8px 0 0;background:var(--panel);color:var(--text)}
+  #mobile-navigation-menu::backdrop{background:var(--overlay)}
+  .mobile-menu-heading{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
+  .mobile-menu-heading h2{font-size:16px;margin:0}
+  .mobile-menu-heading .ico{width:44px;height:44px}
+  .mobile-menu-content{padding:8px 16px calc(16px + env(safe-area-inset-bottom));overflow:auto;max-height:calc(85dvh - 70px)}
+  .mobile-menu-content details summary{padding:14px 0;font-size:13px;font-weight:700;cursor:pointer}
+  .mobile-menu-item{display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:10px 4px;background:none;border:0;text-align:left;font:inherit;color:var(--text);cursor:pointer}
+  .mobile-menu-item svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7}
+  .mobile-menu-item .brand-icon{fill:currentColor;stroke:none}
+  .mobile-menu-item:disabled{opacity:.4;cursor:default}
+  .mobile-menu-item:focus-visible,.mobile-menu-item:hover{background:var(--row-hover)}
+  .mobile-menu-utilities{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+  @media(max-width:760px){
+    body,body.navigation-sidebar{padding-left:0!important;padding-bottom:calc(64px + env(safe-area-inset-bottom));height:100dvh;min-height:0}
+    #app-sidebar,body.navigation-sidebar #app-sidebar,#app-header,#app-footer{display:none!important}
+    #mobile-navigation{position:fixed;inset:auto 0 0;transform:none;width:100%;height:calc(64px + env(safe-area-inset-bottom));padding:4px 8px calc(4px + env(safe-area-inset-bottom));display:flex;align-items:stretch;justify-content:space-around;gap:4px;background:var(--panel);border-top:1px solid var(--border);z-index:95}
+    #mobile-navigation button{display:flex;flex:1;min-width:0;flex-direction:column;align-items:center;justify-content:center;gap:4px;border:0;border-radius:4px;background:none;color:var(--muted);font:inherit;font-size:11px;min-height:48px}
+    #mobile-navigation button[hidden]{display:none}
+    #mobile-navigation button.active{color:var(--blue);background:var(--row-hover);font-weight:700}
+    #mobile-navigation button:disabled{opacity:.4}
+    #mobile-navigation svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.7}
+    .subbar{height:auto;flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:8px 12px}
+    .subbar .sb-left{grid-area:1/1;display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0}
+    #mobile-module-caption{display:block;font-size:16px;font-weight:700}
+    .subbar .count{padding:0;border:0;background:none;font-size:11px;max-width:none}
+    .subbar .sb-center{grid-area:2/1/3/3;display:flex;gap:8px;min-width:0}
+    .subbar .search{height:44px;flex:1;width:0;min-width:0;font-size:16px}
+    .subbar #new{display:flex!important;width:44px;height:44px;position:static;flex-shrink:0;align-items:center;justify-content:center;font-size:22px}
+    .subbar .sb-right{grid-area:1/2;display:flex;gap:4px}
+    .subbar .sb-right>#data-btn,.subbar .sb-right>.view,.subbar #group-client-btn{display:none}
+    .subbar .sb-right>.btn{height:44px;min-width:44px;padding:8px}
+    #mobile-presentation{display:flex;align-items:center;justify-content:center}
+    #mobile-filter-btn{display:flex;align-items:center;justify-content:center}
+    #cols-btn{display:none}
+    #mobile-filter-btn svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6}
+    #filter-dd{left:12px!important;width:calc(100% - 24px);max-width:none;max-height:calc(100dvh - 100px);z-index:100}
+    #mobile-presentation svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6}
+    #view-menu-btn .view-label,#view-menu-btn .chevron{display:none}
+    body.navigation-sidebar .sidebar-module-overlay{left:0;width:100%}
+    #modal-root>.overlay{bottom:calc(64px + env(safe-area-inset-bottom))}
+    body.navigation-sidebar #help-panel,#help-panel{left:0;width:100%;bottom:calc(64px + env(safe-area-inset-bottom))}
+    .side-panel,.modal.full{max-height:100%;height:100%}
+    .modal-close-x,.record-actions-trigger{min-width:44px;min-height:44px}
+    .mobile-adaptive-table .action-col{position:static!important;box-shadow:none!important}
+    body.mobile-list-mode .mobile-adaptive-table{display:block;width:100%!important;min-width:0!important;max-width:100%;table-layout:auto}
+    body.mobile-list-mode .mobile-adaptive-table colgroup,body.mobile-list-mode .mobile-adaptive-table thead{display:none}
+    body.mobile-list-mode .mobile-adaptive-table tbody{display:block;width:100%}
+    body.mobile-list-mode .mobile-adaptive-table tr.mobile-record-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:4px 8px;padding:12px;border-bottom:1px solid var(--border);background:var(--panel);width:100%}
+    body.mobile-list-mode .mobile-adaptive-table tr.mobile-record-row:nth-child(even){background:var(--row-alt)}
+    body.mobile-list-mode .mobile-adaptive-table tr[hidden]{display:none!important}
+    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>td{display:none!important;position:static!important;width:auto!important;min-width:0!important;max-width:none!important;height:auto!important;border:0!important;box-shadow:none!important;padding:0!important;white-space:normal!important;text-align:left;overflow-wrap:anywhere}
+    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.mobile-record-title{display:block!important;grid-column:1;grid-row:1;font-size:14px;line-height:1.5;font-weight:700;min-height:44px}
+    body.mobile-list-mode .mobile-record-title strong,body.mobile-list-mode .mobile-record-title .task-name-text{white-space:normal!important}
+    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.mobile-record-detail{display:block!important;grid-column:1;font-size:12px;line-height:1.5;color:var(--muted)}
+    body.mobile-list-mode .mobile-record-detail:before{content:attr(data-mobile-label) ": ";font-size:11px;font-weight:500}
+    body.mobile-list-mode .mobile-record-detail[data-k="phone"]:before,body.mobile-list-mode .mobile-record-detail[data-k="emails"]:before,body.mobile-list-mode .mobile-record-detail[data-k="email"]:before{content:none}
+    body.mobile-list-mode .mobile-record-detail .multi-value{white-space:normal;gap:2px}
+    body.mobile-list-mode .mobile-record-detail select{min-height:44px;max-width:100%}
+    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.table-actions-cell{display:flex!important;grid-column:2;grid-row:1/5;align-self:start;justify-content:center}
+    body:not(.mobile-list-mode) .mobile-adaptive-table{width:max-content!important;min-width:100%!important;table-layout:auto}
+    body:not(.mobile-list-mode) .mobile-adaptive-table th[data-k],body:not(.mobile-list-mode) .mobile-adaptive-table td[data-k]{display:table-cell!important;min-width:130px}
+    body:not(.mobile-list-mode) .mobile-adaptive-table th,body:not(.mobile-list-mode) .mobile-adaptive-table td{font-size:12px;white-space:normal;max-width:240px}
+    body:not(.mobile-list-mode) .mobile-adaptive-table .select-head,body:not(.mobile-list-mode) .mobile-adaptive-table .select-cell{display:table-cell!important}
+  }
+  @media(prefers-reduced-motion:reduce){.mobile-adaptive-table tr{transition:none}}
 </style>
 </head>
 <body>
@@ -2001,6 +2068,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
 
   <div class="subbar">
     <div class="sb-left">
+      <span id="mobile-module-caption"></span>
       <span class="count" id="count">—</span>
     </div>
     <div class="sb-center">
@@ -2008,6 +2076,8 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
       <button class="btn primary plus" id="new" title="Adicionar dados">+</button>
     </div>
     <div class="sb-right">
+      <button class="btn" id="mobile-filter-btn" type="button" title="Filtrar registros" aria-label="Filtrar registros"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5 10h10M8 15h4"/></svg></button>
+      <button class="btn" id="mobile-presentation" type="button" aria-label="Mostrar tabela"></button>
       <button class="btn" id="data-btn" title="Dados">⬆⬇</button>
       <button class="view" id="v-dashboard" data-view="dashboard" title="Dashboard" aria-label="Dashboard"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/></svg><span class="view-label">Dashboard</span></button>
       <button class="view" id="v-matrix" data-view="matrix" title="Matriz" aria-label="Matriz"><svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/></svg><span class="view-label">Matriz</span></button>
@@ -2041,6 +2111,12 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   </footer>
 
   <div id="modal-root"></div>
+  <nav id="mobile-navigation" aria-label="Navegação principal">
+    <button type="button" data-mobile-tab="contacts"></button>
+    <button type="button" data-mobile-tab="projects"></button>
+    <button type="button" data-mobile-tab="activities"></button>
+    <button type="button" id="mobile-more" aria-label="Mais módulos e opções" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">⋯</span><span>Mais</span></button>
+  </nav>
   <div id="toast"></div>
 
   <script src="config.js"></script>

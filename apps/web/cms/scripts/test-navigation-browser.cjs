@@ -78,7 +78,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.evaluate(() => state.tab), 'contacts');
     for (const light of [false, true]) {
       await page.evaluate((light) => setTheme(light), light);
-      for (const width of [1440, 1024, 390]) {
+      for (const width of [1440, 1024]) {
         const height = width < 761 ? 600 : 900;
         await page.setViewportSize({ width, height });
         await page.locator('#app-sidebar .sidebar-modules').evaluate((el) => { el.scrollTop = 0; });
@@ -182,7 +182,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#tabs [data-tab="companies"]').click();
     assert.equal(await page.locator('.sidebar-module-overlay').count(), 0);
     assert.equal(await page.evaluate(() => state.tab), 'companies');
-    for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 700 }]) {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 700 }]) {
       await page.setViewportSize(viewport);
       await page.evaluate(() => saveNavigationPreference({ mode: 'sidebar', collapsed: false }));
       await page.locator('#app-sidebar [data-action="registrations"]').click();
@@ -229,8 +229,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.setViewportSize({ width: 390, height: 700 });
     await page.evaluate(() => openProjectBoard(cache.projects[0].id));
     assert.equal(await page.locator('.sidebar-module > h3').isVisible(), false);
-    await page.locator('#tabs [data-tab="projects"]').click();
-    await page.locator('#sidebar-submodules [data-section="activities"]').click();
+    await page.locator('[data-mobile-tab="projects"]').click();
+    await page.locator('#mobile-navigation-menu .mobile-menu-item').filter({ hasText: 'Tarefas' }).click();
     assert.equal(await page.evaluate(() => projectBoardState.section), 'activities');
     assert.equal(await page.locator('#sidebar-toggle').getAttribute('aria-expanded'), 'false');
     await page.keyboard.press('Escape');
