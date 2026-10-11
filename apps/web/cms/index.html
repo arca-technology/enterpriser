@@ -2027,17 +2027,23 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   #app-header #tabs .tab{min-width:76px;padding:0 10px;flex-shrink:0}
   .nav-module-divider{height:24px;border-left:1px solid var(--border);margin:0 5px;flex-shrink:0}
   #app-sidebar .nav-module-divider{width:100%;height:0;margin:7px 0;border-left:0;border-top:1px solid var(--border)}
-  .pm-scope{display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:4px;flex-shrink:0}
-  .pm-scope[hidden]{display:none}
-  .pm-scope button{min-height:28px;border:0;border-radius:3px;background:transparent;color:var(--muted);font:inherit;font-size:11px;padding:4px 9px;cursor:pointer}
-  .pm-scope button[aria-pressed="true"]{background:var(--blue);color:#fff;font-weight:700}
-  .pm-catalog-mode .subbar{display:flex;height:auto;min-height:40px}
+  .pm-mode-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0;min-width:96px;height:30px;padding:0 8px;font-size:11px}
+  .pm-mode-button[hidden]{display:none}
+  .pm-mode-button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .sb-center:has(.pm-mode-button:not([hidden])),.registration-toolbar-center:has(.pm-mode-button){gap:8px}
+  .sb-center:has(.pm-mode-button:not([hidden])) .search,.registration-toolbar-center:has(.pm-mode-button) .search{width:0;min-width:0;flex:1}
+  .sb-center:has(.pm-mode-button:not([hidden])) .plus,.registration-toolbar-center:has(.pm-mode-button) .plus{position:static;flex-shrink:0}
+  .pm-catalog-mode .subbar{display:none}
   .pm-catalog-mode .subbar #count,.pm-catalog-mode .subbar .sb-center,.pm-catalog-mode .subbar .sb-right{display:none}
   .main-pm-catalog{display:flex;flex-direction:column;min-height:0;height:100%}
   .main-pm-catalog .registration-toolbar-left{min-width:0}
   .main-pm-catalog .registration-toolbar-right{padding-left:0}
   #modal-root>.activity-form-overlay{position:fixed;z-index:90}
   body.navigation-sidebar #modal-root>.activity-form-overlay{left:var(--navigation-panel-offset)}
+  .floating-log{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:45;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;width:40px;height:48px;border:1px solid #c45b08;border-right:0;border-radius:4px 0 0 4px;background:#e87512;color:#fff;font-size:10px;font-weight:800;cursor:pointer}
+  .floating-log[hidden]{display:none}
+  .floating-log svg{width:17px;height:17px}
+  .floating-log:hover{background:#c45b08}
   .main-result-name{position:sticky;left:32px;z-index:3;width:240px;min-width:240px;max-width:240px;background:var(--panel);white-space:normal;overflow-wrap:anywhere;box-shadow:8px 0 14px rgba(0,0,0,.16)}
   thead .main-result-name{z-index:7;background:var(--panel2)}
   tbody tr:nth-child(even) .main-result-name{background:var(--row-alt)}
@@ -2046,7 +2052,8 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   @media(max-width:767px){
     #modal-root>.activity-form-overlay{bottom:calc(64px + env(safe-area-inset-bottom))}
     #modal-root>.activity-form-overlay>.activity-form-drawer{width:100%;max-width:100%;min-width:0}
-    .pm-scope button{min-height:44px;padding:6px 12px;font-size:12px}
+    .pm-mode-button{min-height:44px;height:44px;min-width:44px;font-size:11px}
+    .floating-log{width:44px;min-height:48px}
     .main-pm-catalog .registration-toolbar{height:auto;grid-template-columns:minmax(0,1fr);padding:8px;gap:6px}
     .main-pm-catalog .registration-toolbar-center .search{min-width:0;flex:1;max-width:none}
     .main-pm-catalog .registration-toolbar-center .plus{position:static;flex-shrink:0}
@@ -2145,12 +2152,9 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     <div class="sb-left">
       <span id="mobile-module-caption"></span>
       <span class="count" id="count">—</span>
-      <div id="pm-scope" class="pm-scope" role="group" aria-label="Registros do módulo" hidden>
-        <button type="button" data-pm-scope="deliveries" aria-pressed="true">Execução</button>
-        <button type="button" data-pm-scope="catalog" aria-pressed="false">Cadastro</button>
-      </div>
     </div>
     <div class="sb-center">
+      <button class="btn pm-mode-button" id="pm-mode-button" type="button" data-pm-mode hidden></button>
       <input class="search" id="search" placeholder="Buscar…">
       <button class="btn primary plus" id="new" title="Adicionar dados">+</button>
     </div>
@@ -2180,7 +2184,6 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   <footer id="app-footer">
     <div class="foot-left">ARCA TECHNOLOGY LTDA • ARCA HOLD LLC • 2026</div>
     <div class="foot-right">
-      <button class="foot-btn" data-action="log" hidden>LOG</button>
       <button class="foot-btn" data-action="help">AJUDA</button>
       <button class="foot-btn" data-action="registrations">CADASTROS</button>
       <button class="foot-btn" data-action="tools">FERRAMENTAS</button>
@@ -2189,6 +2192,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </div>
   </footer>
 
+  <button class="ico floating-log" id="floating-log" type="button" data-action="log" title="Log" aria-label="Log" hidden><span aria-hidden="true">≡</span><span>LOG</span></button>
   <div id="modal-root"></div>
   <nav id="mobile-navigation" aria-label="Navegação principal">
     <button type="button" data-mobile-tab="contacts"></button>

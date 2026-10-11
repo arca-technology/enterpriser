@@ -64,9 +64,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-header').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .sidebar-bottom .actions').count(), 1);
     assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
-    assert.equal(await page.locator('#app-sidebar .foot-btn .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar .foot-btn .nav-icon svg').count(), 5);
     assert.equal(await page.locator('#sidebar-collapse').count(), 0);
-    assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 3);
+    assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 2);
     assert.equal(await page.locator('#app-sidebar .sidebar-support [data-action="updates"]').count(), 1);
     assert.equal(await page.locator('#app-sidebar .actions').evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1);
     assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => getComputedStyle(el, '::after').content), 'none');

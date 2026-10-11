@@ -345,7 +345,34 @@ function mainModuleCan(tab, action = "view") {
 
 function mainPmCatalogActive() {
   return Boolean(PM_TEMPLATE_MODULE[state.tab]) && state.pmScopes[state.tab] === "catalog"
+    && currentUserCan(PM_TEMPLATE_MODULE[state.tab], "view")
+    && !document.querySelector("#modal-root #registrations-root");
+}
+
+function mainPmModeAvailable() {
+  return Boolean(PM_TEMPLATE_MODULE[state.tab])
+    && currentUserCan(state.tab === "activities" ? "activities" : "projects", "view")
     && currentUserCan(PM_TEMPLATE_MODULE[state.tab], "view");
+}
+
+function mainPmModeContent() {
+  const catalog = mainPmCatalogActive();
+  return `<span aria-hidden="true">${window.CRM_NAV_ICONS?.[catalog ? "registrations" : "activities"] || ""}</span><span>${catalog ? "Cadastro" : "Execução"}</span>`;
+}
+
+function mainPmModeButtonHtml() {
+  if (!mainPmCatalogActive() || !mainPmModeAvailable()) return "";
+  return `<button class="btn pm-mode-button" type="button" data-pm-mode title="Alterar para Execução" aria-label="Alterar para Execução">${mainPmModeContent()}</button>`;
+}
+
+function wireMainPmModeButtons(root) {
+  root.querySelectorAll("[data-pm-mode]").forEach((button) => button.addEventListener("click", () => {
+    if (!mainPmModeAvailable()) return;
+    closeFloaters();
+    state.pmScopes[state.tab] = mainPmCatalogActive() ? "deliveries" : "catalog";
+    state.view = "table";
+    render();
+  }));
 }
 
 function openMainPmCatalog(section) {
@@ -2915,7 +2942,7 @@ function applyNavigationPreference() {
     sidebar.querySelector(".sidebar-modules").append(tabs, footerModules);
     sidebar.querySelector(".sidebar-bottom").appendChild(actions);
     const support = sidebar.querySelector(".sidebar-support");
-    ["help", "log", "updates"].forEach((action) => {
+    ["help", "updates"].forEach((action) => {
       const button = document.querySelector(`#app-sidebar [data-action="${action}"],#app-footer [data-action="${action}"]`);
       if (button) support.appendChild(button);
     });
@@ -2923,7 +2950,7 @@ function applyNavigationPreference() {
     sidebar.appendChild(sidebar.querySelector(".sidebar-bottom"));
   } else {
     sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footerModules.appendChild(button));
-    ["log", "help", "registrations", "tools", "social", "updates"].forEach((action) => {
+    ["help", "registrations", "tools", "social", "updates"].forEach((action) => {
       const button = footerModules.querySelector(`[data-action="${action}"]`);
       if (button) footerModules.appendChild(button);
     });
@@ -9241,6 +9268,8 @@ function render() {
   if (state.tab !== "home" && !mainModuleCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
+  const logIcon = document.querySelector("#floating-log > span");
+  if (logIcon) logIcon.innerHTML = window.CRM_NAV_ICONS?.log || "";
   document.querySelector('[data-action="chat"]')?.toggleAttribute("hidden", !currentUserCanUseChat());
   document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !mainModuleCan(tab.dataset.tab, "view")));
   document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(REGISTRATION_SECTIONS.map((id) => REGISTRATION_PERMISSION_MODULE[id])));
@@ -9254,8 +9283,10 @@ function render() {
   if (pmModule && !canViewExecution && canViewCatalog) state.pmScopes[state.tab] = "catalog";
   const catalog = mainPmCatalogActive();
   document.body.classList.toggle("pm-catalog-mode", catalog);
-  document.getElementById("pm-scope").hidden = !pmModule || !canViewExecution || !canViewCatalog;
-  document.querySelectorAll('[data-pm-scope]').forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.pmScope === (catalog ? "catalog" : "deliveries"))));
+  const modeButton = document.getElementById("pm-mode-button");
+  modeButton.hidden = !mainPmModeAvailable();
+  modeButton.innerHTML = mainPmModeContent();
+  modeButton.title = modeButton.ariaLabel = `Alterar para ${catalog ? "Execução" : "Cadastro"}`;
   document.querySelector(".subbar")?.classList.toggle("home-hidden", isHome);
   const requestedMode = VIEW_MODES.find((mode) => mode.id === state.view);
   if (!requestedMode || !viewModeAvailable(requestedMode)) state.view = "table";
@@ -9288,7 +9319,8 @@ function render() {
   document.getElementById("filter-strip").classList.toggle("home-hidden", isHome || catalog);
   if (!isHome && !catalog) renderActiveFilterBadges();
 
-  if (isHome) renderHome(cache);
+  if (pmModule && state.pmScopes[state.tab] === "catalog" && document.querySelector("#modal-root #registrations-root")) document.getElementById("main").replaceChildren();
+  else if (isHome) renderHome(cache);
   else if (catalog) {
     registrationsState.section = state.tab;
     document.getElementById("main").innerHTML = '<div id="registrations-root" class="registrations-root main-pm-catalog"></div>';
@@ -9554,6 +9586,7 @@ function closeModal() {
   modalCloseOverride = null;
   modalLayerStack = [];
   document.removeEventListener("keydown", escCloseHandler);
+  if (mainPmCatalogActive() && !document.querySelector("#main #registrations-root")) render();
 }
 function syncSidebarModuleNavigation() {
   const moduleId = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
@@ -11498,12 +11531,13 @@ function openRegistrationsModal(section = "products") {
   const available = REGISTRATION_SECTIONS.filter((id) => currentUserCan(REGISTRATION_PERMISSION_MODULE[id], "view"));
   if (!available.length) { toast("Você não possui acesso aos Cadastros.", true); return; }
   if (!available.includes(section)) section = available[0];
+  // The full-screen catalog must not share its root with the main PM catalog.
+  if (document.querySelector("#main #registrations-root")) document.getElementById("main").replaceChildren();
   registrationsState = { section, tables: {} };
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Cadastros">
     ${Object.entries(REGISTRATION_LABEL).filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${id === section ? " active" : ""}" data-registration-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   const disabledFooter = `<div class="registrations-footer" aria-disabled="true">
-    ${currentUserIsAdmin() ? '<button class="foot-btn" disabled>LOG</button>' : ""}
     <button class="foot-btn" disabled>AJUDA</button>
     <button class="foot-btn" disabled>CADASTROS</button>
     <button class="foot-btn" disabled>FERRAMENTAS</button>
@@ -11803,7 +11837,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
-    <div class="registration-toolbar-center"><input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
+    <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
@@ -12112,7 +12146,7 @@ function renderRegistrationsSection() {
   }
   queueMicrotask(() => {
     const currentRoot = document.getElementById("registrations-root");
-    if (!currentRoot) return;
+    if (currentRoot !== root || registrationsState.section !== section) return;
     const addButton = currentRoot.querySelector("#registration-add");
     if (addButton && !currentUserCan(permissionModule, "create")) addButton.disabled = true;
     if (!currentUserCan(permissionModule, "edit")) currentRoot.querySelectorAll(".reg-product-edit,.reg-pipeline-edit,.reg-template-edit,.reg-user-edit").forEach((button) => { button.disabled = true; });
@@ -12341,6 +12375,7 @@ function renderRegistrationsSection() {
   }
   if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
   wireRegistrationTable();
+  wireMainPmModeButtons(root);
 }
 
 // Dashboard de metas e objetivos fica só dentro da entrega (ícone de olho),
@@ -12438,7 +12473,7 @@ function setupRegistrationToolbar(root, table) {
   right.className = "registration-toolbar-right";
   if (toolbar.closest("#registrations-root")) left.insertAdjacentHTML("beforeend", `<span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? ENTITY_LABEL[state.tab] : "Cadastros")}</span>`);
   if (count) left.appendChild(count);
-  center.innerHTML = `<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
+  center.innerHTML = `${mainPmModeButtonHtml()}<input class="search registration-toolbar-search" placeholder="Buscar..." value="${esc(tableState.search || "")}">`;
   if (addButton) {
     const originalLabel = addButton.textContent.trim().replace(/^\+\s*/, "");
     addButton.classList.add("plus");
@@ -13475,7 +13510,6 @@ function saveToolRows(key, rows) {
 
 function toolsDisabledFooter() {
   return `<div class="registrations-footer" aria-disabled="true">
-    ${currentUserIsAdmin() ? '<button class="foot-btn" disabled>LOG</button>' : ""}
     <button class="foot-btn" disabled>AJUDA</button>
     <button class="foot-btn" disabled>CADASTROS</button>
     <button class="foot-btn" disabled>FERRAMENTAS</button>
@@ -17786,12 +17820,7 @@ document.getElementById("new").addEventListener("click", () => {
   else if (PM_TEMPLATE_MODULE[state.tab]) openMainPmTemplate();
   else openForm(state.tab, null);
 });
-document.querySelectorAll('[data-pm-scope]').forEach((button) => button.addEventListener("click", () => {
-  closeFloaters();
-  state.pmScopes[state.tab] = button.dataset.pmScope;
-  state.view = "table";
-  render();
-}));
+wireMainPmModeButtons(document.querySelector(".sb-center"));
 document.getElementById("cols-btn").addEventListener("click", (e) => {
   e.stopPropagation();
   document.getElementById("filter-dd")?.remove();

@@ -52,7 +52,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#main .registration-toolbar-title').innerText(), 'Tarefas');
     assert.ok(await page.locator('#main').innerText().then((text) => text.includes('Modelo de projeto principal')));
     await page.evaluate(() => { registrationTableState().view = 'table'; renderRegistrationsSection(); });
-    await page.locator('[data-pm-scope="deliveries"]').click();
+    await page.locator('#main [data-pm-mode]').click();
     assert.equal(await page.locator('#main .data-table[data-tab="activities"]').count(), 1);
     for (const [section, prefix] of [['goals', 'pg'], ['objectives', 'po']]) {
       await page.locator(`#tabs [data-tab="${section}"]`).click();
@@ -68,7 +68,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.waitForFunction((prefix) => !document.getElementById(`${prefix}-save`), prefix);
       await page.waitForFunction((section) => (section === 'goals' ? loadDeliveryGoals() : loadDeliveryObjectives()).some((item) => item.name === `Cadastro principal ${section}`), section);
       assert.equal(await page.evaluate((section) => (section === 'goals' ? loadProductGoals() : loadProductObjectives()).find((item) => item.name === `Cadastro principal ${section}`).product_id, section), 'pr2');
-      await page.locator('[data-pm-scope="deliveries"]').click();
+      await page.locator('#main [data-pm-mode]').click();
       assert.equal(await page.locator('#main .record-primary-cell').count(), 1);
       await page.locator('#main .record-primary-cell').click();
       assert.equal(await page.evaluate(() => projectBoardState.section), section);
@@ -80,23 +80,56 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       }
       await page.evaluate(() => { state.view = 'table'; render(); });
     }
+    for (const mode of ['top', 'sidebar']) {
+      await page.evaluate((mode) => saveNavigationPreference({ mode }), mode);
+      for (const section of ['activities', 'goals', 'objectives']) {
+        await page.evaluate((section) => openMainPmCatalog(section), section);
+        assert.equal(await page.locator('.subbar').isVisible(), false);
+        const toggle = await page.locator('#main [data-pm-mode]').boundingBox();
+        const search = await page.locator('#main .registration-toolbar-search').boundingBox();
+        assert.ok(toggle && search && toggle.x + toggle.width <= search.x && Math.abs(toggle.y - search.y) < 2);
+        for (const registration of ['products', 'pipelines', 'users']) {
+          await page.evaluate((registration) => openRegistrationsModal(registration), registration);
+          assert.equal(await page.locator('#registrations-root').count(), 1);
+          assert.equal(await page.locator('#modal-root #registrations-root table').count(), 1);
+          await page.evaluate(() => render());
+          assert.equal(await page.evaluate(() => registrationsState.section), registration);
+          assert.equal(await page.locator('#main table').count(), 0);
+          const labels = await page.locator('#modal-root #registrations-root th').allTextContents();
+          assert.ok(labels.includes({ products: 'Produto', pipelines: 'Pipeline', users: 'Usuário' }[registration]));
+          await page.evaluate(() => closeModal());
+          assert.equal(await page.locator('#main #registrations-root table').count(), 1);
+          assert.equal(await page.locator('#main .registration-toolbar-title').innerText(), { activities: 'Tarefas', goals: 'Metas', objectives: 'Objetivos' }[section]);
+        }
+      }
+    }
+    await page.evaluate(() => { state.pmScopes[state.tab] = 'deliveries'; render(); });
     for (const width of [1440, 1024, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(() => saveNavigationPreference({ mode: 'top' }));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await page.evaluate(() => saveNavigationPreference({ mode: 'sidebar' }));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      assert.equal(await page.locator('#app-sidebar [data-action="log"],#app-footer [data-action="log"]').count(), 0);
+      const log = await page.locator('#floating-log').boundingBox();
+      assert.ok(log && log.x + log.width === width && Math.abs(log.y + log.height / 2 - 450) < 1);
       if (width >= 768) {
         assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
         assert.deepEqual(await page.evaluate(() => sidebarSubmodules('registrations').map((item) => item.id)), ['products', 'pipelines', 'users']);
         await page.locator('#new:visible,#registration-add:visible').click();
         assert.equal(await page.locator('.activity-form-drawer').evaluate((el) => el.getBoundingClientRect().left), 64);
         await page.keyboard.press('Escape');
+        if (width === 1440) {
+          await page.locator('#floating-log').click();
+          assert.equal(await page.locator('#admin-log-body').count(), 1);
+          await page.keyboard.press('Escape');
+          await page.screenshot({ path: path.join(os.tmpdir(), 'pm-mode-sidebar-desktop.png') });
+        }
       } else {
         await page.locator('#mobile-more').click();
         assert.equal(await page.locator('#mobile-navigation-menu').getByRole('button', { name: 'Metas', exact: true }).count(), 1);
         await page.locator('#mobile-navigation-menu').getByRole('button', { name: 'Tarefas', exact: true }).click();
-        await page.locator('#new').click();
+        await page.locator('#new:visible,#registration-add:visible').click();
         await page.locator('#pa-activity').waitFor();
         const nav = await page.locator('#mobile-navigation').boundingBox();
         const save = await page.locator('#pa-save').boundingBox();
@@ -110,7 +143,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     }
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.evaluate(() => { pmTestAdmin = false; state.pmScopes = {}; state.tab = 'activities'; render(); });
-    assert.equal(await page.locator('#pm-scope').isVisible(), false);
+    assert.equal(await page.locator('#pm-mode-button').isVisible(), false);
+    assert.equal(await page.locator('#floating-log').isVisible(), false);
     assert.equal(await page.locator('#tabs [data-tab="goals"]').isVisible(), true);
     await page.locator('#new').click();
     assert.equal(await page.locator('#task-delivery-picker').isVisible(), true);
