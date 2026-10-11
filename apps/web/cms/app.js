@@ -9058,7 +9058,7 @@ function syncSidebarModuleNavigation() {
     deliveryButton?.setAttribute("aria-controls", "sidebar-submodules");
     deliveryButton?.setAttribute("aria-expanded", "false");
     document.querySelectorAll('#app-sidebar .tab,#app-sidebar .foot-btn,#app-sidebar .actions .ico,#app-sidebar .brand-home').forEach((button) => {
-      if (button !== deliveryButton && !button.disabled) { button.dataset.deliveryDisabled = "true"; button.disabled = true; }
+      if (button !== deliveryButton && button.dataset.action !== "help" && !button.disabled) { button.dataset.deliveryDisabled = "true"; button.disabled = true; }
     });
   } else {
     deliveryButton?.removeAttribute("aria-haspopup");
@@ -10163,7 +10163,7 @@ const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal orga
 const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };
 const HELP_PAGES = {
   home: { kicker: "Ajuda", title: "Como usar o ENTERPRISER • CMS", path: ["Cabeçalho", "Rodapé"],
-    lead: "O CMS reúne relacionamento comercial (CRM), gestão das entregas e tarefas (PM), processos (BPM) e ferramentas do escritório. Escolha acima um dos módulos principais ou, na barra, um submódulo de Cadastros, Ferramentas ou Social.",
+    lead: "O CMS reúne relacionamento comercial, gestão das entregas e tarefas, processos e ferramentas do escritório. A ajuda desta tela explica o módulo aberto. Use a busca ou Todos os assuntos para consultar o manual completo sem sair do trabalho.",
     sections: [
       { title: "Entenda o fluxo de trabalho", lead: "<b>Pessoas e Empresas</b> identificam com quem você se relaciona. <b>Conversas</b> guardam o histórico. <b>Negócios</b> acompanham uma oportunidade de venda. <b>Entregas</b> organizam o serviço vendido; suas <b>Tarefas</b> registram o trabalho, seus <b>Objetivos</b> o resultado esperado e suas <b>Metas</b> a medida desse resultado.", tips: ["Cadastros › Tarefas, Metas e Objetivos são modelos dos produtos. Dentro da entrega, são os registros reais daquele cliente. Não são duas listas para executar o mesmo trabalho."] },
       HELP_RECORD_ACTIONS_SECTION,
@@ -10296,6 +10296,77 @@ const HELP_PAGES = {
 };
 const HELP_PAGE_BY_MAIN = { contacts: "contacts", companies: "companies", conversations: "conversations", deals: "deals", projects: "projects", activities: "activities" };
 let helpPageId = "home";
+let helpContextId = "home";
+let helpObserver = null;
+let helpReturnFocus = null;
+const helpMobileMedia = window.matchMedia("(max-width: 760px)");
+let helpInertSurfaces = [];
+function syncHelpMobileSurfaces() {
+  helpInertSurfaces.forEach(([element, inert]) => { element.inert = inert; });
+  helpInertSurfaces = [];
+  if (!helpMobileMedia.matches || !document.getElementById("help-panel")) return;
+  ["main", "modal-root", "app-header", "app-footer"].forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) { helpInertSurfaces.push([element, element.inert]); element.inert = true; }
+  });
+}
+const HELP_DELIVERY_PAGES = {
+  "delivery-overview": { kicker: "Entrega", title: "Visão geral", lead: "Acompanhe o trabalho previsto até hoje, as pendências e os resultados do cliente. Tarefas futuras não são atraso. Use os indicadores para decidir o que precisa de atenção agora.", sections: [{ title: "Como ler os indicadores", cards: [["Execução", "Compare tarefas atendidas com as previstas até hoje. Canceladas não representam trabalho entregue."], ["Atenção primeiro", "Confira atrasos e dependências antes de iniciar mais atividades. Abra o registro para consultar responsáveis e planejamento."], ["Resultados", "Objetivos descrevem resultados; metas medem o atingimento. Faturamento, SKUs e fornecedores são dados do negócio, não porcentagem de conclusão do projeto."]] }] },
+  "delivery-activities": { kicker: "Entrega", title: "Tarefas do cliente", lead: "Estas são as ocorrências reais desta entrega, não os modelos de Cadastros. Cada tarefa acompanha responsável, execução e prazo do cliente.", sections: [HELP_TASK_OPERATIONS_SECTION, HELP_TASK_DATES_SECTION, HELP_TASK_WINDOWS_SECTION, HELP_TASK_SETUP_SECTION] },
+  "delivery-goals": { kicker: "Entrega", title: "Metas do cliente", lead: "Registre o valor atual do indicador e compare com o alvo. Uma meta mede resultado: fazer uma tarefa não significa necessariamente atingir a meta.", sections: [{ title: "Acompanhar o resultado", cards: [["Valor atual e alvo", "Atualize o valor medido do cliente. Confira unidade e comparação: no mínimo, no máximo ou exato."], ["Atingimento", "O percentual compara a medida com o alvo. Não some nem faça média de indicadores com unidades diferentes como faturamento, SKUs e fornecedores."], ["Prazo", "O prazo sugerido do modelo é contado a partir do início da entrega. Uma data informada diretamente aqui é manual; limpar essa data retoma o prazo do modelo."]] }, HELP_RECORD_ACTIONS_SECTION] },
+  "delivery-objectives": { kicker: "Entrega", title: "Objetivos do cliente", lead: "Acompanhe o resultado esperado para esta entrega. Confira o critério de conclusão e as tarefas vinculadas antes de interpretar o progresso.", sections: [{ title: "Trabalho e resultado", cards: [["Progresso", "Vem das tarefas associadas. Sem os vínculos corretos, o percentual não é evidência suficiente de que o resultado foi alcançado."], ["Critério de conclusão", "Use um resultado verificável, como financeiro configurado e conciliado, em vez de uma intenção genérica."], ["Planejamento", "Dependências organizam a sequência. O prazo do cadastro orienta os registros pendentes; uma data manual na entrega substitui esse cálculo."]] }, HELP_RECORD_ACTIONS_SECTION] },
+  "delivery-data": { kicker: "Entrega", title: "Dados do cliente", lead: "Registre os resultados do negócio mês a mês. Esta área mede a evolução do cliente e não a execução das tarefas.", sections: [{ title: "Registrar e interpretar", cards: [["Faturamento por canal", "Informe os valores dos canais no mês correspondente. Confira a soma mensal e o acumulado do período; evite repetir o total em cada canal."], ["SKUs", "Registre a quantidade do mês de maneira consistente para comparar a evolução."], ["Fornecedores", "Selecione as empresas fornecedoras. O vínculo identifica os fornecedores acompanhados naquele mês."], ["Observações", "Explique mudanças relevantes, campanhas, sazonalidade ou dados incompletos."], ["Continuidade", "Entregas vinculadas do mesmo CNPJ permitem acompanhar o histórico do cliente. Diferencie os dados da entrega atual do acumulado da sequência."]] }] }
+};
+Object.assign(HELP_PAGES, HELP_DELIVERY_PAGES);
+
+function currentHelpContext() {
+  if (document.getElementById("project-board-root")) return `delivery-${projectBoardState.section || "overview"}`;
+  if (document.getElementById("registrations-root")) return `reg-${registrationsState.section}`;
+  if (document.getElementById("tools-root")) return `tool-${toolsState.section}`;
+  if (document.getElementById("social-root")) return "social";
+  return HELP_PAGE_BY_MAIN[state.tab] || "home";
+}
+function helpPlainText(value) {
+  return new DOMParser().parseFromString(String(value || ""), "text/html").body.textContent || "";
+}
+function helpSearchText(page) {
+  return helpPlainText([page.kicker, page.title, page.lead, ...page.sections.map((section) => [section.title, section.lead, ...(section.steps || []), ...(section.cards || []).flat(), ...(section.tips || [])].join(" "))].join(" ")).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+}
+function closeHelpPanel() {
+  helpObserver?.disconnect();
+  helpObserver = null;
+  document.getElementById("help-panel")?.remove();
+  syncHelpMobileSurfaces();
+  helpMobileMedia.removeEventListener("change", syncHelpMobileSurfaces);
+  document.body.classList.remove("help-open");
+  document.removeEventListener("keydown", helpEscapeHandler, true);
+  document.querySelectorAll('[data-action="help"]').forEach((button) => { button.classList.remove("help-active"); button.setAttribute("aria-expanded", "false"); button.removeAttribute("aria-controls"); });
+  if (helpReturnFocus?.isConnected && !helpReturnFocus.disabled) helpReturnFocus.focus();
+}
+function helpEscapeHandler(event) {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  closeHelpPanel();
+}
+function renderHelpPanel(mode = "article", query = "") {
+  const panel = document.getElementById("help-panel");
+  if (!panel) return;
+  const body = panel.querySelector(".help-panel-body");
+  const context = HELP_PAGES[helpContextId] || HELP_PAGES.home;
+  panel.querySelector("#help-context").textContent = `${context.kicker} · ${context.title}`;
+  if (mode === "catalog") {
+    const normalized = query.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").trim();
+    const terms = normalized.split(/\s+/).filter(Boolean);
+    const pages = Object.entries(HELP_PAGES).filter(([, page]) => terms.every((term) => helpSearchText(page).includes(term)));
+    body.innerHTML = `<h2>${query ? "Resultados da busca" : "Todos os assuntos"}</h2><div class="help-topic-list">${pages.length ? pages.map(([id, page]) => `<button type="button" data-help-topic="${esc(id)}"><small>${esc(page.kicker)}</small><b>${esc(page.title)}</b><span>${esc(helpPlainText(page.lead))}</span></button>`).join("") : '<p role="status">Nenhum assunto encontrado. Tente outro termo.</p>'}</div>`;
+    body.querySelectorAll("[data-help-topic]").forEach((button) => button.addEventListener("click", () => { helpPageId = button.dataset.helpTopic; renderHelpPanel(); }));
+  } else {
+    const page = HELP_PAGES[helpPageId] || context;
+    body.innerHTML = `<article><span class="help-kicker">${esc(page.kicker)}</span><h2>${esc(page.title)}</h2><p class="help-panel-lead">${page.lead}</p>${page.sections.map((section, index) => `<details class="help-article-section"${index === 0 ? " open" : ""}><summary>${esc(section.title)}</summary>${helpSectionHtml({ ...section, title: "" })}</details>`).join("")}</article>`;
+  }
+  body.scrollTop = 0;
+}
 
 function helpSectionHtml(section) {
   const platformText = IS_EXTENSION_CONTEXT
@@ -10324,27 +10395,40 @@ function renderHelpSection() {
   root.querySelector(".help-body").scrollTop = 0;
 }
 
-function openHelpModal(pageId = HELP_PAGE_BY_MAIN[state.tab] || "home") {
+function openHelpModal(pageId = currentHelpContext()) {
+  if (document.getElementById("help-panel")) { closeHelpPanel(); return; }
+  helpReturnFocus = document.activeElement;
+  helpContextId = currentHelpContext();
   helpPageId = HELP_PAGES[pageId] ? pageId : "home";
-  const headerCenter = `<div class="modal-header-tabs help-header-tabs" role="tablist" aria-label="Módulos">
-    ${HELP_HEADER_SLOTS.map(([id, label]) => `<button class="modal-header-tab" data-help-page="${id}" role="tab">${label}</button>`).join("")}
-  </div>`;
-  shell("Ajuda", `<div id="help-root" class="help-root">
-      <div class="help-toolbar">
-        <button class="registration-toolbar-title help-home-btn" data-help-page="home" type="button" title="Visão geral da ajuda">Ajuda</button>
-        <div class="help-subtabs" role="tablist" aria-label="Submódulos">${HELP_TOOLBAR_SLOTS.map(([id, label]) => `<button class="help-subtab" data-help-page="${id}" role="tab">${label}</button>`).join("")}</div>
-      </div>
-      <div class="help-body"></div>
-    </div>`, {
-    cls: "full registrations-modal",
-    headerCenter,
-    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
+  const panel = document.createElement("aside");
+  panel.id = "help-panel";
+  panel.setAttribute("role", "region");
+  panel.setAttribute("aria-labelledby", "help-panel-title");
+  panel.innerHTML = `<header class="help-panel-header"><h2 id="help-panel-title">Ajuda</h2><button class="ico" id="help-close" type="button" title="Fechar ajuda (Esc)" aria-label="Fechar ajuda">${window.CRM_NAV_ICONS?.x || "✕"}</button></header>
+    <div class="help-panel-controls"><button type="button" id="help-context" class="help-context-btn" title="Ajuda desta tela"></button><label class="help-search-label" for="help-search">Buscar na ajuda</label><input type="search" id="help-search" placeholder="Ex.: prazo, recorrência, setup" autocomplete="off"><button type="button" id="help-all" class="help-all-btn">Todos os assuntos</button></div>
+    <div class="help-panel-body"></div>`;
+  document.body.appendChild(panel);
+  document.body.classList.add("help-open");
+  syncHelpMobileSurfaces();
+  helpMobileMedia.addEventListener("change", syncHelpMobileSurfaces);
+  document.querySelectorAll('[data-action="help"]').forEach((button) => { button.classList.add("help-active"); button.setAttribute("aria-expanded", "true"); button.setAttribute("aria-controls", "help-panel"); });
+  panel.querySelector("#help-close").addEventListener("click", closeHelpPanel);
+  panel.querySelector("#help-context").addEventListener("click", () => { helpPageId = helpContextId; panel.querySelector("#help-search").value = ""; renderHelpPanel(); });
+  panel.querySelector("#help-all").addEventListener("click", () => { panel.querySelector("#help-search").value = ""; renderHelpPanel("catalog"); });
+  panel.querySelector("#help-search").addEventListener("input", (event) => renderHelpPanel("catalog", event.target.value));
+  document.addEventListener("keydown", helpEscapeHandler, true);
+  helpObserver = new MutationObserver(() => {
+    const next = currentHelpContext();
+    if (next === helpContextId) return;
+    helpContextId = next;
+    helpPageId = HELP_PAGES[next] ? next : "home";
+    panel.querySelector("#help-search").value = "";
+    renderHelpPanel();
   });
-  document.querySelectorAll("[data-help-page]").forEach((button) => button.addEventListener("click", () => {
-    helpPageId = button.dataset.helpPage;
-    renderHelpSection();
-  }));
-  renderHelpSection();
+  // Observe only work surfaces; help updates must not trigger themselves.
+  ["main", "modal-root"].forEach((id) => { const surface = document.getElementById(id); if (surface) helpObserver.observe(surface, { childList: true, subtree: true }); });
+  renderHelpPanel();
+  panel.querySelector("#help-close").focus();
 }
 
 // ---------- Pipelines (fluxos de negociação) ----------
