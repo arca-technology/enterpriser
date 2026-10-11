@@ -1919,13 +1919,87 @@ const TABLE_ACTION_ICONS = {
 function tableActionButtons(actions = {}) {
   const labels = { open: "Abrir", edit: "Editar", clone: "Clonar", delete: "Excluir" };
   const attrsHtml = (attrs = {}) => Object.entries(attrs).map(([key, value]) => ` ${esc(key)}="${esc(value)}"`).join("");
-  return `<span class="table-actions">${["open", "edit", "clone", "delete"].map((kind) => {
+  return `<span class="table-actions record-actions"><button type="button" class="rowbtn record-actions-toggle" title="Mais ações" aria-label="Mais ações" aria-haspopup="menu" aria-expanded="false">${window.CRM_NAV_ICONS?.more || "⋮"}</button><span hidden>${["open", "edit", "clone", "delete"].map((kind) => {
     const action = actions[kind];
     const enabled = Boolean(action && action.enabled !== false);
     const title = action?.title || labels[kind];
     const classes = ["rowbtn", "table-action-btn", `action-${kind}`, enabled ? action?.className : "is-disabled"].filter(Boolean).join(" ");
     return `<button type="button" class="${classes}" title="${esc(enabled ? title : `${labels[kind]} indisponível`)}" aria-label="${esc(enabled ? title : `${labels[kind]} indisponível`)}"${enabled ? attrsHtml(action.attrs) : ' disabled aria-disabled="true"'}>${TABLE_ACTION_ICONS[kind]}</button>`;
-  }).join("")}</span>`;
+  }).join("")}</span></span>`;
+}
+let recordActionAnchor = null;
+function closeRecordActions() {
+  document.getElementById("record-actions-menu")?.remove();
+  recordActionAnchor?.setAttribute("aria-expanded", "false");
+  recordActionAnchor = null;
+}
+function openRecordActions(anchor) {
+  const same = recordActionAnchor === anchor;
+  closeRecordActions();
+  if (same) return;
+  const menu = document.createElement("div");
+  menu.id = "record-actions-menu";
+  menu.className = "record-actions-menu";
+  menu.setAttribute("role", "menu");
+  const actions = anchor.closest(".record-actions");
+  ["edit", "clone", "delete"].forEach((kind) => {
+    const source = actions.querySelector(`.action-${kind}`);
+    if (kind === "delete") { const line = document.createElement("hr"); line.setAttribute("role", "separator"); menu.appendChild(line); }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `record-menu-item${kind === "delete" ? " danger" : ""}`;
+    button.setAttribute("role", "menuitem");
+    button.disabled = !source || source.disabled;
+    button.innerHTML = `${TABLE_ACTION_ICONS[kind]}<span>${{ edit: "Editar", clone: "Clonar", delete: "Excluir" }[kind]}</span>`;
+    button.addEventListener("click", () => { closeRecordActions(); if (source.isConnected && !source.disabled) source.click(); });
+    menu.appendChild(button);
+  });
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(rect.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - menu.offsetHeight - 8))}px`;
+  recordActionAnchor = anchor;
+  anchor.setAttribute("aria-expanded", "true");
+  const buttons = [...menu.querySelectorAll("button:not(:disabled)")];
+  menu.addEventListener("keydown", (event) => {
+    const index = buttons.indexOf(document.activeElement);
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length;
+      buttons[next]?.focus();
+    }
+  });
+  buttons[0]?.focus();
+}
+function wireRecordPrimaryCells(table) {
+  if (!table?.tHead) return;
+  const headers = [...table.tHead.rows[0].cells];
+  const labels = ["TAREFA", "ENTREGA", "NOME COMPLETO", "NOME EMPRESARIAL", "RAZÃO SOCIAL", "CONVERSA", "NEGÓCIO", "META", "OBJETIVO", "PRODUTO", "NOME", "DOCUMENTAÇÃO", "TABELA", "ARQUIVO", "PROCESSO", "EMAIL"];
+  let index = -1;
+  for (const label of labels) {
+    index = headers.findIndex((head) => head.textContent.trim().toUpperCase() === label);
+    if (index >= 0) break;
+  }
+  if (index < 0) index = headers.findIndex((head) => !head.classList.contains("select-head") && !head.classList.contains("expand-head"));
+  table.querySelectorAll("tbody tr").forEach((row) => {
+    const cell = row.cells[index];
+    const source = row.querySelector(".record-actions .action-open:not(:disabled)") || row.querySelector(".record-actions .action-edit:not(:disabled)");
+    if (!cell || !source || cell.colSpan > 1 || cell.classList.contains("table-actions-cell") || cell.dataset.recordPrimary) return;
+    cell.dataset.recordPrimary = "true";
+    cell.classList.add("record-primary-cell");
+    const name = cell.querySelector("strong,.registration-task-name,.task-name-text") || cell;
+    name.tabIndex = 0;
+    name.setAttribute("role", "button");
+    name.setAttribute("aria-label", `${source.title}: ${cell.textContent.trim()}`);
+    cell.addEventListener("click", (event) => {
+      if (event.target.closest("button,input,select,a")) return;
+      source.click();
+    });
+    name.addEventListener("keydown", (event) => {
+      if (event.target !== name || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault(); source.click();
+    });
+  });
 }
 const tableActionsHead = () => '<th class="noclick table-actions-head">AÇÕES</th>';
 function splitMultiValues(value) {
@@ -3106,6 +3180,7 @@ function wireSecondaryTableSelection(table, scope) {
     cell.colSpan = Number(cell.colSpan || headRow.cells.length - 1) + 1;
   });
   wireTableExpandColumn(table, scope);
+  wireRecordPrimaryCells(table);
   const actionsHead = headRow.querySelector(".table-actions-head");
   const bulkProvider = tableBulkEditProvider(scope);
   const host = table.closest("#registrations-root, #project-board-root, #tools-root, #product-activities-root") || table.parentElement;
@@ -3456,6 +3531,7 @@ function renderTable(c) {
   const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
   const tableBody = body || `<tr><td colspan="${emptyColspan}" class="empty">Nenhum registro. Clique em <b>+</b> para criar.</td></tr>`;
   document.getElementById("main").innerHTML = `<div class="data-table-wrap"><div class="table-scroll"><table class="data-table${selectable && selectedSet.size ? " has-selection" : ""}" data-tab="${esc(state.tab)}"><thead><tr>${head}</tr></thead><tbody>${tableBody}</tbody></table></div>${pagination}</div>`;
+  wireRecordPrimaryCells(document.querySelector("#main table"));
   if (state.tab === "activities") styleTaskFrozenColumns(document.querySelector("#main table"), "data-k", cols);
 
   document.querySelectorAll("thead th[data-k]").forEach((th) =>
@@ -16974,9 +17050,23 @@ document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
     handleAction(b.dataset.action);
   }));
 document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest("#record-actions-menu,.record-actions-toggle")) closeRecordActions();
   const panel = document.getElementById("sidebar-submodules");
   if (panel && !panel.contains(event.target) && !sidebarSubmoduleParent(panel.dataset.parent)?.contains(event.target)) closeSidebarSubmodules();
 });
+document.addEventListener("click", (event) => {
+  const button = event.target.closest(".record-actions-toggle");
+  if (button) { event.stopPropagation(); openRecordActions(button); }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && recordActionAnchor) {
+    const anchor = recordActionAnchor;
+    closeRecordActions(); anchor.focus();
+    event.preventDefault(); event.stopImmediatePropagation();
+  }
+}, true);
+window.addEventListener("resize", closeRecordActions);
+document.addEventListener("scroll", closeRecordActions, true);
 document.querySelectorAll('#app-footer [data-action="registrations"],#app-footer [data-action="tools"],#app-footer [data-action="social"],#tabs [data-tab="projects"]').forEach((button) => {
   button.addEventListener("pointerenter", () => {
     if (navigationPreference.mode !== "sidebar" || !sidebarHoverEnabled() || button.disabled) return;

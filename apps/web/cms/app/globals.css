@@ -507,7 +507,20 @@
   .stacked-cell span{display:block;white-space:nowrap;line-height:1.25}
   td.num{font-variant-numeric:tabular-nums; text-align:right}
   td.act{text-align:right;width:1%;padding-left:8px;padding-right:10px}
-  .table-actions-head,.table-actions-cell{position:sticky!important;right:0;z-index:4;min-width:106px!important;width:106px!important;box-sizing:border-box;background:var(--panel);box-shadow:-8px 0 14px rgba(0,0,0,.12);text-align:center!important}
+  .table-actions-head,.table-actions-cell{position:sticky!important;right:0;z-index:4;min-width:64px!important;width:64px!important;box-sizing:border-box;background:var(--panel);box-shadow:-8px 0 14px rgba(0,0,0,.12);text-align:center!important}
+  .record-actions>span[hidden]{display:none!important}
+  .table-actions.record-actions{display:flex;justify-content:center;width:100%;margin:0}
+  .record-actions-toggle svg,.record-menu-item svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+  .record-primary-cell{font-weight:700;cursor:pointer}
+  .record-primary-cell small,.record-primary-cell .muted{font-weight:400}
+  .record-primary-cell:hover{text-decoration:underline;text-underline-offset:3px}
+  .record-primary-cell:focus-visible,.record-primary-cell [role="button"]:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  .record-actions-menu{position:fixed;z-index:120;width:166px;padding:5px;background:var(--panel);border:1px solid var(--border);border-radius:5px;box-shadow:0 5px 20px var(--overlay)}
+  .record-menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:9px 8px;background:transparent;border:0;border-radius:4px;color:var(--text);font:inherit;text-align:left;cursor:pointer}
+  .record-menu-item:hover,.record-menu-item:focus-visible{background:var(--row-hover)}
+  .record-menu-item:disabled{opacity:.4;cursor:not-allowed}
+  .record-menu-item.danger{color:#e5484d}
+  .record-actions-menu hr{border:0;border-top:1px solid var(--border);margin:4px 0}
   thead .table-actions-head{z-index:8;background:var(--panel2)}
   tbody tr:nth-child(even) .table-actions-cell{background:var(--row-alt)}
   tbody tr:hover .table-actions-cell{background:var(--row-hover)}
@@ -1492,7 +1505,7 @@
     .sb-left{grid-column:1}.sb-center{grid-column:2}.sb-right{display:none}
     .count{max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 7px}
     .search{width:100%;max-width:none;height:36px;font-size:13px}
-    #new,.selection-actions,.select-head,.select-cell,.expand-head,.expand-cell,.action-col{display:none!important}
+    #new,.selection-actions,.select-head,.select-cell,.expand-head,.expand-cell{display:none!important}
     .filter-strip{height:24px;min-height:24px;flex-basis:24px;padding-left:8px;padding-right:8px}
     .filter-badge{height:19px;max-width:170px}
 

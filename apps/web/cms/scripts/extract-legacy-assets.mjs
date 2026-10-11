@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { UsersRound, Building2, MessagesSquare, BriefcaseBusiness, Package, ListChecks, Logs, CircleHelp, Database, Wrench, Globe, History, GitBranch, Target, Flag, Folder, Mail, Workflow, FileText, Table2 } from "lucide";
+import { UsersRound, Building2, MessagesSquare, BriefcaseBusiness, Package, ListChecks, Logs, CircleHelp, Database, Wrench, Globe, History, GitBranch, Target, Flag, Folder, Mail, Workflow, FileText, Table2, EllipsisVertical } from "lucide";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const html = await readFile(path.join(root, "index.html"), "utf8");
@@ -27,7 +27,7 @@ await mkdir(path.join(root, "public", "legacy"), { recursive: true });
 const iconNodes = { contacts: UsersRound, companies: Building2, conversations: MessagesSquare, deals: BriefcaseBusiness, projects: Package, activities: ListChecks,
   log: Logs, help: CircleHelp, registrations: Database, tools: Wrench, social: Globe, updates: History,
   products: Package, pipelines: GitBranch, users: UsersRound, goals: Target, objectives: Flag,
-  files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2 };
+  files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2, more: EllipsisVertical };
 const escapeAttribute = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const navigationIcons = Object.fromEntries(Object.entries(iconNodes).map(([key, nodes]) => [key,
   `<svg viewBox="0 0 24 24" aria-hidden="true">${nodes.map(([tag, attributes]) => `<${tag} ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeAttribute(value)}"`).join(" ")}/>`).join("")}</svg>`
