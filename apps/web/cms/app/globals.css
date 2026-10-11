@@ -1618,6 +1618,13 @@
   .task-references{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.task-reference-open{border:1px solid var(--accent);background:transparent;color:var(--accent);padding:3px 6px;border-radius:4px;font:inherit;cursor:pointer}.task-reference-open:hover{background:var(--accent);color:#fff}
   .modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 18px;border-top:1px solid var(--border2)}
   .panel-list{padding:16px 18px;color:var(--muted);line-height:1.6}
+  .modal.contact-merge-modal{display:flex;flex-direction:column;overflow:hidden}
+  .contact-merge-modal>h3,.contact-merge-modal>.modal-foot{flex:0 0 auto}
+  .contact-merge-content{flex:1 1 auto;min-height:0;overflow:auto}
+  .contact-merge-review-table{width:100%;table-layout:fixed}
+  .contact-merge-review-table th,.contact-merge-review-table td{position:static;white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+  .contact-merge-review-table label{display:flex;align-items:flex-start;gap:6px;margin-top:8px;cursor:pointer}
+  .contact-merge-review-table input{flex:0 0 auto;margin-top:4px}
   .task-comments-open{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:4px;padding:4px 8px;font:inherit;font-weight:700;white-space:nowrap;cursor:pointer}
   .task-comments-open:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
   .task-comments-panel,.internal-chat-panel{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}

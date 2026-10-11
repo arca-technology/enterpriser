@@ -684,6 +684,7 @@ async function fetchTable(name) {
 }
 async function createRow(table, body) {
   if (!requireDataPermission(table, "create")) throw new Error("Operação não permitida para este usuário.");
+  if (table === "pipelines") validatePipelineStages(null, body.stages, []);
   if (!isLive()) {
     const row = PK_COLUMN[table] ? { ...body } : { id: crypto.randomUUID(), ...body };
     DEMO[table].push(row);
@@ -709,6 +710,7 @@ async function createActivityOrLoadExisting(body) {
 }
 async function updateRow(table, id, body) {
   if (!requireDataPermission(table, "edit")) throw new Error("Operação não permitida para este usuário.");
+  if (table === "pipelines" && Object.hasOwn(body, "stages")) await assertPipelineChangeAllowed(id, body.stages);
   const k = pk(table);
   if (!isLive()) { const r = DEMO[table].find((x) => x[k] === id); Object.assign(r, body); return r; }
   const j = { "Content-Type": "application/json", Prefer: "return=representation" };
@@ -720,6 +722,7 @@ async function updateRow(table, id, body) {
 }
 async function deleteRow(table, id) {
   if (!requireDataPermission(table, "delete")) throw new Error("Operação não permitida para este usuário.");
+  if (table === "pipelines") await assertPipelineChangeAllowed(id);
   const k = pk(table);
   if (!isLive()) { DEMO[table] = DEMO[table].filter((x) => x[k] !== id); return; }
   const label = activityRecordLabel(table, id);
@@ -1363,9 +1366,10 @@ async function syncProductActivities() {
           }
           if (!current.assign_to_client && template.assign_to_client) updates.assign_to_client = true;
           const completed = ["done", "canceled"].includes(current.status);
-          if (completed) updates.deadline_window = current.deadline_window || "date";
-          if (!completed && plannedStartDate && (!current.planned_start_date || scheduleChanged)) updates.planned_start_date = plannedStartDate;
-          if (!completed && (scheduleChanged || (dueDate && !current.due_date))) {
+          const preserveSchedule = completed || current.schedule_manual;
+          if (preserveSchedule) updates.deadline_window = current.deadline_window || "date";
+          if (!preserveSchedule && plannedStartDate && (!current.planned_start_date || scheduleChanged)) updates.planned_start_date = plannedStartDate;
+          if (!preserveSchedule && (scheduleChanged || (dueDate && !current.due_date))) {
             updates.due_date = dueDate;
             updates.planned_end_date = dueDate;
           }
@@ -2517,17 +2521,20 @@ function normalizeProjectBusinessMetrics(value) {
 }
 
 function projectRevenueChannels(project) {
-  const channels = normalizeTextList([
+  const metrics = normalizeProjectBusinessMetrics(project?.business_metrics);
+  const channels = [...new Set([
     ...normalizeTextList(project?.marketplace_channels),
     ...normalizeTextList(project?.store_platforms),
-    ...(project?.store_platform ? [project.store_platform] : [])
-  ]);
+    ...(project?.store_platform ? [project.store_platform] : []),
+    ...metrics.flatMap((row) => Object.keys(row.channel_revenue)),
+    ...(metrics.some((row) => row.revenue != null && !Object.keys(row.channel_revenue).length) ? ["NÃO INFORMADO"] : [])
+  ])];
   return channels.length ? channels : ["NÃO INFORMADO"];
 }
 
 function projectMetricRevenue(row) {
-  const channelTotal = Object.values(row?.channel_revenue || {}).reduce((total, value) => total + (Number(value) || 0), 0);
-  return channelTotal || Number(row?.revenue || 0);
+  const amounts = Object.values(row?.channel_revenue || {}).filter((value) => value !== "" && value != null && Number.isFinite(Number(value)));
+  return amounts.length ? amounts.reduce((total, value) => total + Number(value), 0) : Number(row?.revenue || 0);
 }
 
 function projectMonthKeys(startDate, endDate, existing = []) {
@@ -2550,19 +2557,19 @@ function projectBusinessMetricsHtml(value, startDate, endDate, c = cache, channe
   const months = projectMonthKeys(startDate, endDate, rows);
   if (!months.length) return '<div class="panel-list">Informe início e fim para gerar os meses do projeto.</div>';
   const companyOptions = companyRefOptions(c);
-  const revenueChannels = channels.length ? channels : ["NÃO INFORMADO"];
+  const revenueChannels = projectRevenueChannels({ marketplace_channels: channels, business_metrics: rows });
   const channelTotals = Object.fromEntries(revenueChannels.map((channel) => [channel, 0]));
   let grandTotal = 0;
   const body = months.map((month) => {
     const row = byMonth[month] || {};
     const label = new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
     const legacyRevenue = !Object.keys(row.channel_revenue || {}).length ? row.revenue : null;
-    const channelCells = revenueChannels.map((channel, index) => {
-      const amount = row.channel_revenue?.[channel] ?? (index === 0 ? legacyRevenue : null);
+    const channelCells = revenueChannels.map((channel) => {
+      const amount = row.channel_revenue?.[channel] ?? (channel === "NÃO INFORMADO" ? legacyRevenue : null);
       channelTotals[channel] += Number(amount || 0);
       return `<td><input class="business-channel-revenue" data-business-channel="${esc(channel)}" type="number" min="0" step="0.01" value="${esc(amount ?? "")}" placeholder="R$ 0,00"></td>`;
     }).join("");
-    const monthTotal = revenueChannels.reduce((total, channel, index) => total + Number(row.channel_revenue?.[channel] ?? (index === 0 ? legacyRevenue : 0) ?? 0), 0);
+    const monthTotal = projectMetricRevenue(row);
     grandTotal += monthTotal;
     return `<tr data-business-month="${esc(month)}"><td><strong>${esc(label)}</strong></td>${channelCells}<td class="business-month-total" data-business-month-total>${brl(monthTotal)}</td><td><input class="business-skus" type="number" min="0" step="1" value="${esc(row.skus ?? "")}" placeholder="0"></td><td>${multiPickerHtml(`business-suppliers-${month}`, companyOptions, new Set(normalizeIdList(row.supplier_company_ids)), "Buscar fornecedores", true)}</td><td><textarea class="business-observations" rows="2" placeholder="Observações do mês">${esc(row.observations || "")}</textarea></td></tr>`;
   }).join("");
@@ -3786,9 +3793,11 @@ function renderKanban(c) {
   const rows = rowsFor("deals", c).filter((d) => d.pipeline_id === activeId);
   const stageCols = (pipeline?.stages || []).map((st) =>
     dealColumnHtml(st, rows.filter((d) => d.stage === st && d.status === "open"), c, { stage: st })).join("");
+  const unassigned = rows.filter((deal) => deal.status === "open" && !(pipeline?.stages || []).includes(deal.stage));
+  const missingStage = unassigned.length ? dealColumnHtml("Etapa não encontrada", unassigned, c) : "";
   const won = dealColumnHtml("Ganho", rows.filter((d) => d.status === "won"), c, { won: true });
   const lost = dealColumnHtml("Perdido", rows.filter((d) => d.status === "lost"), c, { lost: true });
-  document.getElementById("main").innerHTML = `<div class="pipeline-tabs">${tabs}</div><div class="kanban">${stageCols}${won}${lost}</div>`;
+  document.getElementById("main").innerHTML = `<div class="pipeline-tabs">${tabs}</div><div class="kanban">${stageCols}${missingStage}${won}${lost}</div>`;
 
   document.querySelectorAll(".pipeline-tab").forEach((btn) =>
     btn.addEventListener("click", () => { state.kanbanPipelineId = btn.dataset.id; render(); }));
@@ -4143,7 +4152,7 @@ function wireKanbanDnD(pipelineId) {
     });
     card.addEventListener("dragend", () => card.classList.remove("dragging"));
   });
-  document.querySelectorAll(".col").forEach((col) => {
+  document.querySelectorAll(".col[data-stage], .col.won, .col.lost").forEach((col) => {
     col.addEventListener("dragover", (e) => { e.preventDefault(); col.classList.add("drag-over"); });
     col.addEventListener("dragleave", () => col.classList.remove("drag-over"));
     col.addEventListener("drop", async (e) => {
@@ -10007,9 +10016,88 @@ function updateCachedContactCompanyLinks({ contactId = null, companyId = null, r
   (cache.companies || []).forEach((company) => { company.contact_ids = [...new Set(contactIdsByCompany.get(company.tax_id) || [])]; });
 }
 
+function findContactDuplicate(contacts, incoming) {
+  const name = String(incoming.name || "").trim().toLocaleLowerCase("pt-BR");
+  const phones = splitMultiValues(normalizePhoneList(incoming.phone || "")).map((phone) => phone.replace(/\D/g, ""));
+  const emails = splitMultiValues(normalizeEmailList(incoming.email || "")).map((email) => email.toLocaleLowerCase("pt-BR"));
+  return contacts.find((contact) => {
+    if (String(contact.name || "").trim().toLocaleLowerCase("pt-BR") !== name) return false;
+    const existingPhones = splitMultiValues(normalizePhoneList(contact.phone || "")).map((phone) => phone.replace(/\D/g, ""));
+    const existingEmails = splitMultiValues(normalizeEmailList(contact.email || "")).map((email) => email.toLocaleLowerCase("pt-BR"));
+    return phones.some((phone) => existingPhones.includes(phone)) || emails.some((email) => existingEmails.includes(email));
+  });
+}
+
+function contactMergePlan(existing, incoming, companyIds) {
+  const body = {};
+  const conflicts = [];
+  const blank = (value) => value == null || (typeof value === "string" && !value.trim()) || (Array.isArray(value) && !value.length);
+  for (const [key, value] of Object.entries(incoming)) {
+    if (key === "company_id" || blank(value)) continue;
+    if (key === "phone") body[key] = normalizePhoneList([existing[key], value].filter(Boolean).join("; "));
+    else if (key === "email") body[key] = normalizeEmailList([existing[key], value].filter(Boolean).join("; "));
+    else if (["contact_type", "groups", "tags"].includes(key)) {
+      const values = normalizeTextList([...normalizeTextList(existing[key]), ...normalizeTextList(value)]);
+      body[key] = key === "tags" ? values : values.join("; ");
+    } else if (blank(existing[key]) || existing[key] === value) body[key] = value;
+    else {
+      conflicts.push({ key, existing: existing[key], incoming: value });
+    }
+  }
+  const linkedIds = normalizeIdList([...normalizeIdList(existing.company_ids, existing.company_id), ...companyIds]);
+  body.company_id = linkedIds[0] || null;
+  return { body, companyIds: linkedIds, conflicts };
+}
+
+function reviewContactMerge(existing, incoming, companyIds, fs) {
+  const plan = contactMergePlan(existing, incoming, companyIds);
+  const display = (key, value) => {
+    if (key === "company_id") return companyNames(plan.companyIds);
+    const field = fs.find((item) => item.k === key);
+    const values = Array.isArray(value) ? value : [value];
+    return values.map((item) => field?.options?.find((option) => option.value === item)?.label || item).join("; ") || "—";
+  };
+  const rows = Object.keys(incoming).filter((key) => key !== "company_id" && incoming[key] != null && incoming[key] !== "" && (!Array.isArray(incoming[key]) || incoming[key].length)).map((key) => {
+    const conflict = plan.conflicts.find((item) => item.key === key);
+    return `<tr><th>${esc(fs.find((field) => field.k === key)?.label || key)}</th><td>${esc(display(key, existing[key]))}</td><td><span data-contact-merge-preview="${esc(key)}">${esc(display(key, conflict ? conflict.existing : plan.body[key]))}</span>${conflict ? `<label><input type="checkbox" data-contact-merge-field="${esc(key)}"> Substituir por: ${esc(display(key, conflict.incoming))}</label>` : ""}</td></tr>`;
+  }).join("");
+  return new Promise((resolve) => {
+    let result = null;
+    const previousFocus = document.activeElement;
+    const close = nestedCenterModal("Revisar pessoa já cadastrada", `<div class="contact-merge-content"><div class="panel-list"><b>${esc(existing.name)}</b><p>Encontramos o mesmo nome e telefone ou e-mail. Campos vazios serão preservados. Marque apenas os dados que deseja substituir.</p><p>Empresas vinculadas: ${esc(companyNames(plan.companyIds))}</p></div>
+      <div class="panel-list"><table class="contact-merge-review-table"><thead><tr><th>Campo</th><th>Atual</th><th>Após mesclar</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="modal-foot"><button class="btn" id="contact-merge-cancel">Voltar</button><button class="btn primary" id="contact-merge-confirm">Mesclar e salvar</button></div>`, { cls: "wide contact-merge-modal", onClose: () => { previousFocus?.focus(); resolve(result); } });
+    const dialog = document.getElementById("contact-merge-confirm").closest(".modal");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "Revisar pessoa já cadastrada");
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const controls = [...dialog.querySelectorAll("button:not(:disabled), input:not(:disabled)")];
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    document.getElementById("contact-merge-cancel").focus();
+    dialog.querySelectorAll("[data-contact-merge-field]").forEach((input) => input.addEventListener("change", () => {
+      const conflict = plan.conflicts.find((item) => item.key === input.dataset.contactMergeField);
+      dialog.querySelector(`[data-contact-merge-preview="${conflict.key}"]`).textContent = display(conflict.key, input.checked ? conflict.incoming : conflict.existing);
+    }));
+    document.getElementById("contact-merge-cancel").addEventListener("click", close);
+    document.getElementById("contact-merge-confirm").addEventListener("click", () => {
+      plan.conflicts.forEach((conflict) => {
+        if (document.querySelector(`[data-contact-merge-field="${conflict.key}"]`)?.checked) plan.body[conflict.key] = conflict.incoming;
+      });
+      result = plan;
+      close();
+    });
+  });
+}
+
 async function saveForm(tab, id, fs, opts = {}) {
   if (!requireCurrentUserPermission(tab, id ? "edit" : "create", ENTITY_LABEL[tab] || modulePermissionLabel(tab))) return;
-  const body = {};
+  let body = {};
   const form = document.querySelector("#modal-root .form");
   const saveButton = document.getElementById("save");
   if (saveButton?.disabled) return;
@@ -10030,7 +10118,7 @@ async function saveForm(tab, id, fs, opts = {}) {
     else v = el.value === "" ? null : el.value;
     body[f.k] = v;
   }
-  const linkedCompanyIds = tab === "contacts" ? normalizeIdList(body.company_ids) : null;
+  let linkedCompanyIds = tab === "contacts" ? normalizeIdList(body.company_ids) : null;
   const linkedContactIds = tab === "companies" ? normalizeIdList(body.contact_ids) : null;
   if (tab === "deals") {
     body.no_company = Boolean(body.no_company);
@@ -10117,22 +10205,25 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (body.email) body.email = normalizeEmailList(body.email);
   }
   let effectiveId = id || form?.dataset.savedId || null;
-  if (tab === "contacts" && !effectiveId) {
-    const name = String(body.name || "").trim().toLocaleLowerCase("pt-BR");
-    const phone = String(body.phone || "").replace(/\D/g, "");
-    const emails = normalizeEmailList(body.email || "").toLocaleLowerCase("pt-BR").split(/[;,]/).map((value) => value.trim()).filter(Boolean);
-    const existing = (cache.contacts || []).find((contact) => {
-      if (String(contact.name || "").trim().toLocaleLowerCase("pt-BR") !== name) return false;
-      const samePhone = phone && String(contact.phone || "").replace(/\D/g, "").includes(phone);
-      const contactEmails = normalizeEmailList(contact.email || "").toLocaleLowerCase("pt-BR").split(/[;,]/).map((value) => value.trim()).filter(Boolean);
-      const sameEmail = emails.length && emails.some((email) => contactEmails.includes(email));
-      return samePhone || sameEmail;
-    });
-    if (existing) effectiveId = existing.id;
-  }
   const originalSaveLabel = saveButton?.textContent || "Salvar";
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
+    if (tab === "contacts" && !effectiveId) {
+      const contacts = isLive() ? await fetchTable("contacts") : cache.contacts || [];
+      const existing = findContactDuplicate(contacts, body);
+      if (existing) {
+        if (!requireCurrentUserPermission("contacts", "edit", "Pessoas")) return;
+        const links = isLive()
+          ? await api(`${remoteTable("contactCompanies")}?select=*&contact_id=eq.${encodeURIComponent(existing.id)}`)
+          : cache.contactCompanies || [];
+        const current = { ...existing, company_ids: normalizeIdList([...(existing.company_ids || []), ...links.filter((link) => link.contact_id === existing.id).map((link) => link.company_id)], existing.company_id) };
+        const review = await reviewContactMerge(current, body, linkedCompanyIds, fs);
+        if (!review) return;
+        body = review.body;
+        linkedCompanyIds = review.companyIds;
+        effectiveId = existing.id;
+      }
+    }
     let saved;
     if (effectiveId) { saved = await updateRow(tab, effectiveId, body); toast(id ? "Atualizado." : "Pessoa existente atualizada."); }
     else {
@@ -10172,8 +10263,9 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (tab === "projects" && body.company_id) await ensureCompanyClientType(body.company_id);
     void init();
   } catch (err) {
-    if (saveButton) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
     toast("Erro ao salvar · " + err.message, true);
+  } finally {
+    if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = originalSaveLabel; }
   }
 }
 
@@ -10673,7 +10765,7 @@ function wirePipelinesModal() {
       }));
     document.querySelectorAll("#pm-body .rowbtn.del").forEach((b) =>
       b.addEventListener("click", async () => {
-        if (!window.confirm("Excluir este pipeline? Os negócios que estavam nele ficam sem pipeline.")) return;
+        if (!window.confirm("Excluir este pipeline? Pipelines com negócios vinculados não podem ser excluídos.")) return;
         try { await deleteRow("pipelines", b.dataset.id); await init(); renderPipelinesModal(); toast("Pipeline excluído."); }
         catch (err) { toast("Erro ao excluir · " + err.message, true); }
       }));
@@ -10683,6 +10775,29 @@ function wirePipelinesModal() {
     onSaved: () => { pmState = { mode: "list" }; renderPipelinesModal(); }
   });
 }
+function validatePipelineStages(pipeline, stages, deals) {
+  if (!Array.isArray(stages) || !stages.length || stages.some((stage) => typeof stage !== "string" || !stage.trim())) {
+    throw new Error("Adicione ao menos uma etapa com nome.");
+  }
+  const names = stages.map((stage) => stage.trim().toLocaleLowerCase("pt-BR"));
+  if (new Set(names).size !== names.length) throw new Error("As etapas não podem ter nomes repetidos.");
+  if (names.some((name) => ["ganho", "perdido"].includes(name))) throw new Error("Ganho e Perdido já são colunas fixas do pipeline.");
+  const removed = (pipeline?.stages || []).filter((stage) => !stages.includes(stage));
+  const used = removed.find((stage) => deals.some((deal) => deal.pipeline_id === pipeline.id && deal.stage === stage));
+  if (used) throw new Error(`A etapa ${used} possui negócios vinculados e não pode ser removida ou renomeada. Mova os negócios para outra etapa primeiro.`);
+}
+
+async function assertPipelineChangeAllowed(id, stages) {
+  const deals = await fetchTable("deals");
+  if (stages === undefined) {
+    if (deals.some((deal) => deal.pipeline_id === id)) throw new Error("Este pipeline possui negócios vinculados e não pode ser excluído. Mova os negócios para outro pipeline primeiro.");
+    return;
+  }
+  const pipeline = (await fetchTable("pipelines")).find((item) => item.id === id);
+  if (!pipeline) throw new Error("Pipeline não encontrado. Atualize os dados antes de salvar.");
+  validatePipelineStages(pipeline, stages, deals);
+}
+
 function wirePipelineForm({ rerender, onCancel, onSaved }) {
   document.getElementById("cancel-form")?.addEventListener("click", onCancel);
   document.getElementById("add-stage")?.addEventListener("click", () => { pmState.stages.push(""); rerender(); });
