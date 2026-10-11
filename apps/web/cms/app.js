@@ -2676,7 +2676,7 @@ function applyNavigationPreference() {
       if (button) support.appendChild(button);
     });
     sidebar.querySelector(".sidebar-modules").appendChild(support);
-    sidebar.querySelector(".sidebar-modules").appendChild(sidebar.querySelector(".sidebar-bottom"));
+    sidebar.appendChild(sidebar.querySelector(".sidebar-bottom"));
   } else {
     sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footerModules.appendChild(button));
     ["log", "help", "registrations", "tools", "social", "updates"].forEach((action) => {
