@@ -124,9 +124,24 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar').isVisible(), true);
     assert.equal(await page.locator('.sidebar-module .registrations-footer').isVisible(), false);
     await page.evaluate(() => nestedSidePanel('Teste', '<div>Formulário</div>'));
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('.nested-modal-layer .side-panel').evaluate((el) => el.getBoundingClientRect().left), 64);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('.nested-modal-layer').count(), 0);
     assert.equal(await page.locator('.sidebar-module-overlay').count(), 1);
+    await page.evaluate(() => {
+      const overlay = document.createElement('div');
+      overlay.id = 'test-left-drawer';
+      overlay.className = 'activity-form-overlay';
+      overlay.innerHTML = '<aside class="activity-form-drawer">Formulário</aside>';
+      document.querySelector('.sidebar-module').appendChild(overlay);
+    });
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('#test-left-drawer .activity-form-drawer').evaluate((el) => el.getBoundingClientRect().left), 64);
+    await page.evaluate(() => document.getElementById('test-left-drawer').remove());
+    await page.evaluate(() => openColumnManager());
+    assert.equal(await page.locator('#cols-dd').evaluate((el) => el.getBoundingClientRect().left), 64);
+    await page.evaluate(() => document.getElementById('cols-dd').remove());
     await page.locator('#app-sidebar [data-action="tools"]').click();
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('.sidebar-module-overlay').count(), 1);
@@ -145,6 +160,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.locator('#sidebar-submodules [data-section="products"]').click();
       assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), viewport.width < 761 ? 0 : 208);
       assert.equal(await page.locator('.sidebar-module .modal-header-tabs').isVisible(), false);
+      await page.evaluate(() => nestedSidePanel('Posição do painel', '<div>Formulário</div>'));
+      await page.waitForTimeout(250);
+      assert.equal(await page.locator('.nested-modal-layer .side-panel').evaluate((el) => el.getBoundingClientRect().left), viewport.width < 761 ? 0 : 208);
+      await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-left-panel-${viewport.width}.png`) });
+      await page.keyboard.press('Escape');
       await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-module-products-${viewport.width}.png`) });
       if (viewport.width < 761) await page.locator('#sidebar-toggle').click();
       await page.locator('#app-sidebar [data-action="social"]').click();
@@ -217,6 +237,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#app-footer [data-action="registrations"]').click();
     assert.equal(await page.locator('.sidebar-module-overlay').count(), 0);
     assert.equal(await page.locator('.modal-header-tabs').isVisible(), true);
+    await page.evaluate(() => closeModal());
+    await page.evaluate(() => sidePanel('Painel no modo topo', '<div>Formulário</div>'));
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator('.side-panel').evaluate((el) => el.getBoundingClientRect().right), 1440);
     await page.evaluate(() => closeModal());
     assert.deepEqual(errors, []);
     console.log('Navigation settings, existing module actions, desktop/mobile layout, collapse, per-user isolation and remote preferences passed.');
