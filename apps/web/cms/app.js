@@ -2340,11 +2340,24 @@ async function createProjectFromDeal(deal) {
 }
 
 function toast(msg, isErr) {
+  if (isErr && activeUiDialog()) { showUiError(activeUiDialog(), msg); return; }
   const el = document.createElement("div");
   el.className = "toast" + (isErr ? " err" : "");
-  el.textContent = msg;
+  el.setAttribute("role", isErr ? "alert" : "status");
+  const message = document.createElement("span");
+  message.textContent = friendlyUiError(msg);
+  el.appendChild(message);
+  if (isErr) {
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "ui-message-close";
+    dismiss.setAttribute("aria-label", "Dispensar aviso");
+    dismiss.textContent = "×";
+    dismiss.addEventListener("click", () => el.remove());
+    el.appendChild(dismiss);
+  }
   document.getElementById("toast").appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  if (!isErr) setTimeout(() => el.remove(), 3200);
 }
 
 // ---------- Colunas e campos ----------
@@ -2837,7 +2850,7 @@ function closeMobileNavigation() {
   document.body.classList.remove("navigation-open");
   document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "false");
   const sidebar = document.getElementById("app-sidebar");
-  if (sidebar) sidebar.inert = false;
+  if (sidebar) sidebar.inert = Boolean(activeUiDialog());
 }
 function sidebarSubmodules(action) {
   if (action === "projects" && document.body.classList.contains("sidebar-delivery-open")) return [...document.querySelectorAll('.sidebar-module [data-project-section]')].map((button) => ({ id: button.dataset.projectSection, label: button.textContent.trim(), permission: "projects" })).concat([{ id: "back", label: "Voltar para Entregas", permission: "projects" }]);
@@ -2848,7 +2861,7 @@ function sidebarSubmodules(action) {
 }
 let sidebarHoverCloseTimer;
 function sidebarHoverEnabled() {
-  return window.matchMedia("(hover:hover) and (pointer:fine)").matches && window.innerWidth > 760;
+  return window.matchMedia("(hover:hover) and (pointer:fine)").matches && window.innerWidth >= 768;
 }
 function sidebarSubmoduleParent(action) {
   return document.querySelector(`#app-sidebar [data-action="${action}"],#app-sidebar [data-tab="${action}"]`);
@@ -2895,7 +2908,7 @@ function openSidebarSubmodules(button, hover = false) {
     if (!requireCurrentUserPermission(item.permission, "view", item.label)) return;
     closeMobileNavigation();
     if (action === "projects") {
-      if (item.id === "back") closeModal();
+      if (item.id === "back") { if (confirmUiDiscard(document.querySelector('.project-data-module'))) closeModal(); }
       else document.querySelector(`.sidebar-module [data-project-section="${item.id}"]`)?.click();
     }
     else if (action === "registrations") openRegistrationsModal(item.id);
@@ -5720,6 +5733,7 @@ function openProjectBoard(projectId) {
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
+    if (!confirmUiDiscard(document.querySelector(".project-data-module"))) return;
     closeMobileNavigation();
     projectBoardState.section = button.dataset.projectSection;
     projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : "table";
@@ -5782,6 +5796,7 @@ function renderProjectDataModule(project) {
 }
 
 function wireProjectDataModule(project) {
+  document.querySelector(".project-data-module")?.setAttribute("data-ui-draft", "true");
   projectMonthKeys(project.start_date, project.end_date, project.business_metrics)
     .forEach((month) => wireMultiPicker(`business-suppliers-${month}`));
   const refreshTotals = () => {
@@ -5816,6 +5831,7 @@ function wireProjectDataModule(project) {
     try {
       const saved = isLive() ? await updateRow("projects", project.id, { business_metrics: metrics, updated_at: new Date().toISOString() }) : { ...project, business_metrics: metrics };
       Object.assign(project, saved, { business_metrics: metrics });
+      document.querySelector(".project-data-module")?.removeAttribute("data-ui-dirty");
       toast("Dados mensais atualizados.");
     } catch (error) {
       toast("Erro ao salvar dados mensais · " + error.message, true);
@@ -6397,6 +6413,7 @@ function projectToolbarHtml(client, product, total) {
 }
 
 function renderProjectBoard(projectId) {
+  if (document.querySelector('.project-data-module[data-ui-dirty="true"]')) return;
   const root = document.getElementById("project-board-root");
   const project = (cache.projects || []).find((p) => p.id === projectId);
   if (!root || !project) return;
@@ -7390,6 +7407,8 @@ function mountDateRangeFilter(panel, { title, current, onApply }) {
     </div>
     <div class="dd-foot dr-foot"><button class="btn danger dd-clear" type="button">Limpar</button><span></span><button class="btn dr-cancel" type="button">Cancelar</button><button class="btn primary dd-apply" type="button">Filtrar</button></div>`;
   const inputs = { from: panel.querySelector('[data-side="from"]'), to: panel.querySelector('[data-side="to"]') };
+  inputs.from.setAttribute('aria-label', 'Início do período');
+  inputs.to.setAttribute('aria-label', 'Fim do período');
   const calendarHtml = (view, index) => {
     const year = view.getFullYear();
     const month = view.getMonth();
@@ -7439,7 +7458,7 @@ function mountDateRangeFilter(panel, { title, current, onApply }) {
       : new Date(from.getFullYear(), from.getMonth() + 1, 1);
   };
   const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
-  panel.addEventListener("mousedown", (event) => {
+  panel.addEventListener("click", (event) => {
     const day = event.target.closest("[data-day]");
     const nav = event.target.closest("[data-nav]");
     const presetButton = event.target.closest("[data-preset]");
@@ -7493,7 +7512,7 @@ function mountDateRangeFilter(panel, { title, current, onApply }) {
       draw();
     });
   });
-  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { stop(event); handler(); });
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("click", (event) => { stop(event); handler(); });
   on(".dd-clear", () => onApply(null));
   on(".dr-cancel", () => panel.remove());
   on(".dd-apply", () => {
@@ -7511,6 +7530,8 @@ function mountDateRangeFilter(panel, { title, current, onApply }) {
 // Monta o conteúdo do painel de filtro (cabeçalho, corpo e rodapé) e chama
 // onApply com o novo filtro (Set, FilterRule ou null para limpar).
 function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", labelFor = (value) => (value === "" ? "(em branco)" : value), current = null, onApply }) {
+  panel.uiReturnFocus = document.activeElement;
+  panel.setAttribute('aria-label', `Filtrar ${title}`);
   const kind = filterColumnKind(values, key, hint);
   if (kind === "date") { mountDateRangeFilter(panel, { title, current, onApply }); return; }
   const selected = new Set(current instanceof FilterRule ? [] : current || []);
@@ -7523,6 +7544,7 @@ function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", lab
     <div class="dd-foot"><button class="btn dd-all" type="button">Todos</button><button class="btn danger dd-clear" type="button">Limpar</button><button class="btn primary dd-apply" type="button">Aplicar</button></div>`;
   const list = panel.querySelector(".dd-list");
   const search = panel.querySelector(".dd-search input");
+  search.setAttribute('aria-label', `Buscar valores de ${title}`);
   const op = panel.querySelector(".dd-rule-op");
   const syncRuleInputs = () => {
     if (!op) return;
@@ -7533,19 +7555,20 @@ function mountColumnFilterPanel(panel, { title, values, key = "", hint = "", lab
   const draw = () => {
     const query = String(search?.value || "").trim().toLocaleLowerCase("pt-BR");
     list.innerHTML = values.filter((value) => !query || value.toLocaleLowerCase("pt-BR").includes(query) || labelFor(value).toLocaleLowerCase("pt-BR").includes(query))
-      .map((value) => `<div class="dd-item${selected.has(value) ? " on" : ""}" data-value="${esc(value)}"><span class="dd-check">${selected.has(value) ? "✓" : ""}</span><span>${esc(labelFor(value))}</span></div>`).join("");
-    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("mousedown", (event) => {
+      .map((value) => `<button type="button" class="dd-item${selected.has(value) ? " on" : ""}" aria-pressed="${selected.has(value)}" data-value="${esc(value)}"><span class="dd-check" aria-hidden="true">${selected.has(value) ? "✓" : ""}</span><span>${esc(labelFor(value))}</span></button>`).join("");
+    list.querySelectorAll(".dd-item").forEach((item) => item.addEventListener("click", (event) => {
       event.preventDefault(); event.stopPropagation();
       const value = item.dataset.value;
       if (selected.has(value)) selected.delete(value); else selected.add(value);
       draw();
+      [...list.querySelectorAll(".dd-item")].find((button) => button.dataset.value === value)?.focus();
     }));
   };
   draw();
   syncRuleInputs();
   op?.addEventListener("change", syncRuleInputs);
   search?.addEventListener("input", draw);
-  const on = (selector, handler) => panel.querySelector(selector).addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); handler(); });
+  const on = (selector, handler) => panel.querySelector(selector).addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); handler(); });
   on(".dd-all", () => {
     if (selected.size === values.length) selected.clear(); else values.forEach((value) => selected.add(value));
     draw();
@@ -9146,6 +9169,196 @@ function render() {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === state.view));
 }
 
+// ---------- Interações compartilhadas ----------
+let uiControlSequence = 0;
+const uiInertElements = new Map();
+const UI_FLOATERS = '.filter-dd,.cols-dd,.view-dd,.csv-dd,.data-dd,#custom-table-column-menu,#record-actions-menu,#sidebar-submodules';
+
+function activeUiDialog() {
+  return [...document.querySelectorAll('#modal-root [data-ui-dialog="true"]')].at(-1) || null;
+}
+
+function uiFocusable(root) {
+  return [...root.querySelectorAll('button,input,select,textarea,a[href],[tabindex],[contenteditable="true"]')]
+    .filter((element) => !element.disabled && element.tabIndex >= 0 && !element.closest('[inert]') && element.getClientRects().length);
+}
+
+function associateUiLabels(root) {
+  root.querySelectorAll('input:not([type="hidden"]),select,textarea,[contenteditable="true"],.multi-picker-control').forEach((control) => {
+    const field = control.matches('.multi-picker-search') ? null : control.closest('.field');
+    const label = field?.querySelector('label');
+    if (label && !control.labels?.length) {
+      if (!control.id) control.id = `ui-control-${++uiControlSequence}`;
+      if (control.matches('input,select,textarea')) label.htmlFor = control.id;
+      else {
+        if (!label.id) label.id = `ui-label-${++uiControlSequence}`;
+        control.setAttribute('aria-labelledby', label.id);
+      }
+    }
+    if (!label && !control.labels?.length && !control.hasAttribute('aria-label')) {
+      const text = control.title || control.placeholder;
+      if (text) control.setAttribute('aria-label', text);
+    }
+    const hint = field?.querySelector('.field-help,small');
+    if (hint) {
+      if (!hint.id) hint.id = `ui-hint-${++uiControlSequence}`;
+      const ids = new Set((control.getAttribute('aria-describedby') || '').split(' ').filter(Boolean));
+      ids.add(hint.id);
+      control.setAttribute('aria-describedby', [...ids].join(' '));
+    }
+  });
+  root.querySelectorAll('button[title]').forEach((button) => {
+    if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.title);
+  });
+}
+
+function prepareUiDialog(dialog) {
+  associateUiLabels(dialog);
+  if (dialog.dataset.uiPrepared) return;
+  dialog.dataset.uiPrepared = 'true';
+  const workspace = dialog.dataset.uiWorkspace === 'true';
+  dialog.dataset.uiDialog = String(!workspace);
+  dialog.setAttribute('role', workspace ? 'region' : 'dialog');
+  if (!workspace) dialog.setAttribute('aria-modal', 'true');
+  const title = dialog.querySelector('h3');
+  if (title) {
+    if (!title.id) title.id = `ui-dialog-title-${++uiControlSequence}`;
+    title.tabIndex = -1;
+    dialog.setAttribute('aria-labelledby', title.id);
+  }
+  dialog.uiReturnFocus = document.activeElement;
+  if (!workspace) queueMicrotask(() => {
+    if (dialog.isConnected && dialog === activeUiDialog() && !dialog.contains(document.activeElement)) (title || uiFocusable(dialog)[0] || dialog).focus();
+  });
+}
+
+function syncUiDialogIsolation() {
+  uiInertElements.forEach((original, element) => { element.inert = original; });
+  uiInertElements.clear();
+  const dialog = activeUiDialog();
+  if (!dialog) return;
+  let node = dialog;
+  while (node.parentElement) {
+    [...node.parentElement.children].forEach((sibling) => {
+      if (sibling === node || sibling.matches(`${UI_FLOATERS},#toast,script,style,link`)) return;
+      uiInertElements.set(sibling, sibling.inert);
+      sibling.inert = true;
+    });
+    node = node.parentElement;
+    if (node === document.body) break;
+  }
+}
+
+function confirmUiDiscard(root) {
+  if (!root || (!root.matches('[data-ui-dirty="true"]') && !root.querySelector('[data-ui-dirty="true"]'))) return true;
+  if (!window.confirm('Há alterações não salvas. Deseja descartá-las e sair?')) return false;
+  root.removeAttribute('data-ui-dirty');
+  root.querySelectorAll('[data-ui-dirty]').forEach((element) => element.removeAttribute('data-ui-dirty'));
+  return true;
+}
+
+function friendlyUiError(message) {
+  const text = String(message || 'Não foi possível concluir a operação.');
+  if (/Failed to fetch|NetworkError|Load failed/i.test(text)) return 'Não foi possível conectar. Confira sua conexão e tente novamente; seu preenchimento foi mantido.';
+  if (/"code"\s*:\s*"23505"/.test(text)) return 'Já existe um registro com esses dados. Revise o cadastro antes de tentar novamente.';
+  if (/"code"\s*:\s*"23503"/.test(text)) return 'Um registro vinculado não está mais disponível. Atualize as opções e tente novamente.';
+  if (/"code"\s*:\s*"23514"/.test(text)) return 'Um dos valores não é aceito pelo cadastro. Revise os campos e tente novamente.';
+  return text;
+}
+
+function showUiError(dialog, message, control = null) {
+  dialog.querySelector('.ui-error-banner')?.remove();
+  const banner = document.createElement('div');
+  banner.className = 'ui-error-banner';
+  banner.setAttribute('role', 'alert');
+  banner.tabIndex = -1;
+  banner.innerHTML = `<strong>Não foi possível concluir</strong><span>${esc(friendlyUiError(message))}</span><button type="button" class="ui-message-close" aria-label="Dispensar aviso">×</button>`;
+  if (friendlyUiError(message) !== String(message)) banner.insertAdjacentHTML('beforeend', `<details><summary>Detalhes técnicos</summary><pre>${esc(message)}</pre></details>`);
+  const container = dialog.querySelector('.form,.document-editor,.custom-table-editor,.panel-list') || dialog;
+  container.prepend(banner);
+  banner.querySelector('button').addEventListener('click', () => banner.remove());
+  if (control) {
+    control.setAttribute('aria-invalid', 'true');
+    const error = document.createElement('span');
+    error.className = 'ui-field-error';
+    error.id = `ui-field-error-${++uiControlSequence}`;
+    error.textContent = friendlyUiError(message);
+    const previousError = control.closest('.field')?.querySelector('.ui-field-error');
+    const describedBy = (control.getAttribute('aria-describedby') || '').split(' ').filter((id) => id && id !== previousError?.id);
+    previousError?.remove();
+    control.closest('.field')?.appendChild(error);
+    control.setAttribute('aria-describedby', [...describedBy, error.id].join(' '));
+    banner.querySelector('span').replaceWith(Object.assign(document.createElement('button'), { type: 'button', className: 'ui-error-link', textContent: friendlyUiError(message), onclick: () => control.focus() }));
+  }
+  banner.focus({ preventScroll: true });
+  banner.scrollIntoView({ block: 'nearest' });
+}
+
+function installSharedUiInteractions() {
+  const root = document.getElementById('modal-root');
+  if (!root) return;
+  new MutationObserver((records) => {
+    root.querySelectorAll('.modal,.activity-form-drawer').forEach(prepareUiDialog);
+    if (root.querySelector('.modal,.activity-form-drawer')) document.addEventListener('keydown', escCloseHandler);
+    else document.removeEventListener('keydown', escCloseHandler);
+    syncUiDialogIsolation();
+    records.forEach((record) => record.removedNodes.forEach((node) => {
+      if (!(node instanceof Element)) return;
+      const removed = node.matches('[data-ui-prepared]') ? node : [...node.querySelectorAll('[data-ui-prepared]')].at(-1);
+      const opener = removed?.uiReturnFocus;
+      if (opener?.isConnected && !opener.disabled && !opener.closest('[inert]') && (!activeUiDialog() || activeUiDialog().contains(opener))) opener.focus({ preventScroll: true });
+    }));
+  }).observe(root, { childList: true, subtree: true });
+  const markDraft = (event) => {
+    if (!(event.target instanceof Element) || event.target.closest('.multi-picker-search,.dd-search,[type="search"],.registration-toolbar-search,.search,#document-page-select')) return;
+    const scope = event.target.closest('[data-ui-draft],.modal[data-ui-dialog="true"],.activity-form-drawer');
+    if ((scope && scope.querySelector('.form,.document-editor,.custom-table-editor,[contenteditable="true"]')) || scope?.matches('[data-ui-draft]')) scope.dataset.uiDirty = 'true';
+    if (event.target.hasAttribute('aria-invalid')) {
+      event.target.removeAttribute('aria-invalid');
+      const error = event.target.closest('.field')?.querySelector('.ui-field-error');
+      if (error) {
+        event.target.setAttribute('aria-describedby', (event.target.getAttribute('aria-describedby') || '').split(' ').filter((id) => id !== error.id).join(' '));
+        error.remove();
+      }
+    }
+  };
+  ['input', 'change', 'multi-picker-change'].forEach((event) => root.addEventListener(event, markDraft, true));
+  document.addEventListener('click', (event) => {
+    const active = activeUiDialog();
+    if (active && !active.contains(event.target) && !event.target.closest?.(`${UI_FLOATERS},#toast`)) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    const button = event.target.closest?.('button');
+    if (!button) return;
+    const dialog = button.closest('.modal,.activity-form-drawer') || (button.id === 'shell-close' ? document.querySelector('.sidebar-module') : null);
+    if (dialog && (button.matches('.modal-close-x') || /(^|-)cancel(-|$)/.test(button.id))) {
+      if (!confirmUiDiscard(dialog)) { event.preventDefault(); event.stopImmediatePropagation(); }
+    }
+    if (dialog && button.matches('[data-orientation],[data-slide-format],.document-group-up,.document-group-down,[id^="document-add-"],#document-clone-page,#document-block-up,#document-block-down,#document-block-delete,#document-delete-page,#document-delete-slide,#custom-table-add-row,#custom-table-add-column,#custom-table-add-sheet,.custom-table-sheet-rename,.custom-table-sheet-delete')) {
+      dialog.dataset.uiDirty = 'true';
+    }
+  }, true);
+  document.addEventListener('focusin', (event) => {
+    const dialog = activeUiDialog();
+    if (dialog && !dialog.contains(event.target) && !event.target.closest?.(`${UI_FLOATERS},#toast`)) dialog.querySelector('h3')?.focus({ preventScroll: true });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || document.querySelector(UI_FLOATERS)) return;
+    const dialog = activeUiDialog();
+    if (!dialog) return;
+    const controls = uiFocusable(dialog);
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (!first) { event.preventDefault(); dialog.querySelector('h3')?.focus(); }
+    else if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+  }, true);
+  window.addEventListener('beforeunload', (event) => {
+    if (!root.querySelector('[data-ui-dirty="true"]')) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+}
+installSharedUiInteractions();
+
 // ---------- Modal genérico ----------
 let modalCloseOverride = null;
 let modalLayerStack = [];
@@ -9160,6 +9373,18 @@ function closeTopModalLayer() {
 }
 function escCloseHandler(e) {
   if (e.key !== "Escape") return;
+  const floater = [...document.querySelectorAll(UI_FLOATERS)].filter((element) => element.getClientRects().length).at(-1);
+  if (floater) { const focus = floater.uiReturnFocus; floater.remove(); focus?.focus(); e.preventDefault(); e.stopImmediatePropagation(); return; }
+  const picker = [...document.querySelectorAll('.multi-picker-menu:not([hidden]),.single-search-menu:not([hidden])')].filter((element) => element.getClientRects().length).at(-1);
+  if (picker) {
+    picker.hidden = true;
+    const control = picker.parentElement.querySelector('.multi-picker-control,input');
+    control?.setAttribute('aria-expanded', 'false');
+    control?.focus();
+    e.preventDefault(); e.stopImmediatePropagation(); return;
+  }
+  const current = [...document.querySelectorAll('#modal-root .modal,#modal-root .activity-form-drawer')].at(-1);
+  if (!confirmUiDiscard(current)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   const registrationFilter = document.getElementById("registration-filter-dd");
   if (registrationFilter) { registrationFilter.remove(); e.preventDefault(); e.stopImmediatePropagation(); return; }
   const drawerOverlay = [...document.querySelectorAll(".activity-form-overlay")].at(-1);
@@ -9233,6 +9458,7 @@ function shell(title, inner, opts = {}) {
       <h3><span class="modal-title">${titleHtml}</span>${opts.headerCenter || ""}<span class="modal-header-actions">${opts.headerActions || ""}<button class="modal-close-x" id="shell-close" title="Fechar (Esc)">✕</button></span></h3>
       ${inner}
     </div></div>`;
+  document.querySelector('#modal-root .modal').dataset.uiWorkspace = String(Boolean(opts.navigationModule));
   syncSidebarModuleNavigation();
   modalCloseOverride = typeof opts.onClose === "function" ? opts.onClose : null;
   const closeAction = () => modalCloseOverride ? modalCloseOverride() : closeModal();
@@ -10199,7 +10425,7 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
-  if (req) { toast(`Preencha: ${req.label}`, true); return; }
+  if (req) { showUiError(form.closest('.modal'), `Preencha: ${req.label}`, form.querySelector(`[data-k="${req.k}"]`)); return; }
   if (tab === "contacts") {
     if (body.phone) body.phone = normalizePhoneList(body.phone);
     if (body.email) body.email = normalizeEmailList(body.email);
@@ -10522,7 +10748,7 @@ let helpPageId = "home";
 let helpContextId = "home";
 let helpObserver = null;
 let helpReturnFocus = null;
-const helpMobileMedia = window.matchMedia("(max-width: 760px)");
+const helpMobileMedia = window.matchMedia("(max-width: 767px)");
 let helpInertSurfaces = [];
 function syncHelpMobileSurfaces() {
   helpInertSurfaces.forEach(([element, inert]) => { element.inert = inert; });
@@ -15006,11 +15232,13 @@ function openLegacyToolDocumentForm(id = null) {
     document.getElementById("document-slide-body").focus();
     document.execCommand("foreColor", false, event.target.value);
   });
-  document.querySelectorAll(".document-format").forEach((button) => button.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    document.getElementById("document-slide-body").focus();
-    document.execCommand(button.dataset.command, false);
-  }));
+  document.querySelectorAll(".document-format").forEach((button) => {
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      document.getElementById("document-slide-body").focus();
+      document.execCommand(button.dataset.command, false);
+    });
+  });
   document.getElementById("document-add-slide").addEventListener("click", () => {
     persistActiveSlide();
     const group = slides[activeIndex]?.group || "Geral";
@@ -15121,7 +15349,7 @@ function openToolDocumentForm(id = null) {
       <button class="btn primary" id="document-add-block" type="button">+ Bloco</button>
     </div>
     <div class="document-editor-workspace">
-      <aside class="document-slide-list"><div id="document-editor-list"></div><div class="document-slide-list-actions"><button class="btn document-add-slide" id="document-add-page">+ Página</button><button class="btn document-add-slide" id="document-clone-page" title="Clonar página atual">⧉ Clonar</button><button class="btn document-add-slide" id="document-add-group">+ Grupo</button></div></aside>
+      <aside class="document-slide-list"><div class="document-mobile-pages"><label for="document-page-select">Página</label><select id="document-page-select"></select></div><div id="document-editor-list"></div><div class="document-slide-list-actions"><button class="btn document-add-slide" id="document-add-page">+ Página</button><button class="btn document-add-slide" id="document-clone-page" title="Clonar página atual">⧉ Clonar</button><button class="btn document-add-slide" id="document-add-group">+ Grupo</button></div></aside>
       <main class="document-stage-wrap"><article class="document-slide documentation-page documentation-page-edit ${state.orientation} ${state.slideFormat}" id="document-editor-page"></article></main>
     </div>
   </div><div class="modal-foot"><button class="btn danger" id="document-delete-page">Excluir página</button><button class="btn" id="tool-document-cancel">Cancelar</button><button class="btn primary" id="tool-document-save">Salvar</button></div>`;
@@ -15155,6 +15383,12 @@ function syncDocumentationBlockToolbar() {
 
 function wireDocumentationEditorShell() {
   const state = documentationEditorState;
+  document.getElementById('document-page-select').addEventListener('change', (event) => {
+    persistDocumentationEditorPage();
+    state.activeIndex = Number(event.target.value);
+    state.selectedBlockId = null;
+    renderDocumentationEditor();
+  });
   document.getElementById("tool-document-cancel").addEventListener("click", state.closePanel);
   document.getElementById("tool-document-save").addEventListener("click", saveDocumentationEditor);
   ["tool-document-system", "tool-document-module"].forEach((id) => document.getElementById(id).addEventListener("input", () => {
@@ -15181,12 +15415,14 @@ function wireDocumentationEditorShell() {
     stage.classList.toggle("standard", state.slideFormat === "standard");
     applyDocumentSlideDimensions(stage, state.orientation, state.slideFormat);
   }));
-  document.querySelectorAll(".documentation-editor .document-format").forEach((button) => button.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    const editable = state.activeEditable || document.querySelector("#document-editor-page .documentation-block-content");
-    editable?.focus();
-    document.execCommand(button.dataset.command, false);
-  }));
+  document.querySelectorAll(".documentation-editor .document-format").forEach((button) => {
+    button.addEventListener('mousedown', (event) => event.preventDefault());
+    button.addEventListener('click', () => {
+      const editable = state.activeEditable || document.querySelector("#document-editor-page .documentation-block-content");
+      editable?.focus();
+      document.execCommand(button.dataset.command, false);
+    });
+  });
   document.getElementById("document-text-color").addEventListener("input", (event) => {
     const editable = state.activeEditable || document.querySelector("#document-editor-page .documentation-block-content");
     editable?.focus();
@@ -15389,6 +15625,9 @@ function renderDocumentationEditor() {
   const state = documentationEditorState;
   const page = state.pages[state.activeIndex];
   const groups = documentSlideGroups(state.pages);
+  const mobilePages = document.getElementById('document-page-select');
+  mobilePages.innerHTML = groups.map((group) => `<optgroup label="${esc(group.name)}">${group.items.map(({ slide, index }) => `<option value="${index}">${index + 1}. ${esc(slide.subject || slide.title)}</option>`).join('')}</optgroup>`).join('');
+  mobilePages.value = String(state.activeIndex);
   const list = document.getElementById("document-editor-list");
   list.innerHTML = groups.map((group, groupIndex) => `<section class="document-slide-group" data-group="${esc(group.name)}" draggable="true">
     <div class="document-group-head"><button class="document-group-toggle" data-group="${esc(group.name)}"><span>${state.collapsedGroups.has(group.name) ? "▸" : "▾"}</span><b>${esc(group.name)}</b><small>${group.items.length}</small></button><span class="document-group-actions"><button class="tool-icon-btn document-group-up" data-group="${esc(group.name)}"${groupIndex === 0 ? " disabled" : ""}>↑</button><button class="tool-icon-btn document-group-down" data-group="${esc(group.name)}"${groupIndex === groups.length - 1 ? " disabled" : ""}>↓</button></span></div>
@@ -16422,7 +16661,7 @@ function renderToolEmails(root) {
   wireToolsPagination(root, "emails");
   wireToolsLoadRetry(root, "emails");
   wireSecondaryTableSelection(root.querySelector("table"), "tools:emails");
-  document.getElementById("tool-email-add").addEventListener("click", () => openToolEmailForm());
+  document.getElementById("tool-email-add")?.addEventListener("click", () => openToolEmailForm());
   root.querySelectorAll(".tool-email-reveal").forEach((button) => button.addEventListener("click", () => toggleToolEmailSecret(button.dataset.id)));
   root.querySelectorAll(".tool-email-copy").forEach((button) => button.addEventListener("click", () => copyToolEmailSecret(button.dataset.id)));
   root.querySelectorAll(".tool-email-edit").forEach((button) => button.addEventListener("click", () => openToolEmailForm(button.dataset.id)));
@@ -17264,6 +17503,7 @@ function stopLiveUpdates() {
 }
 
 async function refreshLiveData() {
+  if (document.querySelector('#modal-root [data-ui-dirty="true"]')) { toast('Salve ou descarte as alterações antes de atualizar os dados.', true); return; }
   const buttons = [...document.querySelectorAll(".live-refresh")];
   if (buttons.some((button) => button.classList.contains("loading"))) return;
   buttons.forEach((button) => button.classList.add("loading"));
@@ -17340,7 +17580,7 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   });
 });
 document.getElementById("sidebar-collapse")?.addEventListener("click", () => {
-  if (window.matchMedia("(max-width:760px)").matches) {
+  if (window.matchMedia("(max-width:767px)").matches) {
     closeMobileNavigation();
     document.getElementById("sidebar-toggle").focus();
     return;
@@ -17352,7 +17592,7 @@ document.getElementById("sidebar-toggle")?.addEventListener("click", () => {
   document.getElementById("app-sidebar").inert = !open;
   document.getElementById("sidebar-toggle").setAttribute("aria-expanded", String(open));
 });
-window.matchMedia("(max-width:760px)").addEventListener("change", closeMobileNavigation);
+window.matchMedia("(max-width:767px)").addEventListener("change", closeMobileNavigation);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && document.getElementById("sidebar-submodules")) {
     event.preventDefault();
