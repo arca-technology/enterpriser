@@ -2677,10 +2677,6 @@ function applyNavigationPreference() {
     });
     sidebar.querySelector(".sidebar-modules").appendChild(support);
     sidebar.querySelector(".sidebar-modules").appendChild(sidebar.querySelector(".sidebar-bottom"));
-    const actionLabels = { notifications: "Notificações", chat: "Chat", activities: "Atividades", integrations: "Integrações", theme: "Tema", settings: "Configurações", logout: "Sair" };
-    actions.querySelectorAll(".ico").forEach((button) => {
-      button.dataset.navLabel = button.hasAttribute("data-live-refresh") ? "Atualizar" : actionLabels[button.dataset.action] || button.title;
-    });
   } else {
     sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footerModules.appendChild(button));
     ["log", "help", "registrations", "tools", "social", "updates"].forEach((action) => {

@@ -69,6 +69,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 3);
     assert.equal(await page.locator('#app-sidebar .sidebar-support [data-action="updates"]').count(), 1);
     assert.equal(await page.locator('#app-sidebar .actions').evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1);
+    assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => getComputedStyle(el, '::after').content), 'none');
     assert.equal(await page.locator('#app-footer').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => el.getBoundingClientRect().height), 44);
     assert.equal(await page.locator('#app-sidebar #brand-home').count(), 1);
@@ -103,6 +104,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isVisible(), true);
         assert.equal(await page.locator('#app-sidebar [data-action="notifications"]').isVisible(), true);
         for (const parent of ['registrations', 'tools', 'social']) {
+          await page.mouse.move(width - 1, height - 1);
+          await page.locator(`#app-sidebar [data-action="${parent}"]`).scrollIntoViewIfNeeded();
+          await page.waitForTimeout(250);
           await page.locator(`#app-sidebar [data-action="${parent}"]`).click();
           assert(await page.locator('#sidebar-submodules .sidebar-submodule').count() > 0);
           assert.equal(await page.locator('#sidebar-submodules .sidebar-submodule').first().evaluate((el) => getComputedStyle(el).fontSize), '11px');
