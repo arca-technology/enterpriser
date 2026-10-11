@@ -1864,6 +1864,36 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     body.navigation-sidebar #app-sidebar .tab,body.navigation-sidebar #app-sidebar .foot-btn{height:44px;min-height:44px;font-size:11px}
     .sidebar-submodule{min-height:44px}
   }
+  body.navigation-sidebar #app-sidebar{width:64px;padding:0 4px;transform:none;box-shadow:none}
+  body.navigation-sidebar{padding-left:64px}
+  body.navigation-sidebar .sidebar-head{height:44px;min-height:44px;flex-direction:column;justify-content:center;margin-bottom:6px}
+  body.navigation-sidebar #app-sidebar .brand-home{flex:none;width:44px;min-width:0;height:36px;font-size:0;text-align:center}
+  body.navigation-sidebar #app-sidebar .brand-home span{font-size:0}
+  body.navigation-sidebar #app-sidebar .brand-home:before{content:"E";font-size:16px;font-weight:800;color:var(--blue)}
+  body.navigation-sidebar #app-sidebar .tab,body.navigation-sidebar #app-sidebar .foot-btn{height:44px;min-height:44px;width:100%;padding:3px 0;gap:2px;flex-direction:column;justify-content:center;text-align:center;font-size:8px;line-height:10px}
+  body.navigation-sidebar #app-sidebar .nav-label{display:block;width:100%;overflow-wrap:normal;white-space:normal}
+  body.navigation-sidebar #app-sidebar .nav-chevron,body.navigation-sidebar #app-sidebar .tab:after{display:none}
+  body.navigation-sidebar #app-sidebar .actions{grid-template-columns:repeat(2,minmax(0,1fr));gap:2px}
+  body.navigation-sidebar #app-sidebar .actions .ico{width:26px}
+  body.navigation-sidebar #sidebar-toggle{display:none!important}
+  body.navigation-sidebar .sidebar-module-overlay{left:64px;width:calc(100% - 64px)}
+  body.navigation-sidebar .sidebar-support{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);padding-top:8px}
+  .schedule-shell{display:flex;flex-direction:column;height:100%;min-height:0}
+  .schedule-view{padding:12px;overflow:auto;min-height:0;flex:1}
+  .schedule-period{margin-bottom:16px}
+  .schedule-period h4{display:flex;align-items:center;gap:8px;margin:0;padding:8px 10px;background:var(--panel2);font-size:11px}
+  .schedule-period h4 span{color:var(--muted);font-weight:400}
+  .schedule-record{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;padding:10px;background:var(--panel);color:var(--text);border:0;border-bottom:1px solid var(--border);font:inherit;text-align:left;cursor:pointer}
+  .schedule-record:hover,.schedule-record:focus-visible{background:var(--row-hover);outline:1px solid var(--blue);outline-offset:-1px}
+  .schedule-name{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+  .schedule-name small{color:var(--muted)}
+  .schedule-dates{display:flex;flex-direction:column;gap:4px;flex-shrink:0;font-size:11px}
+  @media(max-width:760px){.schedule-record{align-items:flex-start;flex-direction:column;gap:8px}.schedule-dates{flex-direction:row;flex-wrap:wrap;gap:12px}}
+  .nav-icon svg.brand-icon{fill:currentColor;stroke:none}
+  .task-column-presets{display:flex;flex-wrap:wrap;gap:5px}
+  .column-manager-controls .task-column-preset{width:auto;min-height:28px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--panel2);color:var(--text);font:inherit;font-size:10px;cursor:pointer}
+  .task-column-preset:hover,.task-column-preset:focus-visible{background:var(--row-hover);outline:1px solid var(--blue)}
+  @media(min-width:761px){body.navigation-sidebar{--navigation-panel-offset:64px}}
 </style>
 </head>
 <body>
@@ -1898,8 +1928,9 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </form>
   </div>
   <aside id="app-sidebar" aria-label="Navegação principal" hidden>
-    <div class="sidebar-head"><button class="ico" id="sidebar-collapse" type="button" title="Recolher navegação" aria-label="Recolher navegação">‹</button></div>
+    <div class="sidebar-head"></div>
     <div class="sidebar-modules"></div>
+    <div class="sidebar-support" aria-label="Ajuda e histórico"></div>
     <div class="sidebar-bottom"></div>
   </aside>
   <button class="ico" id="sidebar-toggle" type="button" title="Abrir navegação" aria-label="Abrir navegação" aria-controls="app-sidebar" aria-expanded="false" hidden>☰</button>

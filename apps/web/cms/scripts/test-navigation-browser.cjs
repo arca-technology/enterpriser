@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.route('**/*', (route) => route.request().url() === 'http://navigation-test.local/' ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
@@ -46,6 +46,17 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'record-actions-mobile.png') });
     await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => { state.tab = 'projects'; state.view = 'schedule'; render(); openViewMenu(); });
+    const viewOrder = await page.locator('#view-dd [data-view]').evaluateAll((buttons) => buttons.map((button) => button.dataset.view));
+    assert.equal(viewOrder[viewOrder.indexOf('gantt') + 1], 'schedule');
+    assert.equal(await page.evaluate(() => scheduleMarkup([{ id: 'undated', title: '<Nome>', start: null, end: null }]).includes('Sem prazo definido')), true);
+    assert.equal(await page.evaluate(() => scheduleMarkup([{ id: 'undated', title: '<Nome>' }]).includes('&lt;Nome&gt;')), true);
+    await page.evaluate(() => closeFloaters());
+    assert.equal(await page.locator('#main .schedule-record').count(), 3);
+    await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'schedule-projects-desktop.png') });
+    await page.locator('#main .schedule-record').first().click();
+    assert.equal(await page.locator('#project-board-root').count(), 1);
+    await page.evaluate(() => closeModal());
     await page.evaluate(() => openSettings());
     await page.locator('input[name="navigation-mode"][value="sidebar"]').check();
     await page.locator('#save').click();
@@ -53,7 +64,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-header').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .sidebar-bottom .actions').count(), 1);
     assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
-    assert.equal(await page.locator('#app-sidebar .foot-right .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#app-sidebar .foot-btn .nav-icon svg').count(), 6);
+    assert.equal(await page.locator('#sidebar-collapse').count(), 0);
+    assert.equal(await page.locator('#app-sidebar .sidebar-support .foot-btn').count(), 2);
     assert.equal(await page.locator('#app-footer').isVisible(), false);
     assert.equal(await page.locator('#app-sidebar .actions .ico').first().evaluate((el) => el.getBoundingClientRect().height), 28);
     assert.equal(await page.locator('#app-sidebar #brand-home').count(), 1);
@@ -64,11 +77,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       for (const width of [1440, 1024, 390]) {
         const height = width < 761 ? 600 : 900;
         await page.setViewportSize({ width, height });
-        if (width < 761) await page.locator('#sidebar-toggle').click();
         const geometry = await page.locator('#app-sidebar').evaluate((el) => ({ x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width }));
         assert.equal(geometry.x, 0);
-        assert.equal(geometry.width, 208);
-        assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), width < 761 ? 0 : 208);
+        assert.equal(geometry.width, 64);
+        assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         assert.equal(await page.locator('#app-header').isVisible(), false);
         const mainButton = await page.locator('#tabs [data-tab="contacts"]').boundingBox();
@@ -76,7 +88,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.equal(mainButton.x, lowerButton.x);
         assert.equal(mainButton.width, lowerButton.width);
         assert.equal(mainButton.height, lowerButton.height);
-        assert.equal(await page.locator('#app-sidebar [data-action="registrations"]').evaluate((el) => getComputedStyle(el).fontSize), '11px');
+        assert.equal(await page.locator('#app-sidebar [data-action="registrations"]').evaluate((el) => getComputedStyle(el).fontSize), '8px');
+        const labelGeometry = await page.locator('#tabs [data-tab="contacts"]').evaluate((el) => ({ iconBottom: el.querySelector('.nav-icon').getBoundingClientRect().bottom, labelTop: el.querySelector('.nav-label').getBoundingClientRect().top }));
+        assert(labelGeometry.labelTop >= labelGeometry.iconBottom);
         assert.equal(await page.locator('#tabs .nav-icon svg').first().evaluate((el) => el.getBoundingClientRect().width), 20);
         const actions = await page.locator('#app-sidebar .actions').evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom }));
         const tabsBottom = await page.locator('#tabs').evaluate((el) => el.getBoundingClientRect().bottom);
@@ -91,7 +105,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
           assert.equal(await page.locator(`#app-sidebar [data-action="${parent}"] .nav-chevron`).evaluate((el) => getComputedStyle(el).transform), 'none');
           if (width < 761) assert((await page.locator('#sidebar-submodules .sidebar-submodule').first().boundingBox()).height >= 44);
           const menu = await page.locator('#sidebar-submodules').evaluate((el) => ({ left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, bottom: el.getBoundingClientRect().bottom }));
-          assert.equal(menu.left, 208);
+          assert.equal(menu.left, 64);
+          if (parent === 'social') assert.equal(await page.locator('#sidebar-submodules svg.brand-icon').count(), 6);
           assert(menu.right <= width && menu.bottom <= height);
           await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-submenu-${parent}-${width}.png`) });
           await page.keyboard.press('Escape');
@@ -101,14 +116,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         if (width < 761) {
           await page.locator('#tabs [data-tab="companies"]').click();
           assert.equal(await page.locator('#sidebar-toggle').getAttribute('aria-expanded'), 'false');
-          await page.locator('#sidebar-toggle').click();
-          await page.keyboard.press('Escape');
-          assert.equal(await page.locator('#sidebar-toggle').getAttribute('aria-expanded'), 'false');
         }
       }
     }
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.locator('#sidebar-collapse').click();
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().x), 64);
     assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 6);
@@ -166,30 +177,27 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 700 }]) {
       await page.setViewportSize(viewport);
       await page.evaluate(() => saveNavigationPreference({ mode: 'sidebar', collapsed: false }));
-      if (viewport.width < 761) await page.locator('#sidebar-toggle').click();
       await page.locator('#app-sidebar [data-action="registrations"]').click();
       await page.locator('#sidebar-submodules [data-section="products"]').click();
-      assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), viewport.width < 761 ? 0 : 208);
+      assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), 64);
       assert.equal(await page.locator('.sidebar-module .modal-header-tabs').isVisible(), false);
       await page.evaluate(() => nestedSidePanel('Posição do painel', '<div>Formulário</div>'));
       await page.waitForTimeout(250);
-      assert.equal(await page.locator('.nested-modal-layer .side-panel').evaluate((el) => el.getBoundingClientRect().left), viewport.width < 761 ? 0 : 208);
+      assert.equal(await page.locator('.nested-modal-layer .side-panel').evaluate((el) => el.getBoundingClientRect().left), viewport.width < 761 ? 0 : 64);
       await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-left-panel-${viewport.width}.png`) });
       await page.keyboard.press('Escape');
       await page.screenshot({ path: path.join(require('node:os').tmpdir(), `navigation-module-products-${viewport.width}.png`) });
-      if (viewport.width < 761) await page.locator('#sidebar-toggle').click();
       await page.locator('#app-sidebar [data-action="social"]').click();
       await page.locator('#sidebar-submodules [data-section="instagram"]').click();
       assert.equal(await page.evaluate(() => socialState.section), 'instagram');
       assert.equal(await page.locator('.sidebar-module .modal-header-tabs').isVisible(), false);
-      if (viewport.width < 761) await page.locator('#sidebar-toggle').click();
       await page.locator('#tabs [data-tab="contacts"]').click();
       assert.equal(await page.locator('.sidebar-module-overlay').count(), 0);
     }
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.evaluate(() => openProjectBoard(cache.projects[0].id));
     assert.equal(await page.locator('.sidebar-module > h3').isVisible(), false);
-    assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), 208);
+    assert.equal(await page.locator('.sidebar-module-overlay').evaluate((el) => el.getBoundingClientRect().left), 64);
     assert.equal(await page.locator('#sidebar-module-context [data-project-section]').count(), 0);
     assert.equal(await page.locator('#tabs [data-tab="contacts"]').isDisabled(), true);
     assert.equal(await page.locator('#app-sidebar [data-action="settings"]').isDisabled(), true);
@@ -213,7 +221,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.setViewportSize({ width: 390, height: 700 });
     await page.evaluate(() => openProjectBoard(cache.projects[0].id));
     assert.equal(await page.locator('.sidebar-module > h3').isVisible(), false);
-    await page.locator('#sidebar-toggle').click();
     await page.locator('#tabs [data-tab="projects"]').click();
     await page.locator('#sidebar-submodules [data-section="activities"]').click();
     assert.equal(await page.evaluate(() => projectBoardState.section), 'activities');

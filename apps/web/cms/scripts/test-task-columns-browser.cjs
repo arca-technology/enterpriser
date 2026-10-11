@@ -62,7 +62,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
           else if (scope === 'registration') openRegistrationColumnManager(document.querySelector('#registrations-root table'));
           else openSecondaryColumnManager({ scope: 'delivery:activities', label: 'Tarefas', definitions: projectTableDefinitions(document.querySelector('#main table')), onChange: () => applyProjectTableColumnPreferences(document.querySelector('#main table')) });
         }, scope);
-        await page.locator('.task-column-preset').selectOption('resumo');
+        await page.locator('.task-column-preset[data-preset="resumo"]').click();
         assert.equal(await page.locator('.column-manager-row.locked').count(), scope === 'registration' ? 3 : 4);
         await page.locator('.column-manager-close').click();
         await page.screenshot({ path: path.join(require('node:os').tmpdir(), `task-columns-${scope}-${width}.png`) });

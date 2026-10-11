@@ -2641,7 +2641,7 @@ function navigationStorageKey() {
   return `crm_navigation_v1:${currentProfile?.id || "demo"}`;
 }
 function normalizeNavigationPreference(value) {
-  return { mode: value?.mode === "sidebar" ? "sidebar" : "top", collapsed: value?.collapsed === true };
+  return { mode: value?.mode === "sidebar" ? "sidebar" : "top", collapsed: value?.mode === "sidebar" };
 }
 function loadNavigationPreference() {
   try { navigationPreference = normalizeNavigationPreference(JSON.parse(localStorage.getItem(navigationStorageKey()) || "null")); }
@@ -2660,7 +2660,7 @@ function applyNavigationPreference() {
   document.body.classList.toggle("navigation-collapsed", lateral && navigationPreference.collapsed);
   closeMobileNavigation();
   sidebar.hidden = !lateral;
-  document.getElementById("sidebar-toggle").hidden = !lateral;
+  document.getElementById("sidebar-toggle").hidden = true;
   const brand = document.getElementById("brand-home");
   const actions = document.querySelector("#app-header > .actions,#app-sidebar .actions");
   const footer = document.getElementById("app-footer");
@@ -2670,16 +2670,21 @@ function applyNavigationPreference() {
     sidebar.querySelector(".sidebar-head").prepend(brand);
     sidebar.querySelector(".sidebar-modules").append(tabs, footerModules);
     sidebar.querySelector(".sidebar-bottom").appendChild(actions);
+    const support = sidebar.querySelector(".sidebar-support");
+    ["help", "log"].forEach((action) => {
+      const button = document.querySelector(`#app-sidebar [data-action="${action}"],#app-footer [data-action="${action}"]`);
+      if (button) support.appendChild(button);
+    });
+    sidebar.querySelector(".sidebar-modules").appendChild(support);
   } else {
+    sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footerModules.appendChild(button));
+    ["log", "help", "registrations", "tools", "social", "updates"].forEach((action) => {
+      const button = footerModules.querySelector(`[data-action="${action}"]`);
+      if (button) footerModules.appendChild(button);
+    });
     header.append(brand, tabs, actions);
     footer.appendChild(footerModules);
   }
-  const button = document.getElementById("sidebar-collapse");
-  const label = navigationPreference.collapsed ? "Expandir navegação" : "Recolher navegação";
-  button.textContent = navigationPreference.collapsed ? "›" : "‹";
-  button.title = label;
-  button.setAttribute("aria-label", label);
-  button.setAttribute("aria-expanded", String(!navigationPreference.collapsed));
 }
 function saveNavigationPreference(value) {
   navigationPreference = normalizeNavigationPreference(value);
@@ -2693,7 +2698,7 @@ function closeMobileNavigation() {
   document.body.classList.remove("navigation-open");
   document.getElementById("sidebar-toggle")?.setAttribute("aria-expanded", "false");
   const sidebar = document.getElementById("app-sidebar");
-  if (sidebar) sidebar.inert = window.matchMedia("(max-width:760px)").matches;
+  if (sidebar) sidebar.inert = false;
 }
 function sidebarSubmodules(action) {
   if (action === "projects" && document.body.classList.contains("sidebar-delivery-open")) return [...document.querySelectorAll('.sidebar-module [data-project-section]')].map((button) => ({ id: button.dataset.projectSection, label: button.textContent.trim(), permission: "projects" })).concat([{ id: "back", label: "Voltar para Entregas", permission: "projects" }]);
@@ -3252,7 +3257,7 @@ function taskColumnOrder(definitions, savedOrder = []) {
   return [...defaults.filter((col) => TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h))), ...remaining.filter((col) => !TASK_FROZEN_LABELS.includes(taskColumnLabel(col.h)))];
 }
 function taskPresetControl() {
-  return `<select class="task-column-preset" aria-label="Predefinição de colunas"><option value="">Predefinições</option>${Object.entries(TASK_COLUMN_PRESETS).map(([key, preset]) => `<option value="${key}">${preset.label}</option>`).join("")}</select>`;
+  return `<div class="task-column-presets" role="group" aria-label="Predefinições de colunas">${Object.entries(TASK_COLUMN_PRESETS).map(([key, preset]) => `<button type="button" class="task-column-preset" data-preset="${key}">${preset.label}</button>`).join("")}</div>`;
 }
 function applyTaskPreset(definitions, prefs, presetKey) {
   const preset = TASK_COLUMN_PRESETS[presetKey];
@@ -3942,6 +3947,40 @@ function renderCalendar(c) {
     button.addEventListener("click", () => openTimelineRecord(state.tab, button.dataset.id)));
 }
 
+function orderedScheduleItems(items) {
+  return [...items].sort((a, b) => (dateOnly(a.start || a.end)?.getTime() ?? Infinity) - (dateOnly(b.start || b.end)?.getTime() ?? Infinity) || String(a.title).localeCompare(String(b.title), "pt-BR"));
+}
+function scheduleMarkup(items, extraClass = "") {
+  if (!items.length) return '<div class="empty">Nenhum registro para exibir no cronograma.</div>';
+  const groups = new Map();
+  orderedScheduleItems(items).forEach((item) => {
+    const date = dateOnly(item.start || item.end);
+    let key = "Sem prazo definido";
+    if (date) {
+      const monday = new Date(date);
+      monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+      const sunday = new Date(monday);
+      sunday.setDate(sunday.getDate() + 6);
+      const format = (day) => day.toLocaleDateString("pt-BR");
+      key = `${format(monday)} a ${format(sunday)}`;
+    }
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return `<div class="schedule-view">${[...groups].map(([period, rows]) => `<section class="schedule-period"><h4>${esc(period)} <span>${rows.length}</span></h4><div>${rows.map((item) => `<button class="schedule-record ${extraClass}" type="button" data-id="${esc(item.id)}"><span class="schedule-name"><strong>${esc(item.title || "Sem nome")}</strong><small>${esc([item.client, item.detail].filter(Boolean).join(" · "))}</small></span><span class="schedule-dates"><span>Início: ${dateOnly(item.start) ? dt(item.start) : "—"}</span><span>Fim: ${dateOnly(item.end) ? dt(item.end) : "—"}</span></span></button>`).join("")}</div></section>`).join("")}</div>`;
+}
+function renderSchedule(c) {
+  const items = orderedScheduleItems(rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter(Boolean));
+  const totalPages = Math.max(1, Math.ceil(items.length / state.pageSize));
+  const page = Math.min(Math.max(1, state.pages[state.tab] || 1), totalPages);
+  state.pages[state.tab] = page;
+  const start = (page - 1) * state.pageSize;
+  const main = document.getElementById("main");
+  main.innerHTML = `<div class="schedule-shell">${scheduleMarkup(items.slice(start, start + state.pageSize))}<div class="table-pagination"><span>${items.length ? start + 1 : 0}-${Math.min(start + state.pageSize, items.length)} de ${items.length}</span><div><button class="btn" id="schedule-prev"${page === 1 ? " disabled" : ""}>‹</button><span>Página ${page} de ${totalPages}</span><button class="btn" id="schedule-next"${page === totalPages ? " disabled" : ""}>›</button></div></div></div>`;
+  main.querySelectorAll(".schedule-record").forEach((button) => button.addEventListener("click", () => openTimelineRecord(state.tab, button.dataset.id)));
+  main.querySelector("#schedule-prev").addEventListener("click", () => { state.pages[state.tab]--; render(); });
+  main.querySelector("#schedule-next").addEventListener("click", () => { state.pages[state.tab]++; render(); });
+}
 function renderGantt(c) {
   const allItems = rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter((item) => item && dateOnly(item.start));
   if (!allItems.length) {
@@ -6256,6 +6295,7 @@ function renderProjectBoard(projectId) {
       : ["matrix", "kanban"].includes(view) ? renderTaskMatrix(rows)
       : view === "calendar" ? renderProjectTaskCalendar(rows)
       : view === "gantt" ? renderProjectTaskGantt(rows)
+      : view === "schedule" ? scheduleMarkup(rows.map((task) => ({ id: task.id, title: activityDisplayName(task), detail: taskStatusLabel(task.status), start: taskPlannedStart(task), end: taskPlannedEnd(task) })), "project-schedule-item")
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_TASK_ADAPTER, "", `delivery:${projectId}`).html
       : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
@@ -6953,7 +6993,7 @@ function wireProjectBoard(projectId) {
     projectBoardState.calendarCursor = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; renderProjectBoard(projectId);
   });
   document.getElementById("project-calendar-today")?.addEventListener("click", () => { projectBoardState.calendarCursor = null; renderProjectBoard(projectId); });
-  document.querySelectorAll(".project-calendar-item,.project-gantt-item").forEach((button) =>
+  document.querySelectorAll(".project-calendar-item,.project-gantt-item,.project-schedule-item").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
   document.querySelectorAll("#project-board-root .checklist-open").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
@@ -7000,7 +7040,8 @@ const VIEW_MODES = [
   { id: "table", label: "Tabela", icon: "▦" },
   { id: "kanban", label: "Quadro", icon: "▥", tabs: ["deals", "activities"] },
   { id: "calendar", label: "Calendário", icon: "□", tabs: ["deals", "projects", "activities"] },
-  { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities"] }
+  { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities"] },
+  { id: "schedule", label: "Cronograma", icon: "≡", tabs: ["deals", "projects", "activities"] }
 ];
 
 const VIEW_ICON_PATHS = {
@@ -7008,12 +7049,13 @@ const VIEW_ICON_PATHS = {
   kanban: '<rect x="3" y="4" width="4" height="12" rx="1"/><rect x="8" y="4" width="4" height="8" rx="1"/><rect x="13" y="4" width="4" height="10" rx="1"/>',
   calendar: '<rect x="3" y="4.5" width="14" height="12" rx="1.5"/><path d="M3 8.5h14M7 3v3M13 3v3"/>',
   gantt: '<path d="M4 5.5h7M7 10h9M5 14.5h6"/>',
+  schedule: '<path d="M8 5h9M8 10h9M8 15h9"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="10" r="1"/><circle cx="4" cy="15" r="1"/>',
   mindmap: '<circle cx="5" cy="10" r="2"/><circle cx="15" cy="5" r="2"/><circle cx="15" cy="15" r="2"/><path d="M7 10h3M10 5v10M10 5h3M10 15h3"/>',
   matrix: '<circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/>',
   dashboard: '<path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/>'
 };
 const viewIcon = (id) => `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
-const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", mindmap: "Mapa mental", matrix: "Matriz", dashboard: "Dashboard" };
+const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", schedule: "Cronograma", mindmap: "Mapa mental", matrix: "Matriz", dashboard: "Dashboard" };
 const viewButtonInner = (id) => `${viewIcon(id)}<span class="view-label">${VIEW_LABELS[id] || ""}</span>`;
 const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="view-label">${VIEW_LABELS[id] || "Tabela"}</span><span class="chevron">▾</span>`;
 const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa mental", icon: "⌘" }];
@@ -7519,14 +7561,14 @@ function openColumnManager() {
   });
   if (state.tab === "activities") {
     panel.querySelector(".column-manager-controls").insertAdjacentHTML("beforeend", taskPresetControl());
-    panel.querySelector(".task-column-preset").addEventListener("change", (event) => {
-      applyTaskPreset(baseCols, prefs, event.target.value);
+    panel.querySelectorAll(".task-column-preset").forEach((button) => button.addEventListener("click", () => {
+      applyTaskPreset(baseCols, prefs, button.dataset.preset);
       order = [...prefs.__order];
       colPrefs[state.tab] = prefs;
       saveColPrefs();
       draw();
       render();
-    });
+    }));
   }
   setTimeout(() => {
     const outside = (e) => {
@@ -7685,12 +7727,12 @@ function openSecondaryColumnManager({ scope, label, definitions, onChange }) {
   });
   if (isTaskTable) {
     panel.querySelector(".column-manager-controls").insertAdjacentHTML("beforeend", taskPresetControl());
-    panel.querySelector(".task-column-preset").addEventListener("change", (event) => {
-      applyTaskPreset(definitions, prefs, event.target.value);
+    panel.querySelectorAll(".task-column-preset").forEach((button) => button.addEventListener("click", () => {
+      applyTaskPreset(definitions, prefs, button.dataset.preset);
       order = [...prefs.__order];
       persist();
       draw();
-    });
+    }));
   }
   setTimeout(() => {
     const outside = (event) => {
@@ -8948,6 +8990,7 @@ function render() {
   else if (state.view === "kanban" && state.tab === "activities") renderActivityKanban(cache);
   else if (state.view === "calendar") renderCalendar(cache);
   else if (state.view === "gantt") renderGantt(cache);
+  else if (state.view === "schedule") renderSchedule(cache);
   else renderTable(cache);
 
   if (isHome) {
