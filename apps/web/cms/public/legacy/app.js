@@ -2224,6 +2224,26 @@ function openMobileMenu(deliveryOnly = false) {
   dialog.showModal();
   document.getElementById("mobile-more")?.setAttribute("aria-expanded", "true");
 }
+function syncMobileNavigationScroll() {
+  const track = document.getElementById("mobile-module-track");
+  const progress = document.querySelector("#mobile-navigation .mobile-nav-progress");
+  if (!track || !progress) return;
+  const maximum = track.scrollWidth - track.clientWidth;
+  progress.hidden = maximum < 2;
+  progress.querySelectorAll("span").forEach((dot, index) => dot.classList.toggle("active", index === (track.scrollLeft > maximum / 2 ? 1 : 0)));
+}
+function revealMobileModule() {
+  const track = document.getElementById("mobile-module-track");
+  if (!track || window.innerWidth >= 768) return;
+  const buttons = [...track.querySelectorAll("button:not([hidden])")];
+  const activeIndex = buttons.findIndex((button) => button.classList.contains("active"));
+  if (activeIndex >= 0) {
+    const pageStart = buttons[Math.floor(activeIndex / 4) * 4];
+    const left = pageStart.getBoundingClientRect().left - track.getBoundingClientRect().left + track.scrollLeft;
+    track.scrollTo({ left, behavior: "instant" });
+  }
+  syncMobileNavigationScroll();
+}
 function syncMobileNavigation() {
   const bar = document.getElementById("mobile-navigation");
   if (!bar) return;
@@ -2231,15 +2251,28 @@ function syncMobileNavigation() {
   document.getElementById("mobile-presentation").disabled = state.view !== "table";
   const caption = document.getElementById("mobile-module-caption");
   if (caption) caption.textContent = document.querySelector(`#tabs [data-tab="${state.tab}"] .nav-label`)?.textContent || (state.tab === "home" ? "Visão geral" : "");
+  let visibleIndex = 0;
   bar.querySelectorAll("[data-mobile-tab]").forEach((button) => {
     const source = document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`);
     button.hidden = !source || source.hidden;
+    button.classList.toggle("mobile-page-start", !button.hidden && visibleIndex++ % 4 === 0);
     button.disabled = Boolean(source?.disabled) || (delivery && button.dataset.mobileTab !== "projects");
     const active = delivery ? button.dataset.mobileTab === "projects" : state.tab === button.dataset.mobileTab;
     button.classList.toggle("active", active);
     if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
-    button.innerHTML = `<span aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.mobileTab] || ""}</span><span>${source?.querySelector('.nav-label')?.textContent || source?.title || ""}</span>`;
+    const label = source?.querySelector('.nav-label')?.textContent || source?.title || "";
+    const markup = `<span aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.mobileTab] || ""}</span><span>${esc(label)}</span>`;
+    if (button.innerHTML !== markup) button.innerHTML = markup;
   });
+  const more = document.getElementById("mobile-more");
+  const moreMarkup = `<span class="mobile-more-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.more || "⋯"}</span><span>Mais</span>`;
+  if (more && more.innerHTML !== moreMarkup) more.innerHTML = moreMarkup;
+  const activeKey = delivery ? "delivery" : state.tab;
+  if (bar.dataset.activeModule !== activeKey) {
+    bar.dataset.activeModule = activeKey;
+    revealMobileModule();
+  }
+  syncMobileNavigationScroll();
 }
 const tableActionsHead = () => '<th class="noclick table-actions-head">AÇÕES</th>';
 function splitMultiValues(value) {
@@ -13703,6 +13736,17 @@ document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEve
   if (button.dataset.mobileTab === "projects" && document.getElementById("project-board-root")) openMobileMenu(true);
   else document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`)?.click();
 }));
+document.getElementById("mobile-module-track")?.addEventListener("scroll", syncMobileNavigationScroll, { passive: true });
+document.getElementById("mobile-module-track")?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const buttons = [...event.currentTarget.querySelectorAll("button:not([hidden]):not(:disabled)")];
+  const index = buttons.indexOf(document.activeElement);
+  if (index < 0) return;
+  const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : Math.max(0, Math.min(buttons.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)));
+  event.preventDefault();
+  buttons[next]?.focus();
+});
+window.addEventListener("resize", revealMobileModule, { passive: true });
 document.getElementById("mobile-more")?.addEventListener("click", () => openMobileMenu());
 document.getElementById("mobile-filter-btn")?.addEventListener("click", openMobileFilters);
 const mobileNavigationObserver = new MutationObserver(syncMobileNavigation);

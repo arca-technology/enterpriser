@@ -9,7 +9,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce', hasTouch: true, isMobile: true });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.route('**/*', (route) => route.request().url() === 'http://mobile-test.local/' ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
@@ -18,8 +18,37 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
     await page.addScriptTag({ content: source });
     await page.evaluate(async () => { await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin(); saveNavigationPreference({ mode: 'sidebar' }); state.tab = 'contacts'; cache.contacts[0].name = 'Pessoa com um nome completo muito longo para conferir a leitura no celular'; render(); });
-    for (const width of [360, 390, 430]) {
+    const modules = ['contacts', 'companies', 'conversations', 'deals', 'projects', 'activities', 'goals', 'objectives'];
+    assert.deepEqual(await page.locator('[data-mobile-tab]').evaluateAll((buttons) => buttons.map((button) => button.dataset.mobileTab)), modules);
+    assert.equal(await page.locator('[data-mobile-tab] svg').count(), 8);
+    const visibleModules = () => page.locator('#mobile-module-track').evaluate((track) => {
+      const bounds = track.getBoundingClientRect();
+      return [...track.querySelectorAll('button:not([hidden])')].filter((button) => {
+        const r = button.getBoundingClientRect();
+        return r.left >= bounds.left - 2 && r.right <= bounds.right + 2;
+      }).map((button) => button.dataset.mobileTab);
+    });
+    for (const width of [320, 360, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
+      await page.evaluate(() => revealMobileModule());
+      assert.deepEqual(await visibleModules(), modules.slice(0, 4));
+      const moreBefore = await page.locator('#mobile-more').boundingBox();
+      await page.locator('#mobile-module-track').evaluate((track) => track.scrollTo({ left: track.scrollWidth, behavior: 'instant' }));
+      await page.waitForFunction(() => {
+        const track = document.getElementById('mobile-module-track');
+        return Math.abs(track.scrollLeft - track.scrollWidth + track.clientWidth) < 2;
+      });
+      assert.deepEqual(await visibleModules(), modules.slice(4));
+      assert.deepEqual(await page.locator('#mobile-more').boundingBox(), moreBefore);
+      assert.equal(await page.locator('[data-mobile-tab]').evaluateAll((buttons) => buttons.every((button) => {
+        const bounds = button.getBoundingClientRect();
+        const label = button.lastElementChild;
+        return bounds.width >= 44 && bounds.height >= 44 && label.scrollWidth <= label.clientWidth;
+      })), true);
+      await page.evaluate(() => { syncMobileNavigation(); render(); });
+      assert.deepEqual(await visibleModules(), modules.slice(4), 'Background renders must not undo a swipe');
+      await page.screenshot({ path: path.join(os.tmpdir(), `mobile-modules-second-${width}.png`) });
+      await page.evaluate(() => revealMobileModule());
       assert.equal(await page.locator('#app-sidebar').isVisible(), false);
       assert.equal(await page.locator('#main').evaluate((el) => el.getBoundingClientRect().left), 0);
       assert.equal(await page.locator('#mobile-navigation').isVisible(), true);
@@ -30,6 +59,38 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       await page.screenshot({ path: path.join(os.tmpdir(), `mobile-list-${width}.png`) });
     }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => revealMobileModule());
+    const track = await page.locator('#mobile-module-track').boundingBox();
+    const touch = await page.context().newCDPSession(page);
+    const y = track.y + track.height / 2;
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: track.x + track.width - 12, y }] });
+    for (let x = track.x + track.width - 32; x >= track.x + 12; x -= 20) {
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+    }
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForFunction(() => {
+      const track = document.getElementById('mobile-module-track');
+      return Math.abs(track.scrollLeft - track.scrollWidth + track.clientWidth) < 2;
+    });
+    assert.deepEqual(await visibleModules(), modules.slice(4));
+    await page.locator('[data-mobile-tab="goals"]').click();
+    await page.waitForFunction(() => state.tab === 'goals');
+    assert.equal(await page.locator('[data-mobile-tab="goals"]').getAttribute('aria-current'), 'page');
+    await page.locator('#mobile-more').click();
+    await page.locator('#mobile-navigation-menu .mobile-menu-item').filter({ hasText: /^Pessoas$/ }).click();
+    assert.deepEqual(await visibleModules(), modules.slice(0, 4));
+    await page.locator('[data-mobile-tab="contacts"]').focus();
+    await page.keyboard.press('End');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.mobileTab), 'objectives');
+    await page.keyboard.press('Home');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.mobileTab), 'contacts');
+    await page.evaluate(() => {
+      document.querySelector('#tabs [data-tab="companies"]').hidden = true;
+      syncMobileNavigation();
+    });
+    assert.equal(await page.locator('[data-mobile-tab="companies"]').isVisible(), false);
+    await page.evaluate(() => { document.querySelector('#tabs [data-tab="companies"]').hidden = false; syncMobileNavigation(); revealMobileModule(); });
     await page.evaluate(() => setTheme(true));
     assert.equal(await page.locator('#mobile-navigation').evaluate((el) => el.getBoundingClientRect().bottom), 844);
     assert.equal(await page.locator('#mobile-navigation').isVisible(), true);
@@ -88,6 +149,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#main table thead').isVisible(), true);
     assert.equal(await page.locator('#app-sidebar').evaluate((el) => el.getBoundingClientRect().width), 64);
     assert.deepEqual(errors, []);
-    console.log('Mobile lists, full-width navigation, touch controls, table preference, filters, actions, submodules and unchanged desktop passed.');
+    console.log('Mobile passed: four swipable modules plus fixed More, eight icons, touch gesture, keyboard, permissions, active module reveal, stable background refresh, responsive lists/forms and unchanged desktop.');
   } finally { await browser.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

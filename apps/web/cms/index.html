@@ -2014,8 +2014,21 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   @media(max-width:767px){
     body,body.navigation-sidebar{padding-left:0!important;padding-bottom:calc(64px + env(safe-area-inset-bottom));height:100dvh;min-height:0}
     #app-sidebar,body.navigation-sidebar #app-sidebar,#app-header,#app-footer{display:none!important}
-    #mobile-navigation{position:fixed;inset:auto 0 0;transform:none;width:100%;height:calc(64px + env(safe-area-inset-bottom));padding:4px 8px calc(4px + env(safe-area-inset-bottom));display:flex;align-items:stretch;justify-content:space-around;gap:4px;background:var(--panel);border-top:1px solid var(--border);z-index:95}
+    #mobile-navigation{position:fixed;inset:auto 0 0;transform:none;width:100%;height:calc(64px + env(safe-area-inset-bottom));padding:4px 8px calc(4px + env(safe-area-inset-bottom));display:flex;align-items:stretch;gap:0;background:var(--panel);border-top:1px solid var(--border);z-index:95}
     #mobile-navigation button{display:flex;flex:1;min-width:0;flex-direction:column;align-items:center;justify-content:center;gap:4px;border:0;border-radius:4px;background:none;color:var(--muted);font:inherit;font-size:11px;min-height:48px}
+    #mobile-navigation .mobile-module-window{flex:0 0 80%;min-width:0;display:flex;flex-direction:column}
+    #mobile-module-track{display:flex;flex:1;min-height:0;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;touch-action:pan-x pinch-zoom;scrollbar-width:none}
+    #mobile-module-track::-webkit-scrollbar{display:none}
+    #mobile-module-track button{flex:0 0 25%;padding:4px 2px;scroll-snap-stop:normal}
+    #mobile-module-track button.mobile-page-start{scroll-snap-align:start}
+    #mobile-navigation button>span:last-child{max-width:100%;white-space:nowrap;line-height:14px}
+    #mobile-navigation #mobile-more{flex:0 0 20%}
+    #mobile-more .mobile-more-icon svg{transform:rotate(90deg)}
+    .mobile-nav-progress{height:4px;flex:0 0 4px;display:flex;align-items:center;justify-content:center;gap:4px}
+    .mobile-nav-progress[hidden]{display:none}
+    .mobile-nav-progress span{width:3px;height:3px;border-radius:50%;background:var(--border)}
+    .mobile-nav-progress span.active{background:var(--blue)}
+    #mobile-navigation button:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
     #mobile-navigation button[hidden]{display:none}
     #mobile-navigation button.active{color:var(--blue);background:var(--row-hover);font-weight:700}
     #mobile-navigation button:disabled{opacity:.4}
@@ -2442,9 +2455,19 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   <button class="ico floating-log floating-help" id="floating-help" type="button" data-action="help" title="Ajuda do módulo" aria-label="Ajuda do módulo"><span aria-hidden="true">?</span><span>AJUDA</span></button>
   <div id="modal-root"></div>
   <nav id="mobile-navigation" aria-label="Navegação principal">
-    <button type="button" data-mobile-tab="contacts"></button>
-    <button type="button" data-mobile-tab="projects"></button>
-    <button type="button" data-mobile-tab="activities"></button>
+    <div class="mobile-module-window">
+      <div id="mobile-module-track" role="group" aria-label="Módulos">
+        <button type="button" data-mobile-tab="contacts"></button>
+        <button type="button" data-mobile-tab="companies"></button>
+        <button type="button" data-mobile-tab="conversations"></button>
+        <button type="button" data-mobile-tab="deals"></button>
+        <button type="button" data-mobile-tab="projects"></button>
+        <button type="button" data-mobile-tab="activities"></button>
+        <button type="button" data-mobile-tab="goals"></button>
+        <button type="button" data-mobile-tab="objectives"></button>
+      </div>
+      <div class="mobile-nav-progress" aria-hidden="true"><span class="active"></span><span></span></div>
+    </div>
     <button type="button" id="mobile-more" aria-label="Mais módulos e opções" aria-haspopup="dialog" aria-expanded="false"><span aria-hidden="true">⋯</span><span>Mais</span></button>
   </nav>
   <div id="toast"></div>
