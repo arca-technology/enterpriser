@@ -3141,7 +3141,7 @@ function applyNavigationPreference() {
       if (button) footerModules.appendChild(button);
     });
     header.append(brand, tabs, actions);
-    footer.appendChild(footerModules);
+    footer.insertBefore(footerModules, footer.querySelector(".sidebar-support"));
   }
   queueSidebarFit();
 }

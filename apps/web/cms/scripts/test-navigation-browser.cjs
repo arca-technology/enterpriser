@@ -265,6 +265,32 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#app-header').isVisible(), true);
     assert.equal(await page.locator('#app-footer .foot-right').count(), 1);
     assert.equal(await page.locator('#app-footer').isVisible(), true);
+    for (const width of [1024, 1440, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const tab of ['home', 'projects']) {
+        await page.evaluate((tab) => {
+          saveNavigationPreference({ mode: 'sidebar' });
+          saveNavigationPreference({ mode: 'top' });
+          applyNavigationPreference();
+          state.tab = tab; render();
+        }, tab);
+        assert.equal(await page.locator('.home-nav-label').count(), 0);
+        assert.equal(await page.locator('#app-footer').evaluate((footer) => {
+          const bounds = footer.getBoundingClientRect();
+          const modules = footer.querySelector('.foot-right').getBoundingClientRect();
+          const version = footer.querySelector('.sidebar-support').getBoundingClientRect();
+          const buttons = [...footer.querySelectorAll('.foot-right button')];
+          return bounds.height === 38 && modules.top >= bounds.top && modules.bottom <= bounds.bottom
+            && version.top >= bounds.top && version.bottom <= bounds.bottom
+            && Math.abs(modules.top + modules.height / 2 - version.top - version.height / 2) < 1
+            && Math.abs(modules.left + modules.width / 2 - innerWidth / 2) < 2
+            && buttons.every((button) => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) < 1)
+            && footer.children[1].classList.contains('foot-right');
+        }), true, `Single-row footer after mode changes: ${tab} at ${width}px`);
+      }
+    }
+    await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'single-row-footer-desktop.png') });
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.locator('#app-footer [data-action="registrations"]').click();
     assert.equal(await page.locator('.sidebar-module-overlay').count(), 0);
     assert.equal(await page.locator('.modal-header-tabs').isVisible(), true);
