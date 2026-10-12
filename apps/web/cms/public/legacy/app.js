@@ -2073,10 +2073,11 @@ function openRecordActions(anchor) {
 function wireRecordPrimaryCells(table) {
   if (!table?.tHead) return;
   const headers = [...table.tHead.rows[0].cells];
-  const labels = ["TAREFA", "ENTREGA", "NOME COMPLETO", "NOME EMPRESARIAL", "RAZÃO SOCIAL", "CONVERSA", "NEGÓCIO", "META", "OBJETIVO", "PRODUTO", "NOME", "DOCUMENTAÇÃO", "TABELA", "ARQUIVO", "PROCESSO", "EMAIL"];
-  let index = -1;
-  for (const label of labels) {
-    index = headers.findIndex((head) => head.textContent.trim().toUpperCase() === label);
+  const labels = ["TAREFA", "ENTREGA", "NOME COMPLETO", "NOME EMPRESARIAL", "RAZÃO SOCIAL", "CONVERSA", "NEGÓCIO", "META", "OBJETIVO", "PRODUTO", "NOME", "DOCUMENTOS", "DOCUMENTAÇÃO", "PLANILHA", "TABELA", "ARQUIVO", "PROCESSO", "EMAIL"];
+  const primaryKey = { contacts: "name", companies: "legal_name", conversations: "contact_name", deals: "title", products: "name", projects: "name", activities: "title", goals: "name", objectives: "name" }[table.dataset.tab];
+  let index = primaryKey ? headers.findIndex((head) => head.dataset.k === primaryKey) : -1;
+  if (index < 0) for (const label of labels) {
+    index = headers.findIndex((head) => (head.dataset.registrationLabel || head.dataset.projectLabel || head.textContent).replace(/[▲▼]/g, "").trim().toUpperCase() === label);
     if (index >= 0) break;
   }
   if (index < 0) index = headers.findIndex((head) => !head.classList.contains("select-head") && !head.classList.contains("expand-head"));
@@ -2087,6 +2088,7 @@ function wireRecordPrimaryCells(table) {
     cell.dataset.recordPrimary = "true";
     cell.classList.add("record-primary-cell");
     const name = cell.querySelector("strong,.registration-task-name,.task-name-text") || cell;
+    name.classList.add("record-primary-name");
     name.tabIndex = 0;
     name.setAttribute("role", "button");
     name.setAttribute("aria-label", `${source.title}: ${cell.textContent.trim()}`);
@@ -3675,6 +3677,15 @@ function openDealsForContact(contactId, createWhenEmpty = false) {
   }
 }
 
+function openDealDetails(id) {
+  if (!requireCurrentUserPermission("deals", "view", "Negócios")) return;
+  const deal = cache.deals.find((row) => row.id === id);
+  if (!deal) return;
+  if (currentUserCan("deals", "edit")) { openForm("deals", id); return; }
+  sidePanel("Negócio", `<div class="form">${columns("deals", cache).map((column) => `<div class="field full"><label>${esc(column.h)}</label><div>${esc(displayValue(deal, column, cache))}</div></div>`).join("")}</div><div class="modal-foot"><button class="btn" id="deal-view-close">Fechar</button></div>`);
+  document.getElementById("deal-view-close").addEventListener("click", closeModal);
+}
+
 function rowsFor(tab, c) {
   if (tab === "contacts") annotateContactLinks(c);
   if (tab === "conversations") annotateConversationLinks(c);
@@ -3805,6 +3816,13 @@ function renderTable(c) {
         delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir empresa", enabled: currentUserCan("companies", "delete") }
       })}</td></tr>`;
     }
+    if (state.tab === "deals") {
+      return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
+        open: { className: "deal-details-btn", attrs: { "data-id": rid }, title: "Abrir negócio", enabled: currentUserCan("deals", "view") },
+        edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar negócio", enabled: currentUserCan("deals", "edit") },
+        delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir negócio", enabled: currentUserCan("deals", "delete") }
+      })}</td></tr>`;
+    }
     return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
       edit: { className: "edit", attrs: { "data-id": rid }, title: "Editar registro", enabled: currentUserCan(state.tab, "edit") },
       delete: { className: "del", attrs: { "data-id": rid }, title: "Excluir registro", enabled: currentUserCan(state.tab, "delete") }
@@ -3834,6 +3852,8 @@ function renderTable(c) {
     }));
   document.querySelectorAll("#main .rowbtn.edit").forEach((b) =>
     b.addEventListener("click", () => openForm(state.tab, b.dataset.id)));
+  document.querySelectorAll("#main .deal-details-btn").forEach((button) =>
+    button.addEventListener("click", () => openDealDetails(button.dataset.id)));
   document.querySelectorAll("#main .rowbtn.del").forEach((b) =>
     b.addEventListener("click", () => confirmDelete(state.tab, b.dataset.id)));
   document.querySelectorAll("#main .rowbtn.convert").forEach((b) =>
@@ -9149,7 +9169,7 @@ function openConversationEditModal(ids, { createDeal = false } = {}) {
   };
   const products = (cache.products || []).filter((product) => product.status !== "Inativo");
   const converted = rows.filter((row) => row.status === "converted").length;
-  shell(single ? `Editar conversa · ${single.contact_name || "Contato"}` : "Editar conversas", `<div class="form">
+  sidePanel(single ? `Editar interação · ${single.contact_name || "Contato"}` : "Editar interações", `<div class="form">
       <div class="field full"><label>Pessoa</label><select id="conv-edit-person">${personOptions}</select></div>
       <div class="field check full conv-check"><input type="checkbox" id="conv-edit-deal"${createDeal ? " checked" : ""}><label for="conv-edit-deal">Criar negociação</label></div>
       <div class="field full conv-deal-field"><label>Empresa</label>${singleSearchPickerHtml("conv-edit-company", companyRefOptions(cache), firstCompanyOf(currentContactId), "Buscar por nome ou CNPJ")}</div>
@@ -9161,6 +9181,7 @@ function openConversationEditModal(ids, { createDeal = false } = {}) {
     <div class="panel-list" style="padding-top:0">${rows.length > 1 ? `${rows.length} conversa(s) selecionada(s). ` : ""}${converted ? `${converted} já gerou(aram) negociação. ` : ""}<span class="conv-deal-field">O negócio entra no pipeline Padrão como Lead e usa o valor cadastrado no produto.</span></div>
     <div class="modal-foot"><button class="btn" id="cancel">Cancelar</button>
       <button class="btn primary" id="save">Salvar</button></div>`);
+  document.querySelector("#modal-root .side-panel").classList.add("conversation-edit-panel");
   wireSingleSearchPicker("conv-edit-company");
   const companyRoot = document.getElementById("conv-edit-company");
   const dealBox = document.getElementById("conv-edit-deal");
