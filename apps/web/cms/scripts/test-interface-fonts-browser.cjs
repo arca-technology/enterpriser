@@ -25,6 +25,16 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     }
     assert.match(await page.locator('#brand-home').evaluate((el) => getComputedStyle(el).fontFamily), /Urbanist/i);
     assert.equal(await page.locator('#brand-home').evaluate((el) => getComputedStyle(el).fontWeight), '800');
+    await page.evaluate(() => { state.tab = 'home'; render(); });
+    for (const selector of ['.home-day h1', '.home-day h2', '.home-day-summary', '.home-day-scope button']) {
+      assert.match(await page.locator(selector).first().evaluate((el) => getComputedStyle(el).fontFamily), /Inter/i);
+    }
+    await page.screenshot({ path: path.join(os.tmpdir(), 'cms-home-inter-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({ path: path.join(os.tmpdir(), 'cms-home-inter-mobile.png') });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.evaluate(() => { state.tab = 'contacts'; render(); });
     assert.equal(await page.locator('#count').innerText(), `${await page.evaluate(() => cache.contacts.length)} Pessoas`);
     await page.evaluate(() => saveNavigationPreference({ mode: 'sidebar' }));
     const brand = await page.locator('#brand-home').boundingBox();

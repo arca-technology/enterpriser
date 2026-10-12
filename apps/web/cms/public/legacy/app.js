@@ -4408,57 +4408,287 @@ function openMainDeliveryResult(section, id) {
   target?.scrollIntoView({ block: "center", inline: "nearest" });
 }
 
+const homeDayState = { scope: "mine", taskTab: "late", selected: new Set(), pipelineId: null, limit: 12 };
+
+function homeMessageTime(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : NaN;
+  const text = String(value || "").trim();
+  const local = text.match(/^\[?(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (local) {
+    const [, day, month, year, hour, minute, second = "0"] = local;
+    const date = new Date(+year, +month - 1, +day, +hour, +minute, +second);
+    return date.getFullYear() === +year && date.getMonth() === +month - 1 && date.getDate() === +day
+      && +hour < 24 && +minute < 60 && +second < 60 ? date.getTime() : NaN;
+  }
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) ? Date.parse(text) : NaN;
+}
+
+function homeConversationState(row, c, now) {
+  const messages = Array.isArray(row.messages) ? row.messages : [];
+  const last = messages[messages.length - 1];
+  const time = homeMessageTime(last?.at_ts ?? last?.at ?? row.last_at);
+  if (!last || !Number.isFinite(time) || time > now.getTime()) return { time: NaN, awaiting: false, known: false };
+  const norm = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLocaleLowerCase("pt-BR");
+  const author = norm(last.author);
+  const contact = (c.contacts || []).find((person) => person.id === row.contact_id);
+  const owner = (c.users || []).find((user) => user.id === row.owner_id);
+  const incoming = last.from_me === false || last.direction === "incoming";
+  const outgoing = last.from_me === true || last.direction === "outgoing";
+  const contactNames = [row.contact_name, contact?.name, row.phone].map(norm).filter(Boolean);
+  const ownerNames = [owner?.full_name, owner?.name].map(norm).filter(Boolean);
+  const fromContact = !outgoing && (incoming || (author && contactNames.includes(author) && !ownerNames.includes(author)));
+  const known = Boolean(incoming || outgoing || (author && (contactNames.includes(author) || ownerNames.includes(author))));
+  return { time, known, awaiting: Boolean(known && fromContact && now.getTime() - time > 48 * 3600000) };
+}
+
+function homeGoalCurve(goal, project, today) {
+  if (!project || ["done", "canceled"].includes(goal.status) || goal.current_value == null || goal.current_value === ""
+    || goal.target_value == null || goal.target_value === "") return null;
+  const actual = Number(goal.current_value);
+  const target = Number(goal.target_value);
+  if (!Number.isFinite(actual) || !Number.isFinite(target) || target < 0) return null;
+  const start = dateOnly(project.start_date);
+  const end = dateOnly(goal.due_date || project.end_date);
+  const current = dateOnly(today);
+  if (!start || !end || !Number.isFinite(+start) || !Number.isFinite(+end) || end < start || current < start) return null;
+  const fraction = end > start ? Math.max(0, Math.min(1, (+current - +start) / (+end - +start))) : 1;
+  const limit = goal.comparison === "at_most";
+  const expected = limit ? target : target * fraction;
+  const behind = limit ? actual > target : actual < expected || (goal.comparison === "exactly" && actual > target);
+  const scale = Math.max(target, actual, expected, 1);
+  return { goal, project, actual, target, expected, limit, behind, actualPercent: Math.max(0, Math.min(100, actual / scale * 100)), expectedPercent: Math.max(0, Math.min(100, expected / scale * 100)) };
+}
+
+function homeGoalReached(goal) {
+  return goal.status === "done" || (goal.current_value != null && goal.current_value !== "" && goal.target_value != null && goal.target_value !== ""
+    && Number.isFinite(Number(goal.current_value)) && Number.isFinite(Number(goal.target_value)) && deliveryGoalReached(goal));
+}
+
+function homeDashboardModel(c, options = {}) {
+  const now = options.now || new Date();
+  const today = isoDay(now);
+  const userId = options.userId;
+  const team = options.scope === "team";
+  const can = (moduleId) => options.permissions?.[moduleId] !== false;
+  const assigned = (row) => normalizeIdList(row.assignee_ids, row.owner_id).includes(userId);
+  const owned = (row) => team || Boolean(userId && row.owner_id === userId);
+  const active = (c.projects || []).filter((project) => project.status === "active");
+  const activeIds = new Set(active.map((project) => project.id));
+  const allTasks = can("activities") ? (c.activities || []).filter((task) => activeIds.has(task.project_id)) : [];
+  const parentIds = new Set(allTasks.filter((task) => task.status !== "canceled").map((task) => task.parent_activity_id).filter(Boolean));
+  const leaves = allTasks.filter((task) => !parentIds.has(task.id) && task.status !== "canceled");
+  const tasks = leaves.filter((task) => team || assigned(task));
+  const projectIds = new Set(tasks.map((task) => task.project_id));
+  if (can("projects")) [...(c.goals || []), ...(c.objectives || [])].filter(assigned).forEach((row) => projectIds.add(row.project_id));
+  const projects = can("projects") ? active.filter((project) => team || owned(project) || projectIds.has(project.id)) : [];
+  const scopedProjectIds = new Set(projects.map((project) => project.id));
+  const goals = can("projects") ? (c.goals || []).filter((goal) => scopedProjectIds.has(goal.project_id) && goal.status !== "canceled") : [];
+  const objectives = can("projects") ? (c.objectives || []).filter((row) => scopedProjectIds.has(row.project_id) && row.status !== "canceled") : [];
+  const pending = tasks.filter((task) => task.status !== "done");
+  const dateSort = (a, b) => (taskPlannedEnd(a) || "9999").localeCompare(taskPlannedEnd(b) || "9999") || String(a.id).localeCompare(String(b.id));
+  const late = pending.filter((task) => taskPlannedEnd(task) && taskPlannedEnd(task) < today).sort(dateSort);
+  const monday = addDays(today, -((now.getDay() + 6) % 7));
+  const sunday = addDays(monday, 6);
+  const inWindow = (task, end) => {
+    const due = taskPlannedEnd(task);
+    if (!due || due < today) return false;
+    const start = taskPlannedStart(task);
+    const period = task.deadline_window && task.deadline_window !== "date";
+    return due <= end || Boolean(period && start && start <= end && due >= today);
+  };
+  const buckets = { late, today: pending.filter((task) => inWindow(task, today)).sort(dateSort), week: pending.filter((task) => inWindow(task, sunday)).sort(dateSort), undated: pending.filter((task) => !taskPlannedEnd(task)) };
+  const oldRecurring = late.filter((task) => task.recurrence && task.recurrence !== "once" && taskPlannedEnd(task) < addDays(today, -30));
+  const completed = tasks.filter((task) => task.status === "done" && task.actual_end_date && task.actual_end_date >= monday && task.actual_end_date <= today);
+  const curves = goals.map((goal) => homeGoalCurve(goal, projects.find((project) => project.id === goal.project_id), today)).filter((item) => item?.behind);
+  const health = can("projects") ? projects.map((project) => {
+    const rows = leaves.filter((task) => task.project_id === project.id);
+    const projectGoals = goals.filter((goal) => goal.project_id === project.id);
+    const projectObjectives = objectives.filter((row) => row.project_id === project.id);
+    const overdue = rows.filter((task) => task.status !== "done" && taskPlannedEnd(task) && taskPlannedEnd(task) < today);
+    const planned = rows.filter((task) => taskPlannedEnd(task) && taskPlannedEnd(task) <= today);
+    const plannedDone = planned.filter((task) => task.status === "done").length;
+    const lateResults = [...projectGoals.filter((goal) => !homeGoalReached(goal)), ...projectObjectives.filter((row) => row.status !== "done")].filter((row) => row.due_date && row.due_date < today);
+    const behind = curves.some((item) => item.project.id === project.id);
+    const blocked = rows.some((task) => task.status !== "done" && taskIsBlocked(task, allTasks));
+    const risk = overdue.length || lateResults.length ? 2 : behind || blocked ? 1 : 0;
+    const all = [...rows, ...projectGoals, ...projectObjectives];
+    const done = rows.filter((task) => task.status === "done").length + projectObjectives.filter((row) => row.status === "done").length + projectGoals.filter(homeGoalReached).length;
+    const next = projectObjectives.filter((row) => row.status !== "done").sort((a, b) => (a.due_date || "9999").localeCompare(b.due_date || "9999"))[0];
+    return { project, overdue, risk, next, planned: planned.length, plannedDone, percent: all.length ? Math.round(done / all.length * 100) : 0, goalCount: projectGoals.length, goalsReached: projectGoals.filter(homeGoalReached).length };
+  }).sort((a, b) => b.risk - a.risk || b.overdue.length - a.overdue.length || a.percent - b.percent || String(a.project.id).localeCompare(String(b.project.id))) : [];
+  const deals = can("deals") ? (c.deals || []).filter(owned) : [];
+  const openDeals = deals.filter((deal) => deal.status === "open");
+  const won = deals.filter((deal) => deal.status === "won");
+  const money = (rows) => rows.reduce((sum, row) => sum + (Number.isFinite(Number(row.amount)) ? Number(row.amount) : 0), 0);
+  const conversations = can("conversations") ? (c.conversations || []).filter(owned) : [];
+  const conversationStates = conversations.map((row) => ({ row, ...homeConversationState(row, c, now) }));
+  const unanswered = conversationStates.filter((item) => item.awaiting).map((item) => item.row);
+  const staleDeals = openDeals.filter((deal) => {
+    if (!deal.contact_id) return false;
+    const times = conversationStates.filter((item) => item.row.contact_id === deal.contact_id && Number.isFinite(item.time)).map((item) => item.time);
+    return times.length && now.getTime() - Math.max(...times) > 7 * 86400000;
+  });
+  const pipeline = (c.pipelines || []).find((row) => row.id === options.pipelineId) || defaultDealPipeline(c) || (c.pipelines || [])[0];
+  const pipelineDeals = openDeals.filter((deal) => deal.pipeline_id === pipeline?.id);
+  const stages = [...(pipeline?.stages || [])];
+  if (pipelineDeals.some((deal) => !stages.includes(deal.stage))) stages.push("Sem etapa");
+  const funnel = stages.map((stage) => {
+    const rows = pipelineDeals.filter((deal) => stage === "Sem etapa" ? !(pipeline?.stages || []).includes(deal.stage) : deal.stage === stage);
+    return { stage, rows, amount: money(rows) };
+  });
+  const workload = (c.users || []).filter(internalAssigneeUser).map((user) => {
+    const rows = pending.filter((task) => normalizeIdList(task.assignee_ids, task.owner_id).includes(user.id));
+    return { user, count: rows.length, late: rows.filter((task) => taskPlannedEnd(task) && taskPlannedEnd(task) < today).length };
+  }).filter((item) => item.count).sort((a, b) => b.count - a.count || String(a.user.id).localeCompare(String(b.user.id)));
+  return { today, projects, tasks, buckets, oldRecurring, completed, curves, health, openDeals, won, revenue: money(won), pipelineAmount: money(openDeals), unanswered, unknownConversations: conversationStates.filter((item) => !item.known).length, staleDeals: staleDeals.filter((deal) => deal.pipeline_id === pipeline?.id), pipeline, pipelineDeals, funnel, workload };
+}
+
+function homeDayModel() {
+  const teamAllowed = currentUserIsAdmin() || currentUserCan("users", "view");
+  if (!teamAllowed) homeDayState.scope = "mine";
+  return homeDashboardModel(cache, { scope: homeDayState.scope, userId: activeProfileId(), pipelineId: homeDayState.pipelineId,
+    permissions: Object.fromEntries(["activities", "projects", "deals", "conversations"].map((id) => [id, currentUserCan(id, "view")])) });
+}
+
+function homeNavigate(tab, rows = null) {
+  if (!currentUserCan(tab === "goals" || tab === "objectives" ? "projects" : tab, "view")) return;
+  closeFloaters();
+  state.tab = tab;
+  state.view = "table";
+  state.q = "";
+  state.sortK = null;
+  state.filters[tab] = rows ? { id: new Set(rows.length ? rows.map((row) => String(row.id)) : ["__home_no_results__"]) } : {};
+  state.homeDrilldown = rows ? { tab, ids: state.filters[tab].id, count: rows.length } : null;
+  state.pages[tab] = 1;
+  if (PM_TEMPLATE_MODULE[tab]) state.pmScopes[tab] = "deliveries";
+  state.selectedConversations.clear();
+  render();
+}
+
+function homeOpenTask(task) {
+  if (currentUserCan("projects", "view")) {
+    openProjectBoard(task.project_id);
+    document.querySelector('[data-project-section="activities"]')?.click();
+    projectBoardState.search = activityDisplayName(task);
+    renderProjectBoard(task.project_id);
+    if (currentUserCan("activities", "edit")) openDeliveryTaskDrawer(task.project_id, task.id);
+  } else homeNavigate("activities", [task]);
+}
+
+function homeBulkTasks(action) {
+  if (!currentUserCan("activities", "edit") || !currentUserCan("activities", "operate")) return;
+  const eligible = homeDayModel().oldRecurring;
+  const rows = homeDayState.selected.size ? eligible.filter((task) => homeDayState.selected.has(task.id)) : eligible;
+  if (!rows.length) { toast("Selecione ocorrências recorrentes vencidas há mais de 30 dias.", true); return; }
+  const reschedule = action === "reschedule";
+  sidePanel(reschedule ? "Reprogramar ocorrências" : "Arquivar ocorrências vencidas", `<div class="panel-list home-bulk-summary">
+    <p>${rows.length} tarefa(s). ${reschedule ? "O novo prazo será uma data específica, preservando a recorrência e as próximas ocorrências." : "As ocorrências selecionadas passarão para Cancelado. Nenhum registro será excluído ou marcado como atendido."}</p>
+    <ul>${rows.map((task) => `<li>${esc(activityDisplayName(task))} · ${esc(task.client_name)} · ${esc(dt(taskPlannedEnd(task)))}</li>`).join("")}</ul>
+    ${reschedule ? `<div class="field"><label for="home-bulk-date">Novo término previsto</label><input id="home-bulk-date" type="date" min="${isoDay(new Date())}" value="${addDays(isoDay(new Date()), 7)}" required></div>` : ""}
+    <p id="home-bulk-error" role="alert" class="neg"></p></div><div class="modal-foot"><button class="btn" id="home-bulk-cancel">Cancelar</button><button class="btn ${reschedule ? "primary" : "danger"}" id="home-bulk-confirm">${reschedule ? "Confirmar reprogramação" : "Confirmar cancelamento"}</button></div>`);
+  document.getElementById("home-bulk-cancel").onclick = closeModal;
+  document.getElementById("home-bulk-confirm").onclick = async (event) => {
+    const date = document.getElementById("home-bulk-date")?.value;
+    if (reschedule && (!date || date < isoDay(new Date()))) { document.getElementById("home-bulk-error").textContent = "Escolha uma data a partir de hoje."; return; }
+    if (!currentUserCan("activities", "edit") || !currentUserCan("activities", "operate")) return;
+    event.currentTarget.disabled = true;
+    document.getElementById("home-bulk-cancel").disabled = true;
+    let changed = 0, failed = 0;
+    const currentIds = new Set(homeDayModel().oldRecurring.map((task) => task.id));
+    for (const task of rows) {
+      if (!currentIds.has(task.id)) continue;
+      try {
+        const patch = reschedule ? { due_date: date, planned_end_date: date, schedule_manual: true, deadline_window: "date" } : { status: "canceled" };
+        if (await updateProjectTask(task.id, patch)) { changed += 1; homeDayState.selected.delete(task.id); } else failed += 1;
+      } catch (_error) { failed += 1; }
+    }
+    closeModal();
+    render();
+    toast(`${changed} tarefa(s) ${reschedule ? "reprogramada(s)" : "cancelada(s)"}.${failed ? ` ${failed} não foram alteradas; confira suas permissões e tente novamente.` : ""}`, Boolean(failed));
+  };
+}
+
 function renderHome(c) {
-  refreshActivityCache();
-  const today = new Date().toISOString().slice(0, 10);
-  const activities = c.activities || [];
-  const pending = activities.filter((task) => !["done", "canceled"].includes(task.status));
-  const overdue = pending.filter((task) => taskPlannedEnd(task) && taskPlannedEnd(task) < today);
-  const openDeals = (c.deals || []).filter((deal) => deal.status === "open");
-  const activeProjects = (c.projects || []).filter((project) => project.status === "active");
-  const revenue = (c.deals || []).filter((deal) => deal.status === "won").reduce((sum, deal) => sum + Number(deal.amount || 0), 0);
-  const metrics = [
-    ["contacts", "Pessoas", c.contacts.length],
-    ["companies", "Empresas", c.companies.length],
-    ["deals", "Negócios abertos", openDeals.length],
-    ["projects", "Entregas ativas", activeProjects.length],
-    ["activities", "Tarefas pendentes", pending.length],
-    ["deals", "Receita ganha", brl(revenue)]
-  ].filter(([moduleId]) => currentUserCan(moduleId, "view"))
-    .map(([, label, value]) => `<div class="metric"><div class="k">${esc(label)}</div><div class="v">${esc(value)}</div></div>`).join("");
-
-  const upcoming = [...pending]
-    .sort((a, b) => (taskPlannedEnd(a) || "9999-12-31").localeCompare(taskPlannedEnd(b) || "9999-12-31"))
-    .slice(0, 8);
-  const activityRows = upcoming.map((task) => `<tr>
-    <td>${esc(activityDisplayName(task))}</td>
-    <td>${esc(task.client_name)}</td>
-    <td>${esc(task.project_name)}</td>
-    <td>${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</td>
-    <td>${badge(taskStatusTone(task.status), taskStatusLabel(task.status))}</td>
-  </tr>`).join("");
-  const projectStatuses = PROJECT_STATUSES.map((status) => {
-    const count = (c.projects || []).filter((project) => project.status === status).length;
-    return `<div class="home-status-row"><span>${esc(PROJECT_STATUS_LABEL[status])}</span><strong>${count}</strong></div>`;
-  }).join("");
-
-  const tasksPanel = currentUserCan("activities", "view") ? `<section class="home-panel">
-        <h3>Próximas tarefas</h3>
-        <div class="task-table-wrap"><table><thead><tr><th>Tarefa</th><th>Cliente</th><th>Entrega</th><th>Término previsto</th><th>Status</th></tr></thead>
-        <tbody>${activityRows || '<tr><td colspan="5" class="empty">Nenhuma tarefa pendente.</td></tr>'}</tbody></table></div>
-      </section>` : "";
-  const projectsPanel = currentUserCan("projects", "view") ? `<section class="home-panel">
-        <h3>Entregas por status</h3>
-        <div class="home-status-list">${projectStatuses}${currentUserCan("activities", "view") ? `<div class="home-status-row"><span>Tarefas atrasadas</span><strong class="neg">${overdue.length}</strong></div>` : ""}</div>
-      </section>` : "";
-  document.getElementById("main").innerHTML = `<div class="home">
-    <div class="home-metrics">${metrics}</div>
-    <div class="home-grid">
-      ${tasksPanel}${projectsPanel}
-    </div>
-  </div>`;
-  document.querySelectorAll(".home-project-btn").forEach((button) =>
-    button.addEventListener("click", () => openProjectBoard(button.dataset.projectId)));
+  const model = homeDayModel();
+  const now = new Date();
+  const profile = (c.users || []).find((user) => user.id === activeProfileId());
+  const name = (profile?.nickname || profile?.full_name || profile?.name || "").trim().split(/\s+/)[0];
+  const greeting = now.getHours() < 12 ? "Bom dia" : now.getHours() < 18 ? "Boa tarde" : "Boa noite";
+  const mine = homeDayState.scope === "mine";
+  const teamAllowed = currentUserIsAdmin() || currentUserCan("users", "view");
+  const canTasks = currentUserCan("activities", "view");
+  const canProjects = currentUserCan("projects", "view");
+  const canDeals = currentUserCan("deals", "view");
+  const canInteractions = currentUserCan("conversations", "view");
+  const canBulk = currentUserCan("activities", "edit") && currentUserCan("activities", "operate");
+  const count = (value, singular, plural = `${singular}s`) => `${value} ${value === 1 ? singular : plural}`;
+  const dateLabel = now.toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" });
+  const validIds = new Set(model.tasks.map((task) => task.id));
+  homeDayState.selected.forEach((id) => { if (!validIds.has(id)) homeDayState.selected.delete(id); });
+  const link = (label, action) => `<button class="home-day-link" data-home-action="${action}">${esc(label)} <span aria-hidden="true">→</span></button>`;
+  const meter = (percent, tone = "blue", label = "Progresso") => `<div class="home-day-meter ${tone}" role="progressbar" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(percent)}"><span style="width:${Math.max(0, Math.min(100, percent))}%"></span></div>`;
+  const alert = (title, value, detail, label, action, tone) => `<article class="home-day-alert ${tone}"><h2><i aria-hidden="true"></i>${title}</h2><strong>${value}</strong><p>${detail}</p>${link(label, action)}</article>`;
+  const summary = (title, value, detail, action) => `<button class="home-day-summary" data-home-action="${action}"><span>${title}</span><strong>${value}</strong><small>${detail}</small></button>`;
+  const riskCount = model.health.filter((item) => item.risk === 2).length;
+  const selectedTasks = model.buckets[homeDayState.taskTab] || model.buckets.late;
+  const groups = new Map();
+  selectedTasks.slice(0, homeDayState.limit).forEach((task) => { if (!groups.has(task.project_id)) groups.set(task.project_id, []); groups.get(task.project_id).push(task); });
+  const taskGroups = [...groups].map(([projectId, tasks]) => `<div class="home-day-task-group"><div class="home-day-group-title"><strong>${esc(tasks[0].client_name)}</strong><span>${esc(tasks[0].product_name)}</span><small>${count(selectedTasks.filter((task) => task.project_id === projectId).length, "tarefa")}</small></div>
+    ${tasks.map((task) => {
+      const due = taskPlannedEnd(task);
+      const days = due ? Math.round((+dateOnly(model.today) - +dateOnly(due)) / 86400000) : 0;
+      const age = days > 0 ? `há ${days} dia${days > 1 ? "s" : ""}` : due === model.today ? "Hoje" : due ? dt(due) : "Sem prazo";
+      const context = [task.channel, task.module, task.submodule].filter(Boolean).join(" › ");
+      const recurrence = task.recurrence !== "once" && task.recurrence ? RECURRENCE_LABEL[task.recurrence] || task.recurrence : "";
+      return `<div class="home-day-task">${canBulk ? `<input type="checkbox" data-home-select="${esc(task.id)}" aria-label="Selecionar ${esc(activityDisplayName(task))}"${homeDayState.selected.has(task.id) ? " checked" : ""}>` : ""}<button class="home-day-task-name" data-home-task="${esc(task.id)}">${context ? `<small>${esc(context)}</small>` : ""}<strong>${esc(task.title || activityDisplayName(task))}</strong>${recurrence ? `<span class="home-day-recurrence">${esc(recurrence)}</span>` : ""}</button><span class="home-day-date${days > 0 ? " red" : ""}" title="Término previsto: ${esc(due ? dt(due) : "não definido")}">${esc(age)}</span></div>`;
+    }).join("")}</div>`).join("");
+  const tasksHtml = canTasks ? `<section class="home-day-panel home-day-tasks"><div class="home-day-panel-head"><h2>${mine ? "Minhas tarefas" : "Tarefas da equipe"}</h2><div class="home-day-tabs" role="group" aria-label="Período das tarefas">${[["late", "Atrasadas"], ["today", "Hoje"], ["week", "Semana"], ...(model.buckets.undated.length ? [["undated", "Sem prazo"]] : [])].map(([key, label]) => `<button aria-pressed="${homeDayState.taskTab === key}" class="${homeDayState.taskTab === key ? "active" : ""}" data-home-period="${key}">${label}<b>${model.buckets[key].length}</b></button>`).join("")}</div></div>
+    ${model.oldRecurring.length && homeDayState.taskTab === "late" ? `<div class="home-day-warning"><span>${count(model.oldRecurring.length, "ocorrência recorrente vencida", "ocorrências recorrentes vencidas")} há mais de 30 dias.</span>${canBulk ? `<div><button class="btn" data-home-bulk="reschedule">Reprogramar em lote</button><button class="btn" data-home-bulk="archive">Arquivar vencidas</button></div>` : ""}</div>` : ""}
+    ${taskGroups || '<p class="home-day-empty">Nenhuma tarefa neste período.</p>'}<div class="home-day-panel-foot">${link("Ver todas as tarefas", "tasks")}${selectedTasks.length > homeDayState.limit ? '<button class="home-day-link" data-home-action="more">Mostrar mais</button>' : ""}<span id="home-day-selection" aria-live="polite">${homeDayState.selected.size ? `${homeDayState.selected.size} selecionada(s)` : ""}</span></div></section>` : "";
+  const healthHtml = canProjects ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Saúde das entregas</h2><span>${model.health.length} ativas · por risco</span></div>${model.health.slice(0, 5).map((item) => {
+    const tone = ["green", "amber", "red"][item.risk];
+    const label = ["No prazo", "Atenção", "Em risco"][item.risk];
+    const client = item.project.client_name || c.companyById?.[item.project.company_id]?.trade_name || c.companyById?.[item.project.company_id]?.legal_name || item.project.name;
+    return `<button class="home-day-health" data-home-project="${esc(item.project.id)}"><div><strong><i class="${tone}"></i>${esc(client)}</strong><span class="home-day-tag ${tone}">${label}</span></div><div class="home-day-health-progress">${meter(item.percent, item.risk ? tone : "blue", `Progresso geral de ${client}`)}<b>${item.percent}%</b></div><p>Metas atingidas <b>${item.goalsReached}/${item.goalCount}</b><span>Atrasadas <b class="${item.overdue.length ? "home-day-red-text" : ""}">${canTasks ? item.overdue.length : "—"}</b></span></p>${item.next ? `<small>Próximo: ${esc(item.next.name)}</small>` : '<small>Nenhum objetivo pendente</small>'}</button>`;
+  }).join("") || '<p class="home-day-empty">Nenhuma entrega ativa nesta visão.</p>'}<div class="home-day-panel-foot">${link("Ver todas as entregas", "projects")}</div></section>` : "";
+  const maxDeals = Math.max(1, ...model.funnel.map((item) => item.rows.length));
+  const funnelHtml = canDeals ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Funil comercial</h2><select id="home-day-pipeline" aria-label="Pipeline comercial">${(c.pipelines || []).map((pipeline) => `<option value="${esc(pipeline.id)}"${pipeline.id === model.pipeline?.id ? " selected" : ""}>${esc(pipeline.name)}</option>`).join("")}</select></div><div class="home-day-panel-body">${model.funnel.map((item, index) => `<button class="home-day-chart-row" data-home-stage="${index}"><span><strong>${esc(item.stage)}</strong><small>${item.rows.length} negócio(s) · ${esc(brl(item.amount))}</small></span>${meter(item.rows.length / maxDeals * 100, "blue", `${item.stage}: ${item.rows.length} negócios`)}</button>`).join("") || '<p class="home-day-empty">Nenhum pipeline cadastrado.</p>'}${model.staleDeals.length ? `<div class="home-day-warning">${link(`${model.staleDeals.length} negócio(s) sem interação registrada há mais de 7 dias`, "stale")}</div>` : ""}</div></section>` : "";
+  const curvesHtml = canProjects ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Metas abaixo da curva</h2><span>Atual / referência</span></div><div class="home-day-panel-body">${model.curves.slice(0, 5).map((item) => `<button class="home-day-chart-row" data-home-goal="${esc(item.goal.id)}" title="${item.limit ? "Comparação com o limite máximo da meta" : "Referência linear entre início da entrega e prazo da meta; não é previsão"}"><span><strong>${esc(item.goal.name)}</strong><small>${esc(item.goal.client_name || item.project.client_name || item.project.name)}</small></span><span class="home-day-goal-values">${item.actual.toLocaleString("pt-BR")} / ${item.expected.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${esc(item.goal.unit || "")}${item.limit ? " · limite" : " · até hoje"}</span><div class="home-day-curve">${meter(item.actualPercent, "amber", item.goal.name)}<i style="left:${item.expectedPercent}%" aria-hidden="true"></i></div></button>`).join("") || '<p class="home-day-empty">Nenhuma meta abaixo da referência com medição e período definidos.</p>'}</div>${model.curves.length > 5 ? `<div class="home-day-panel-foot">${link("Ver todas as metas abaixo da curva", "goals")}</div>` : ""}</section>` : "";
+  const maxLoad = Math.max(1, ...model.workload.map((item) => item.count));
+  const workloadHtml = canTasks && teamAllowed ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Carga ${mine ? "nas minhas tarefas" : "da equipe"}</h2><span class="home-day-legend"><i></i>No prazo <i class="amber"></i>Atrasadas</span></div><div class="home-day-panel-body">${model.workload.slice(0, 8).map((item) => {
+    const label = item.user.nickname || item.user.full_name || item.user.name || "Usuário";
+    return `<button class="home-day-workload" data-home-owner="${esc(item.user.id)}"><span class="home-day-avatar" aria-hidden="true">${esc(label.split(/\s+/).map((part) => part[0]).slice(0, 2).join(""))}</span><strong>${esc(label)}</strong><div class="home-day-loadbar" aria-label="${item.count - item.late} no prazo, ${item.late} atrasadas"><span style="width:${(item.count - item.late) / maxLoad * 100}%"></span><span class="amber" style="width:${item.late / maxLoad * 100}%"></span></div><small>${item.count} abertas · <b>${item.late}</b></small></button>`;
+  }).join("") || '<p class="home-day-empty">Nenhuma tarefa pendente atribuída nesta visão.</p>'}</div></section>` : "";
+  document.getElementById("main").innerHTML = `<div class="home-day"><div class="home-day-heading"><div><p>${esc(dateLabel[0].toLocaleUpperCase("pt-BR") + dateLabel.slice(1))}</p><h1>${greeting}${name ? `, ${esc(name)}` : ""}</h1></div>${teamAllowed ? `<div class="home-day-scope" role="group" aria-label="Visão da Home"><button data-home-scope="mine" aria-pressed="${mine}" class="${mine ? "active" : ""}">Minha visão</button><button data-home-scope="team" aria-pressed="${!mine}" class="${mine ? "" : "active"}">Equipe</button></div>` : ""}</div>
+    <div class="home-day-alerts">${canTasks ? alert("Tarefas atrasadas", model.buckets.late.length, `em ${count(new Set(model.buckets.late.map((task) => task.project_id)).size, "entrega")}`, "Ver atrasadas", "late", "red") : ""}${canProjects ? alert("Entregas em risco", riskCount, "tarefas ou resultados fora do prazo", "Ver entregas", "risk", "amber") : ""}${canProjects ? alert("Metas abaixo da curva", model.curves.length, `em ${count(new Set(model.curves.map((item) => item.project.company_id || item.project.id)).size, "cliente")}`, "Ver metas", "goals", "amber") : ""}${canInteractions ? alert("Interações sem resposta", model.unanswered.length, `última mensagem recebida há mais de 48 h${model.unknownConversations ? ` · ${model.unknownConversations} sem identificação suficiente` : ""}`, "Responder", "interactions", "blue") : ""}</div>
+    <div class="home-day-summaries">${canDeals ? summary("Receita ganha · total", esc(brl(model.revenue)), count(model.won.length, "negócio ganho registrado", "negócios ganhos registrados"), "won") : ""}${canDeals ? summary("Pipeline aberto", count(model.openDeals.length, "negócio"), esc(brl(model.pipelineAmount)), "deals") : ""}${canProjects ? summary("Entregas ativas", model.projects.length, mine ? "sob sua responsabilidade ou com suas atividades" : "em acompanhamento pela equipe", "projects") : ""}${canTasks ? summary("Concluídas na semana", model.completed.length, "tarefas com término real nesta semana", "completed") : ""}</div>
+    <div class="home-day-main">${tasksHtml}${healthHtml}</div><div class="home-day-bottom">${funnelHtml}${curvesHtml}${workloadHtml}</div>${!canTasks && !canProjects && !canDeals && !canInteractions ? '<p class="home-day-empty">Nenhum módulo de acompanhamento liberado para este perfil.</p>' : ""}</div>`;
+  document.querySelectorAll("[data-home-scope]").forEach((button) => button.onclick = () => { homeDayState.scope = button.dataset.homeScope; homeDayState.selected.clear(); homeDayState.limit = 12; render(); });
+  document.querySelectorAll("[data-home-period]").forEach((button) => button.onclick = () => { homeDayState.taskTab = button.dataset.homePeriod; homeDayState.limit = 12; homeDayState.selected.clear(); render(); document.querySelector(`[data-home-period="${homeDayState.taskTab}"]`)?.focus(); });
+  document.querySelectorAll("[data-home-period]").forEach((button) => button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const buttons = [...document.querySelectorAll("[data-home-period]")];
+    const index = buttons.indexOf(button);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next]?.click();
+  }));
+  document.querySelectorAll("[data-home-select]").forEach((input) => input.onchange = () => { input.checked ? homeDayState.selected.add(input.dataset.homeSelect) : homeDayState.selected.delete(input.dataset.homeSelect); document.getElementById("home-day-selection").textContent = homeDayState.selected.size ? `${homeDayState.selected.size} selecionada(s)` : ""; });
+  document.querySelectorAll("[data-home-task]").forEach((button) => button.onclick = () => homeOpenTask(model.tasks.find((task) => task.id === button.dataset.homeTask)));
+  document.querySelectorAll("[data-home-project]").forEach((button) => button.onclick = () => openProjectBoard(button.dataset.homeProject));
+  document.querySelectorAll("[data-home-goal]").forEach((button) => button.onclick = () => openMainDeliveryResult("goals", button.dataset.homeGoal));
+  document.querySelectorAll("[data-home-bulk]").forEach((button) => button.onclick = () => homeBulkTasks(button.dataset.homeBulk));
+  document.querySelectorAll("[data-home-stage]").forEach((button) => button.onclick = () => homeNavigate("deals", model.funnel[Number(button.dataset.homeStage)].rows));
+  document.querySelectorAll("[data-home-owner]").forEach((button) => button.onclick = () => homeNavigate("activities", model.tasks.filter((task) => task.status !== "done" && normalizeIdList(task.assignee_ids, task.owner_id).includes(button.dataset.homeOwner))));
+  const actions = {
+    late: () => homeNavigate("activities", model.buckets.late), tasks: () => homeNavigate("activities", model.tasks), completed: () => homeNavigate("activities", model.completed),
+    projects: () => homeNavigate("projects", model.projects), risk: () => homeNavigate("projects", model.health.filter((item) => item.risk === 2).map((item) => item.project)),
+    goals: () => homeNavigate("goals", model.curves.map((item) => item.goal)), interactions: () => homeNavigate("conversations", model.unanswered),
+    won: () => homeNavigate("deals", model.won), deals: () => homeNavigate("deals", model.openDeals), stale: () => homeNavigate("deals", model.staleDeals),
+    more: () => { const scroll = document.getElementById("main").scrollTop; homeDayState.limit += 12; render(); document.getElementById("main").scrollTop = scroll; }
+  };
+  document.querySelectorAll("[data-home-action]").forEach((button) => button.onclick = () => actions[button.dataset.homeAction]?.());
+  document.getElementById("home-day-pipeline")?.addEventListener("change", (event) => { homeDayState.pipelineId = event.target.value; render(); });
 }
 
 function renderMatrix(c) {
@@ -7448,10 +7678,11 @@ function renderActiveFilterBadges() {
   ].filter(([, values]) => values?.size);
   root.innerHTML = active.map(([key, values]) => {
     const col = cols.find((item) => item.k === key);
-    const label = col?.h || key;
+    const fromHome = key === "id" && state.homeDrilldown?.tab === state.tab && state.homeDrilldown.ids === values;
+    const label = fromHome ? "Home" : col?.h || key;
     const selected = [...values];
     const sample = (cache[state.tab] || []).find((row) => String(row[key] ?? "") === selected[0]) || {};
-    const valueLabel = values instanceof FilterRule ? values.label : selected.length === 1
+    const valueLabel = fromHome ? `${state.homeDrilldown.count} ${MODULE_COUNT_LABEL[state.tab] || "registros"}` : values instanceof FilterRule ? values.label : selected.length === 1
       ? (selected[0] === "" ? "(em branco)" : col ? displayValue(sample, col, cache) : selected[0])
       : `${selected.length} selecionados`;
     return `<button class="filter-badge" data-key="${esc(key)}" title="Remover filtro de ${esc(label)}"><span>${esc(label)}: ${esc(valueLabel)}</span><span class="x">×</span></button>`;
@@ -9301,6 +9532,7 @@ function render() {
   document.querySelector('[data-action="social"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.keys(SOCIAL_MODULE_LABELS)));
   const hasConversationSelection = state.selectedConversations.size > 0;
   const isHome = state.tab === "home";
+  document.body.classList.toggle("home-day-mode", isHome);
   const pmModule = Boolean(PM_TEMPLATE_MODULE[state.tab]);
   const canViewExecution = pmModule && currentUserCan(state.tab === "activities" ? "activities" : "projects", "view");
   const canViewCatalog = pmModule && currentUserCan(PM_TEMPLATE_MODULE[state.tab], "view");
@@ -10817,7 +11049,10 @@ const HELP_PAGES = {
     sections: [
       { title: "Entenda o fluxo de trabalho", lead: "<b>Pessoas e Empresas</b> identificam com quem você se relaciona. <b>Interações</b> guardam o histórico. <b>Negócios</b> acompanham uma oportunidade de venda. <b>Entregas</b> organizam o serviço vendido; suas <b>Tarefas</b> registram o trabalho, seus <b>Objetivos</b> o resultado esperado e suas <b>Metas</b> a medida desse resultado.", tips: ["Tarefas, Metas e Objetivos reúnem Cadastro e Execução no próprio módulo. Cadastro define os modelos dos produtos; Execução acompanha os registros reais das entregas. Os vínculos existentes são preservados."] },
       HELP_RECORD_ACTIONS_SECTION,
-      { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira os totais de pessoas, empresas, negócios abertos, entregas ativas, tarefas pendentes, receita ganha e as próximas tarefas.", "Use o cabeçalho para os módulos principais e o rodapé para Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone do cabeçalho."],
+      { title: "Meu dia", lead: "A Home reúne pendências, resultados e oportunidades dos módulos liberados para seu perfil. Minha visão considera suas tarefas atribuídas, seus negócios e suas interações; as entregas incluem aquelas sob sua responsabilidade ou com suas atividades. Equipe reúne os registros acessíveis, quando seu perfil permite consultar a equipe.",
+        cards: [["Prazo das tarefas", "Atrasadas são tarefas pendentes de entregas ativas cujo término previsto já passou. Hoje e Semana incluem as janelas de execução que estão abertas: uma mentoria mensal só atrasa depois do último dia do período. Sem prazo reúne as tarefas ainda não planejadas. Pais com subtarefas não são contados novamente."], ["Saúde das entregas", "Em risco indica tarefas, objetivos ou metas fora do prazo. Atenção indica bloqueios por dependências ou metas abaixo da referência. O progresso geral conta tarefas, objetivos e metas concluídos; tarefas futuras não entram no cálculo de atraso."], ["Metas abaixo da curva", "Com medição e período definidos, compara o valor atual a uma referência linear entre o início da entrega e o prazo da meta. Essa referência não é uma previsão. Metas de limite máximo são comparadas ao limite, sem inventar uma trajetória de redução."], ["Interações sem resposta", "Considera a última mensagem recebida há mais de 48 horas, somente quando autor e horário podem ser identificados. Usa o histórico importado ou sincronizado, não monitora o WhatsApp em tempo real. Conversas sem identificação suficiente não são tratadas como respondidas nem como pendentes."], ["Receita e pipeline", "Receita ganha soma o valor dos negócios com status Ganho, de todo o histórico visível. Não é o faturamento do cliente nem a receita do mês: não há data de ganho registrada. Pipeline aberto mostra oportunidades ainda abertas e seus valores; o funil respeita o pipeline selecionado."], ["Selecionar e tratar recorrências", "A caixa de seleção apenas seleciona: não conclui a tarefa. Nas recorrências vencidas há mais de 30 dias, Reprogramar define um novo término específico e mantém a recorrência. Arquivar vencidas muda essas ocorrências para Cancelado, preservando o histórico. Ambas exigem confirmação; registros atendidos, cancelados e ocorrências futuras não são alterados."]],
+        tips: ["Os cartões e gráficos abrem os registros correspondentes nos módulos. Concluídas na semana usa o término real, não a data da última edição. Carga da equipe conta as tarefas pendentes por responsável: uma tarefa compartilhada aparece para cada pessoa atribuída."] },
+      { title: "Primeiros passos", steps: ["Entre com o e-mail e a senha fornecidos pelo administrador. Apenas usuários ativos acessam, e cada um vê só os módulos liberados.", "Na <b>Home</b> confira o que precisa de atenção, suas tarefas e a saúde das entregas.", "Use o cabeçalho ou a barra lateral para os módulos principais e Cadastros, Ferramentas, Social e Ajuda.", "Escolha o tema claro ou escuro no ícone de tema."],
         cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
       { title: "Cabeçalho e rodapé", cards: [["↻ Atualizar", "Ao lado do sino. Pisca e mostra quantas alterações outros usuários fizeram; clique para trazer os dados novos sem recarregar a página. Comentários chegam sozinhos no painel aberto."], ["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
       { title: "Tabelas e visualizações", lead: "Todas as tabelas seguem a mesma barra: <b>≡ Agrupar · ⊞ Colunas · Visualização ▾ · Matriz · Dashboard · ⬆⬇ Dados</b>. O que não se aplica fica desativado.",
