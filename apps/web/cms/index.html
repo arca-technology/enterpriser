@@ -694,6 +694,12 @@
   footer{display:flex;align-items:center;justify-content:space-between;height:38px;flex:0 0 38px;box-sizing:border-box;
     background:var(--panel);border-top:1px solid var(--border);padding:0 10px;font-size:9.5px;color:var(--muted2)}
   .foot-right{display:flex;align-items:center;gap:8px}
+  #app-footer{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px}
+  #app-footer .foot-right{grid-column:2;justify-content:center}
+  #app-footer .foot-left{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #app-footer .sidebar-support{grid-column:3;justify-self:end}
+  .version-button{text-transform:none;letter-spacing:0}
+  #app-sidebar .version-button .nav-label{font-size:8px;overflow-wrap:anywhere}
   .foot-btn{background:var(--panel2);border:1px solid var(--border);color:var(--muted);
     height:26px;padding:0 12px;border-radius:5px;font-size:10px;font-weight:700;cursor:pointer;letter-spacing:.4px;text-transform:uppercase}
   .foot-btn:hover{color:var(--text);background:var(--row)}
@@ -1889,6 +1895,35 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   body.navigation-sidebar #sidebar-toggle{display:none!important}
   body.navigation-sidebar .sidebar-module-overlay{left:64px;width:calc(100% - 64px)}
   body.navigation-sidebar .sidebar-support{display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--border);padding-top:8px}
+  .identity-person{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;vertical-align:middle}
+  .identity-person>span:last-child{min-width:0;overflow-wrap:anywhere}
+  .identity-avatar{display:inline-flex;align-items:center;justify-content:center;position:relative;width:24px;height:24px;flex:0 0 24px;overflow:hidden;border-radius:50%;background:var(--panel2);color:var(--muted);border:1px solid var(--border);box-sizing:border-box}
+  .identity-avatar svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6}
+  .identity-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:var(--panel2)}
+  .identity-avatar img.identity-logo{object-fit:contain;padding:3px;box-sizing:border-box}
+  .identity-stack{display:flex;flex-direction:column;gap:5px}
+  .identity-select{display:grid;grid-template-columns:24px minmax(0,1fr);align-items:center;gap:6px;width:100%;min-width:0}
+  .identity-select>select{min-width:0;width:100%}
+  .internal-chat-contact .identity-avatar,.internal-chat-thread-head>.identity-avatar{width:38px;height:38px;flex-basis:38px}
+  .identity-role{font-size:10px;color:var(--muted)}
+  .identity-stack .identity-person{font-size:inherit}
+  .profile-settings{padding:20px;display:flex;flex-direction:column;gap:22px}
+  .profile-settings section{min-width:0}
+  .profile-settings h4{margin:0 0 12px;font-size:12px}
+  .profile-settings .form{padding:0}
+  .profile-photo-control{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  .profile-photo-control .identity-avatar{width:64px;height:64px;flex-basis:64px}
+  .profile-photo-control .identity-avatar svg{width:30px;height:30px}
+  .profile-photo-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .profile-photo-actions label{cursor:pointer}
+  .profile-photo-note{font-size:11px;color:var(--muted);margin:6px 0 0}
+  .profile-settings-error{color:var(--red);font-size:12px;overflow-wrap:anywhere}
+  .profile-settings input[readonly]{color:var(--muted)}
+  .floating-log.floating-help{top:calc(50% - 58px);background:var(--blue);border-color:var(--blue);font-size:9px}
+  .floating-log.floating-help:hover{background:var(--blue);filter:brightness(1.1)}
+  body:has(#modal-root>.overlay>.modal[data-ui-workspace="true"]):not(:has(#modal-root>.nested-modal-layer)) .floating-log{z-index:51}
+  .floating-help:focus-visible,.floating-log:focus-visible{outline:2px solid var(--text);outline-offset:2px}
+  @media(max-width:767px){#app-footer{display:none}.profile-settings{padding:16px}.profile-photo-actions .btn{min-height:40px}}
   .schedule-shell{display:flex;flex-direction:column;height:100%;min-height:0}
   .schedule-view{padding:12px;overflow:auto;min-height:0;flex:1}
   .schedule-period{margin-bottom:16px}
@@ -2300,7 +2335,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   <aside id="app-sidebar" aria-label="Navegação principal" hidden>
     <div class="sidebar-head"><span class="sidebar-system" aria-label="Sistema CMS"><span class="sidebar-system-icon" aria-hidden="true"></span><span>CMS</span></span></div>
     <div class="sidebar-modules"></div>
-    <div class="sidebar-support" aria-label="Ajuda e histórico"></div>
+    <div class="sidebar-support" aria-label="Versão do aplicativo"></div>
     <div class="sidebar-bottom"></div>
   </aside>
   <button class="ico" id="sidebar-toggle" type="button" title="Abrir navegação" aria-label="Abrir navegação" aria-controls="app-sidebar" aria-expanded="false" hidden>☰</button>
@@ -2374,15 +2409,15 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   <footer id="app-footer">
     <div class="foot-left">ARCA TECHNOLOGY LTDA • ARCA HOLD LLC • 2026</div>
     <div class="foot-right">
-      <button class="foot-btn" data-action="help">AJUDA</button>
       <button class="foot-btn" data-action="registrations">CADASTROS</button>
       <button class="foot-btn" data-action="tools">FERRAMENTAS</button>
       <button class="foot-btn" data-action="social">SOCIAL</button>
-      <button class="foot-btn" data-action="updates">ATUALIZAÇÕES</button>
     </div>
+    <div class="sidebar-support"><button class="foot-btn version-button" data-action="updates">Versão</button></div>
   </footer>
 
   <button class="ico floating-log" id="floating-log" type="button" data-action="log" title="Log" aria-label="Log" hidden><span aria-hidden="true">≡</span><span>LOG</span></button>
+  <button class="ico floating-log floating-help" id="floating-help" type="button" data-action="help" title="Ajuda do módulo" aria-label="Ajuda do módulo"><span aria-hidden="true">?</span><span>AJUDA</span></button>
   <div id="modal-root"></div>
   <nav id="mobile-navigation" aria-label="Navegação principal">
     <button type="button" data-mobile-tab="contacts"></button>

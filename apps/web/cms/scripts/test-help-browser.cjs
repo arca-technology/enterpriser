@@ -55,9 +55,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.locator('#help-draft').inputValue(), 'Texto ainda não salvo');
       await page.evaluate(() => closeModal());
     }
-    await page.evaluate(() => { openProjectBoard(cache.projects[0].id); projectBoardState.section = 'data'; renderProjectBoard(); openHelpModal(); });
+    await page.evaluate(() => { openProjectBoard(cache.projects[0].id); projectBoardState.section = 'data'; renderProjectBoard(); });
+    await page.locator('#floating-help').click();
     assert.equal(await page.evaluate(() => helpContextId), 'delivery-data');
-    assert.equal(await page.locator('#app-sidebar [data-action="help"]').isEnabled(), true);
+    assert.equal(await page.locator('#floating-help').isEnabled(), true);
     await page.screenshot({ path: path.join(os.tmpdir(), 'help-delivery-desktop.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.locator('#help-panel').evaluate((el) => el.getBoundingClientRect().left), 0);

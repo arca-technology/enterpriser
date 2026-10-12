@@ -1949,7 +1949,8 @@ async function loadAll() {
     fetchTable("deliveryObjectives").catch(() => []),
     fetchTable("deliveryGoals").catch(() => []),
     fetchTable("contactCompanies").catch(() => null),
-    fetchTable("activityComments").catch(() => [])
+    fetchTable("activityComments").catch(() => []),
+    loadWorkspaceIdentity()
   ]);
   const byId = (arr, key = "id") => Object.fromEntries(arr.map((r) => [r[key], r]));
   const companyIdsByContact = new Map();
@@ -2562,7 +2563,7 @@ function columns(tab, c) {
         return `<button class="btn checklist-open${complete ? " complete" : ""}" data-id="${esc(row.id)}" title="Abrir checklist">${progress.done}/${progress.total}</button>`;
       } },
       { k: "objective_name", h: "OBJETIVO" },
-      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => stackedCell(responsibilityNameList(v, row.owner_id, row.assignee_job_titles, row.assign_to_client)), cls: "compact-multi-cell", thCls: "compact-multi-cell" },
+      { k: "assignee_ids", h: "RESPONSÁVEIS", fmt: (v, row) => assigneeCellHtml(v, row.owner_id, row.assign_to_client, row.assignee_job_titles), cls: "compact-multi-cell", thCls: "compact-multi-cell", csv: (v, row) => responsibilityNames(v, row.owner_id, row.assignee_job_titles, row.assign_to_client) },
       { k: "references", h: "REFERÊNCIAS", fmt: (_v, row) => taskReferencesHtml(row) },
       { k: "planned_start_date", h: "INÍCIO PREVISTO", fmt: (v) => v ? dt(v) : "—" },
       { k: "planned_end_date", h: "TÉRMINO PREVISTO", fmt: (_v, row) => taskPlannedEndCell(row) },
@@ -2594,14 +2595,14 @@ function columns(tab, c) {
       ]),
       { k: "due_date", h: "PRAZO", fmt: dt },
       { k: "dependency_names", h: "DEPENDE DE", cls: "compact-multi-cell", fmt: stackedCell },
-      { k: "assignee_ids", h: "RESPONSÁVEIS", cls: "compact-multi-cell", fmt: (v, row) => stackedCell(assigneeNameList(v, row.owner_id, row.assign_to_client)) },
+      { k: "assignee_ids", h: "RESPONSÁVEIS", cls: "compact-multi-cell", fmt: (v, row) => assigneeCellHtml(v, row.owner_id, row.assign_to_client), csv: (v, row) => assigneeNames(v, row.owner_id, row.assign_to_client) },
       { k: "comments", h: "COMENTÁRIOS" },
       { k: "notes", h: "OBSERVAÇÕES" }
     ];
     case "conversations": return [
       { k: "contact_name", h: "NOME", fmt: (v, row, c) => (row.contact_id && c.contactById[row.contact_id]?.name) || v || "—" },
       { k: "__deals", h: "NEGÓCIOS", fmt: (_v, row) => conversationDealsCell(row, c) },
-      { k: "owner_id", h: "RESPONSÁVEL", fmt: (v) => v ? esc(userDisplayName(v, c, "—")) : "—" },
+      { k: "owner_id", h: "RESPONSÁVEL", fmt: (v) => v ? identityPersonHtml(v) : "—", csv: (v) => v ? userDisplayName(v, c, "—") : "—" },
       { k: "contact", h: "CONTATO", fmt: (_v, row) => contactForConversation(row) || "—" },
       { k: "username", h: "USUÁRIO", fmt: (v, row) => v ? (row.source === "Reddit" ? `u/${v}` : v) : "—" },
       { k: "profile_url", h: "URL PERFIL", fmt: (v) => safeHttpUrl(v) ? `<a href="${esc(safeHttpUrl(v))}" target="_blank" rel="noopener">Perfil</a>` : "—", csv: (v) => v || "" },
@@ -2759,6 +2760,178 @@ function userByReference(id, c = cache) {
 function userDisplayName(id, c = cache, missing = "Responsável não encontrado") {
   const user = userByReference(id, c);
   return user?.nickname || user?.full_name || user?.name || user?.email || missing;
+}
+
+// Identity metadata stays separate from permissions and customer access scopes.
+const IDENTITY_BUCKET = "crm-identity-assets";
+let workspaceIdentity = { company_name: "ECOMMERCE365", logo_path: null };
+let workspaceIdentityReady = false;
+const identityUrls = new Map();
+const identityDemoFiles = new Map();
+let identityObserver = null;
+let identityFrame = 0;
+function identityPathValid(path) {
+  return /^(users\/[0-9a-f-]{36}|workspace)\/[0-9a-f-]{36}\.webp$/.test(String(path || ""));
+}
+async function identityRequest(path, options = {}, storage = false) {
+  const c = getCfg();
+  const token = await getAccessToken();
+  if (!token) throw new Error("Sua sessão expirou. Entre novamente.");
+  const response = await fetch(`${c.url}/${storage ? "storage" : "rest"}/v1/${path}`, {
+    ...options,
+    headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...options.headers }
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(data?.message || data?.error || "Não foi possível salvar. Tente novamente.");
+  return data;
+}
+async function loadWorkspaceIdentity() {
+  workspaceIdentityReady = false;
+  if (!isLive()) { workspaceIdentityReady = true; return; }
+  try {
+    const rows = await api("crm_workspace_settings?id=eq.true&select=company_name,logo_path");
+    if (rows?.[0]) { workspaceIdentity = rows[0]; workspaceIdentityReady = true; }
+  } catch (_) { /* Profile remains usable if workspace branding is unavailable. */ }
+}
+function identityAvatarHtml(id = "", label = "") {
+  startIdentityObserver();
+  return `<span class="identity-avatar" data-identity-user="${esc(id)}" aria-hidden="true"${label ? ` title="${esc(label)}"` : ""}>${window.CRM_NAV_ICONS?.person || window.CRM_NAV_ICONS?.users || ""}</span>`;
+}
+function identityPersonHtml(id, label = userDisplayName(id)) {
+  return `<span class="identity-person">${identityAvatarHtml(id, label)}<span>${esc(label)}</span></span>`;
+}
+function assigneeCellHtml(ids, fallbackId = null, assignToClient = false, jobTitles = []) {
+  const entries = normalizeIdList(ids, fallbackId).map((id) => identityPersonHtml(id));
+  if (assignToClient) entries.push(identityPersonHtml("", "Cliente"));
+  for (const title of normalizeTextList(jobTitles)) {
+    const eligible = (cache?.users || []).filter((user) => user.status === "active" && String(user.job_title || "").trim().toLocaleLowerCase("pt-BR") === title.toLocaleLowerCase("pt-BR"));
+    entries.push(`<span class="identity-role">Cargo: ${esc(title)}</span>`, ...eligible.map((user) => identityPersonHtml(user.id)));
+  }
+  return entries.length ? `<span class="identity-stack">${entries.join("")}</span>` : "—";
+}
+async function identitySignedUrl(path) {
+  if (!identityPathValid(path)) return "";
+  if (!isLive()) return identityDemoFiles.get(path) || "";
+  const existing = identityUrls.get(path);
+  if (existing && existing.until > Date.now()) return existing.promise;
+  const entry = { until: Date.now() + 50 * 60 * 1000, promise: null };
+  entry.promise = identityRequest(`object/sign/${IDENTITY_BUCKET}/${encodedStoragePath(path)}`, { method: "POST", body: JSON.stringify({ expiresIn: 3600 }) }, true)
+    .then((data) => {
+      const raw = data?.signedURL || data?.signedUrl || "";
+      const base = `${getCfg().url}/storage/v1`;
+      const url = new URL(raw.startsWith("/object/") ? `${base}${raw}` : raw, base);
+      if (url.origin !== new URL(getCfg().url).origin || !url.pathname.startsWith(`/storage/v1/object/sign/${IDENTITY_BUCKET}/`)) return "";
+      return url.href;
+    }).catch(() => { entry.until = Date.now() + 30000; return ""; });
+  identityUrls.set(path, entry);
+  return entry.promise;
+}
+function startIdentityObserver() {
+  if (identityObserver || typeof MutationObserver === "undefined" || !document.body) return;
+  identityObserver = new MutationObserver(queueIdentityAvatars);
+  identityObserver.observe(document.body, { childList: true, subtree: true });
+  queueIdentityAvatars();
+}
+function queueIdentityAvatars() {
+  if (identityFrame) return;
+  identityFrame = requestAnimationFrame(() => { identityFrame = 0; hydrateIdentityAvatars(); });
+}
+function hydrateIdentityAvatars() {
+  document.querySelectorAll("select option[data-identity-option]").forEach((option) => {
+    const select = option.closest("select");
+    if (select.dataset.identitySelect) return;
+    select.dataset.identitySelect = "true";
+    const wrapper = document.createElement("span");
+    wrapper.className = "identity-select";
+    wrapper.innerHTML = identityAvatarHtml(select.value);
+    select.before(wrapper);
+    wrapper.appendChild(select);
+    select.addEventListener("change", () => {
+      wrapper.querySelector(".identity-avatar").dataset.identityUser = select.value;
+      queueIdentityAvatars();
+    });
+  });
+  document.querySelectorAll(".identity-avatar[data-identity-user]").forEach((element) => {
+    if (element.dataset.identityPreview) return;
+    const user = userByReference(element.dataset.identityUser) || (currentProfile?.id === element.dataset.identityUser ? currentProfile : null);
+    const paths = [...new Set([user?.avatar_path, workspaceIdentityReady && workspaceIdentity.logo_path].filter(identityPathValid))];
+    const key = paths.join("|");
+    if (element.dataset.identityKey === key) return;
+    element.dataset.identityKey = key;
+    element.querySelector("img")?.remove();
+    const load = async (index) => {
+      if (index >= paths.length || !element.isConnected || element.dataset.identityKey !== key || element.dataset.identityPreview) return;
+      const url = await identitySignedUrl(paths[index]);
+      if (!element.isConnected || element.dataset.identityKey !== key || element.dataset.identityPreview) return;
+      if (!url) { load(index + 1); return; }
+      const img = new Image();
+      img.alt = "";
+      img.decoding = "async";
+      img.classList.toggle("identity-logo", paths[index].startsWith("workspace/"));
+      img.onerror = () => { img.remove(); load(index + 1); };
+      img.src = url;
+      element.appendChild(img);
+    };
+    load(0);
+  });
+}
+async function prepareIdentityImage(file, logo = false) {
+  if (!file || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) throw new Error("Selecione uma imagem PNG, JPG ou WebP.");
+  if (file.size > 5 * 1024 * 1024) throw new Error("A imagem deve ter até 5 MB.");
+  const image = await createImageBitmap(file).catch(() => { throw new Error("Não foi possível ler essa imagem."); });
+  try {
+    if (!image.width || !image.height || image.width * image.height > 40000000) throw new Error("A imagem é muito grande. Use uma versão menor.");
+    const canvas = document.createElement("canvas");
+    const limit = logo ? 512 : 256;
+    const scale = Math.min(1, limit / Math.max(image.width, image.height));
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+    canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", 0.85));
+    if (!blob || blob.type !== "image/webp" || blob.size > 1048576) throw new Error("Não foi possível preparar a imagem.");
+    return blob;
+  } finally { image.close(); }
+}
+async function uploadIdentityImage(blob, logo = false) {
+  const userId = readAuthSession()?.user?.id || currentProfile?.auth_user_id || "00000000-0000-0000-0000-000000000000";
+  if (logo && !currentUserIsAdmin()) throw new Error("Apenas o administrador pode alterar o logo.");
+  const path = `${logo ? "workspace" : `users/${userId}`}/${crypto.randomUUID()}.webp`;
+  if (!isLive()) { identityDemoFiles.set(path, URL.createObjectURL(blob)); return path; }
+  await identityRequest(`object/${IDENTITY_BUCKET}/${encodedStoragePath(path)}`, {
+    method: "POST", headers: { "Content-Type": "image/webp", "x-upsert": "false" }, body: blob
+  }, true);
+  return path;
+}
+async function deleteIdentityImage(path) {
+  if (!identityPathValid(path)) return;
+  identityUrls.delete(path);
+  if (!isLive()) {
+    const url = identityDemoFiles.get(path);
+    if (url) URL.revokeObjectURL(url);
+    identityDemoFiles.delete(path);
+    return;
+  }
+  await identityRequest(`object/${IDENTITY_BUCKET}`, { method: "DELETE", body: JSON.stringify({ prefixes: [path] }) }, true);
+}
+async function saveOwnIdentity(profile, values) {
+  const body = { full_name: values.full_name, nickname: values.nickname || null, phone: values.phone || null, avatar_path: values.avatar_path || null };
+  let saved = { ...profile, ...body };
+  if (isLive()) {
+    const authId = readAuthSession()?.user?.id;
+    if (!authId || profile?.auth_user_id !== authId) throw new Error("Perfil da sessão não encontrado.");
+    const rows = await identityRequest(`profiles?auth_user_id=eq.${encodeURIComponent(authId)}&select=*`, {
+      method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(body)
+    });
+    if (!rows?.[0]) throw new Error("Seu perfil não foi atualizado.");
+    saved = rows[0];
+  }
+  if (currentProfile) currentProfile = saved;
+  if (cache && saved.id) {
+    cache.users = cache.users.map((user) => user.id === saved.id ? saved : user);
+    cache.userById[saved.id] = saved;
+    if (saved.auth_user_id) cache.userByAuthId[saved.auth_user_id] = saved;
+  }
+  return saved;
 }
 // Etapas do pipeline selecionado (ou o primeiro cadastrado, na falta de um).
 // Como agora são texto livre por pipeline, valor e rótulo da opção são o
@@ -2947,15 +3120,15 @@ function applyNavigationPreference() {
     sidebar.querySelector(".sidebar-modules").append(tabs, footerModules);
     sidebar.querySelector(".sidebar-bottom").appendChild(actions);
     const support = sidebar.querySelector(".sidebar-support");
-    ["help", "updates"].forEach((action) => {
+    ["updates"].forEach((action) => {
       const button = document.querySelector(`#app-sidebar [data-action="${action}"],#app-footer [data-action="${action}"]`);
       if (button) support.appendChild(button);
     });
     sidebar.querySelector(".sidebar-modules").appendChild(support);
     sidebar.appendChild(sidebar.querySelector(".sidebar-bottom"));
   } else {
-    sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footerModules.appendChild(button));
-    ["help", "registrations", "tools", "social", "updates"].forEach((action) => {
+    sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footer.querySelector(".sidebar-support").appendChild(button));
+    ["registrations", "tools", "social"].forEach((action) => {
       const button = footerModules.querySelector(`[data-action="${action}"]`);
       if (button) footerModules.appendChild(button);
     });
@@ -3974,12 +4147,12 @@ function renderActivityKanban(c) {
   const columnsHtml = TASK_STATUS.map((status) => {
     const items = tasks.filter((task) => (task.status || "todo") === status.id);
     const cards = items.map((task) => {
-      const owner = userDisplayName(task.owner_id, c, "Sem responsável");
+      const owner = assigneeCellHtml(task.assignee_ids, task.owner_id, task.assign_to_client, task.assignee_job_titles);
       const blocked = taskIsBlocked(task);
       return `<div class="card${blocked ? " blocked" : ""}" data-id="${esc(task.id)}">
         <div class="t">${esc(activityDisplayName(task))}</div>
         <div class="m">${esc(task.client_name)} · ${esc(task.project_name)}</div>
-        <div class="m">${esc(owner)}${taskPlannedEnd(task) ? ` · ${esc(dt(taskPlannedEnd(task)))}` : ""}</div>
+        <div class="m">${owner}${taskPlannedEnd(task) ? ` · ${esc(dt(taskPlannedEnd(task)))}` : ""}</div>
         ${blocked ? '<div class="task-dependency blocked">Aguardando tarefa anterior</div>' : ""}
       </div>`;
     }).join("");
@@ -4393,7 +4566,7 @@ function scheduleMarkup(items, extraClass = "", options = {}) {
     <p class="schedule-error" role="alert" hidden></p><div class="schedule-filter-panel"${settings.filtersOpen ? "" : " hidden"}><label>Status<select data-schedule-status>${choice("all", "Todos os status", settings.status)}${statuses.map(([value, label]) => choice(value, label, settings.status)).join("")}</select></label><label>Cliente<select data-schedule-client>${choice("", "Todos os clientes", settings.client)}${clients.map((label) => choice(label, label, settings.client)).join("")}</select></label><label>Responsável<select data-schedule-owner>${choice("", "Todos os responsáveis", settings.owner)}${choice("__unassigned__", "Sem responsável", settings.owner)}${owners.map((owner) => choice(owner.id, owner.label, settings.owner)).join("")}</select></label><label>Agrupar por<select data-schedule-group>${[["none", "Nenhum"], ["client", "Cliente"], ["product", "Produto"], ["owner", "Responsável"]].map(([value, label]) => choice(value, label, settings.group)).join("")}</select></label><label class="schedule-check"><input type="checkbox" data-schedule-late${settings.onlyLate ? " checked" : ""}>Somente atrasados</label><label class="schedule-check"><input type="checkbox" data-schedule-undated${settings.undated ? " checked" : ""}>Incluir sem prazo</label><button class="home-day-link" data-schedule-clear>Limpar filtros</button></div>`;
   const statusTone = (item) => ["done", "closed", "won"].includes(item.status) ? "done" : ["inactive", "canceled", "lost"].includes(item.status) ? "canceled" : ["doing", "active"].includes(item.status) ? "doing" : "todo";
   const dateLabel = (item) => item.periodLabel || `${item.start ? dt(item.start) : "Sem início"} · ${item.end ? dt(item.end) : "Sem término"}`;
-  const itemLabel = (item) => `<strong>${esc(item.client || item.title || "Sem cliente")}</strong><b>${esc(item.title || "Sem nome")}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}<small>${esc(dateLabel(item))}</small><span class="schedule-row-tags"><span class="schedule-status ${statusTone(item)}">${esc(item.statusLabel || taskStatusLabel(item.status))}</span>${scheduleLate(item, today) ? '<span class="schedule-late-tag">Atrasado</span>' : ""}${item.progress ? `<span>${Number(item.progress.percent || 0)}% geral</span>` : ""}</span>`;
+  const itemLabel = (item) => `<strong>${esc(item.client || item.title || "Sem cliente")}</strong><b>${esc(item.title || "Sem nome")}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}<small>${esc(dateLabel(item))}</small>${item.owners?.length ? `<small>${item.owners.map((owner) => identityPersonHtml(owner.id === "__client__" ? "" : owner.id, owner.label)).join(" ")}</small>` : ""}<span class="schedule-row-tags"><span class="schedule-status ${statusTone(item)}">${esc(item.statusLabel || taskStatusLabel(item.status))}</span>${scheduleLate(item, today) ? '<span class="schedule-late-tag">Atrasado</span>' : ""}${item.progress ? `<span>${Number(item.progress.percent || 0)}% geral</span>` : ""}</span>`;
   const todayPosition = (scheduleDay(today) - scale.first + .5) / scale.days * 100;
   const todayLine = todayPosition >= 0 && todayPosition <= 100 ? `<i class="schedule-today-line" style="left:${todayPosition}%" title="Hoje · ${dt(today)}"></i>` : "";
   const grid = `<div class="schedule-track-grid">${scale.ticks.map((tick) => `<i class="${tick.weekend ? "weekend" : ""}" style="left:${tick.left}%;width:${tick.width}%"></i>`).join("")}</div>${todayLine}`;
@@ -4881,7 +5054,7 @@ function renderHome(c) {
   const maxLoad = Math.max(1, ...model.workload.map((item) => item.count));
   const workloadHtml = canTasks && teamAllowed ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Carga ${mine ? "nas minhas tarefas" : "da equipe"}</h2><span class="home-day-legend"><i></i>No prazo <i class="amber"></i>Atrasadas</span></div><div class="home-day-panel-body">${model.workload.slice(0, 8).map((item) => {
     const label = item.user.nickname || item.user.full_name || item.user.name || "Usuário";
-    return `<button class="home-day-workload" data-home-owner="${esc(item.user.id)}"><span class="home-day-avatar" aria-hidden="true">${esc(label.split(/\s+/).map((part) => part[0]).slice(0, 2).join(""))}</span><strong>${esc(label)}</strong><div class="home-day-loadbar" aria-label="${item.count - item.late} no prazo, ${item.late} atrasadas"><span style="width:${(item.count - item.late) / maxLoad * 100}%"></span><span class="amber" style="width:${item.late / maxLoad * 100}%"></span></div><small>${item.count} abertas · <b>${item.late}</b></small></button>`;
+    return `<button class="home-day-workload" data-home-owner="${esc(item.user.id)}">${identityAvatarHtml(item.user.id, label)}<strong>${esc(label)}</strong><div class="home-day-loadbar" aria-label="${item.count - item.late} no prazo, ${item.late} atrasadas"><span style="width:${(item.count - item.late) / maxLoad * 100}%"></span><span class="amber" style="width:${item.late / maxLoad * 100}%"></span></div><small>${item.count} abertas · <b>${item.late}</b></small></button>`;
   }).join("") || '<p class="home-day-empty">Nenhuma tarefa pendente atribuída nesta visão.</p>'}</div></section>` : "";
   document.getElementById("main").innerHTML = `<div class="home-day"><div class="home-day-heading"><div><p>${esc(dateLabel[0].toLocaleUpperCase("pt-BR") + dateLabel.slice(1))}</p><h1>${greeting}${name ? `, ${esc(name)}` : ""}</h1></div>${teamAllowed ? `<div class="home-day-scope" role="group" aria-label="Visão da Home"><button data-home-scope="mine" aria-pressed="${mine}" class="${mine ? "active" : ""}">Minha visão</button><button data-home-scope="team" aria-pressed="${!mine}" class="${mine ? "" : "active"}">Equipe</button></div>` : ""}</div>
     <div class="home-day-alerts">${canTasks ? alert("Tarefas atrasadas", model.buckets.late.length, `em ${count(new Set(model.buckets.late.map((task) => task.project_id)).size, "entrega")}`, "Ver atrasadas", "late", "red") : ""}${canProjects ? alert("Entregas em risco", riskCount, "tarefas ou resultados fora do prazo", "Ver entregas", "risk", "amber") : ""}${canProjects ? alert("Metas abaixo da curva", model.curves.length, `em ${count(new Set(model.curves.map((item) => item.project.company_id || item.project.id)).size, "cliente")}`, "Ver metas", "goals", "amber") : ""}${canInteractions ? alert("Interações sem resposta", model.unanswered.length, `última mensagem recebida há mais de 48 h${model.unknownConversations ? ` · ${model.unknownConversations} sem identificação suficiente` : ""}`, "Responder", "interactions", "blue") : ""}</div>
@@ -5050,7 +5223,7 @@ function renderProductActivities() {
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
     <td>${priorityBadge(item.priority)}</td>
-    <td>${esc(responsibilityNames(item.default_assignee_ids, item.default_owner_id, item.default_assignee_job_titles, item.assign_to_client))}</td>
+    <td>${assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client, item.default_assignee_job_titles)}</td>
     <td>${esc(dependencyNames(item.dependency_template_ids, item.depends_on_template_id, templates))}</td>
     <td>${taskReferencesHtml(item)}</td>
     <td class="act table-actions-cell">${tableActionButtons({
@@ -5121,7 +5294,7 @@ function renderProductObjectives() {
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || "")));
   const activities = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const rows = objectives.map((item) => {
-    const owners = assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
+    const owners = assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const activityCount = activities.filter((activity) => activity.objective_template_id === item.id).length;
     const dependencyObjectives = normalizeIdList(item.dependency_objective_template_ids)
       .map((id) => objectives.find((objective) => objective.id === id)?.name).filter(Boolean);
@@ -5133,7 +5306,7 @@ function renderProductObjectives() {
       <td>${esc(item.completion_criteria || "—")}</td>
       <td>${esc(item.comments || "—")}</td>
       <td class="compact-multi-cell">${stackedCell(dependencies)}</td>
-      <td class="compact-multi-cell">${stackedCell(owners)}</td>
+      <td class="compact-multi-cell">${owners}</td>
       <td>${item.target_days == null || item.target_days === "" ? "—" : `${esc(item.target_days)} dia(s)`}</td>
       <td>${activityCount}</td>
       <td class="act table-actions-cell">${tableActionButtons({
@@ -5311,7 +5484,7 @@ function renderProductGoals() {
     .filter((item) => item.product_id === productActivityState.productId)
     .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
   const rows = goals.map((item) => {
-    const owners = assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
+    const owners = assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client);
     const target = `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value).toLocaleString("pt-BR")} ${item.unit || ""}`.trim();
     const dependencyGoals = normalizeIdList(item.dependency_goal_template_ids)
       .map((id) => goals.find((goal) => goal.id === id)?.name).filter(Boolean);
@@ -5325,7 +5498,7 @@ function renderProductGoals() {
       <td>${esc(item.comments || "—")}</td>
       <td class="compact-multi-cell">${stackedCell(dependencies)}</td>
       <td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
-      <td class="compact-multi-cell">${stackedCell(owners)}</td>
+      <td class="compact-multi-cell">${owners}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "pg-edit", attrs: { "data-id": item.id }, title: "Editar meta" },
         clone: { className: "pg-clone", attrs: { "data-id": item.id }, title: "Clonar meta" },
@@ -6000,7 +6173,7 @@ function assigneePickerOptions(selected = []) {
   const keep = new Set(selected instanceof Set ? selected : normalizeIdList(selected));
   return [
     ...(cache?.users || []).filter((user) => internalAssigneeUser(user) || keep.has(user.id))
-      .map((user) => ({ value: user.id, label: userDisplayName(user.id) })),
+      .map((user) => ({ value: user.id, label: userDisplayName(user.id), userId: user.id })),
     { value: CLIENT_ASSIGNEE_VALUE, label: "Cliente", detail: "Responsável da empresa" }
   ];
 }
@@ -6020,10 +6193,11 @@ function assigneePickerValue(id) {
 }
 
 function userOptions(selected = "") {
+  startIdentityObserver();
   const users = cache?.users || [];
   const options = users.map((user) => {
     const id = user.id;
-    return `<option value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(userDisplayName(id))}</option>`;
+    return `<option data-identity-option="${esc(id)}" value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(userDisplayName(id))}</option>`;
   });
   if (selected && !users.some((user) => user.id === selected)) {
     options.unshift(`<option value="${esc(selected)}" selected>${esc(userDisplayName(selected))}</option>`);
@@ -6078,7 +6252,8 @@ function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = fal
   const locked = new Set(lockedIds);
   const rows = options.map((option) => {
     const optionLocked = locked.has(option.value);
-    return `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}${optionLocked ? " locked" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" data-locked="${optionLocked}"${disabled || optionLocked ? " disabled" : ""}><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`;
+    const person = option.userId || option.value === CLIENT_ASSIGNEE_VALUE;
+    return `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}${optionLocked ? " locked" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}"${person ? ` data-user-id="${esc(option.userId || "")}"` : ""} data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" data-locked="${optionLocked}"${disabled || optionLocked ? " disabled" : ""}>${person ? identityPersonHtml(option.userId || "", option.label) : `<span>${esc(option.label)}</span>`}${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`;
   }).join("");
   return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}" data-allow-create="${allowCreate}">
     <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
@@ -6114,8 +6289,8 @@ function wireMultiPicker(id) {
     const active = [...root.querySelectorAll(".multi-picker-option.active")];
     root.querySelector(".multi-picker-selection").innerHTML = active.length
       ? active.map((option) => disabled || option.dataset.locked === "true"
-        ? `<span class="multi-picker-chip"><span>${esc(option.dataset.label)}</span></span>`
-        : `<button type="button" class="multi-picker-chip" data-value="${esc(option.dataset.value)}" title="Remover"><span>${esc(option.dataset.label)}</span><b>×</b></button>`).join("")
+        ? `<span class="multi-picker-chip">${option.hasAttribute("data-user-id") ? identityPersonHtml(option.dataset.userId, option.dataset.label) : `<span>${esc(option.dataset.label)}</span>`}</span>`
+        : `<button type="button" class="multi-picker-chip" data-value="${esc(option.dataset.value)}" title="Remover">${option.hasAttribute("data-user-id") ? identityPersonHtml(option.dataset.userId, option.dataset.label) : `<span>${esc(option.dataset.label)}</span>`}<b>×</b></button>`).join("")
       : `<span class="multi-picker-placeholder">${esc(root.dataset.placeholder || "Selecione")}</span>`;
     if (disabled) return;
     root.querySelectorAll(".multi-picker-chip").forEach((chip) => chip.addEventListener("click", (event) => {
@@ -6286,7 +6461,7 @@ function taskIsBlocked(task, tasks = loadProjectTasks()) {
 
 function taskCardHtml(task) {
   const allTasks = operationalProjectTasks(task.project_id);
-  const owners = assigneeNames(task.assignee_ids, task.owner_id, task.assign_to_client);
+  const owners = assigneeCellHtml(task.assignee_ids, task.owner_id, task.assign_to_client, task.assignee_job_titles);
   const objective = cache.deliveryObjectiveById?.[task.objective_id];
   const dependencies = taskDependencies(task, allTasks);
   const blocked = taskIsBlocked(task, allTasks);
@@ -6306,7 +6481,7 @@ function taskCardHtml(task) {
       ${task.module ? `<span>${esc(task.module)}</span>` : ""}${task.submodule ? `<span>${esc(task.submodule)}</span>` : ""}${task.channel ? `<span>${esc(task.channel)}</span>` : ""}${task.type ? `<span>${esc(task.type)}</span>` : ""}
     </div>` : ""}
     <div class="task-row">
-      <span class="muted">${esc(owners)}</span>
+      <span class="muted">${owners}</span>
       <span class="muted">${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")} → ${esc(taskPlannedEnd(task) ? dt(taskPlannedEnd(task)) : "—")}</span>
     </div>
     ${taskCommentsButton(task)}
@@ -6517,7 +6692,7 @@ function renderTaskTable(tasks) {
       <td>${terminal ? `<button class="btn checklist-open${checklist.total > 0 && checklist.done === checklist.total ? " complete" : ""}" data-id="${esc(task.id)}">${checklist.done}/${checklist.total}</button>` : '<span class="muted">Nas subtarefas</span>'}</td>
       <td>${parent ? "—" : `${subtasks.done}/${subtasks.total}`}</td>
       <td>${esc(cache.deliveryObjectiveById?.[task.objective_id]?.name || "—")}</td>
-      <td class="compact-multi-cell">${stackedCell(responsibilityNameList(task.assignee_ids, task.owner_id, task.assignee_job_titles, task.assign_to_client))}</td>
+      <td class="compact-multi-cell">${assigneeCellHtml(task.assignee_ids, task.owner_id, task.assign_to_client, task.assignee_job_titles)}</td>
       <td>${taskReferencesHtml(task)}</td>
       <td>${esc(taskPlannedStart(task) ? dt(taskPlannedStart(task)) : "—")}</td>
       <td>${taskPlannedEndCell(task)}</td>
@@ -6725,8 +6900,8 @@ function renderDeliveryOverview(project) {
     ${progress == null ? "" : `<div class="delivery-overview-progress"><span style="width:${progress}%"></span><b>${progress}%</b></div>`}
   </section>`;
   const attainment = `<details class="overview-attainment"><summary>Ver indicadores</summary><div>${goals.map((goal) => `<div>${overviewItemButton(goal, "goals", goal.metric || goal.name)}<span>${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${esc(goal.unit || "")} · ${deliveryGoalPercent(goal)}%</span></div>`).join("") || '<span class="muted">Sem metas.</span>'}</div></details>`;
-  const attention = (title, rows, section, caption) => {
-    const entry = (item) => `<div class="overview-attention-item">${overviewItemButton(item, item.overviewSection || section)}<small>${esc(caption(item))}</small></div>`;
+  const attention = (title, rows, section, caption, responsible = false) => {
+    const entry = (item) => `<div class="overview-attention-item">${overviewItemButton(item, item.overviewSection || section)}<small>${responsible ? `${assigneeCellHtml(item.assignee_ids, item.owner_id, item.assign_to_client, item.assignee_job_titles)} · ` : ""}${esc(caption(item))}</small></div>`;
     return `<section class="overview-attention-section"><h4>${esc(title)} <span>${rows.length}</span></h4>${rows.slice(0, 5).map(entry).join("") || '<p class="muted">Nenhuma pendência.</p>'}${rows.length > 5 ? `<details class="overview-more"><summary>Ver mais ${rows.length - 5}</summary>${rows.slice(5).map(entry).join("")}</details>` : ""}</section>`;
   };
   const channelOptions = [...new Set(metrics.flatMap((row) => Object.keys(row.channel_revenue)))].sort((a, b) => a.localeCompare(b, "pt-BR"));
@@ -6739,7 +6914,7 @@ function renderDeliveryOverview(project) {
       ${section("data", "Dados", [metric(`Faturamento · ${today.slice(0, 7).split("-").reverse().join("/")}`, revenue == null ? "Não informado" : brl(revenue)), metric("Variação sobre mês anterior", variation), metric("SKUs ativos", currentMonth?.skus == null ? "Não informado" : currentMonth.skus.toLocaleString("pt-BR")), metric("Fornecedores ativos", currentMonth ? currentMonth.supplier_company_ids.length : "Não informado")])}
     </div>
     <section class="overview-band"><h3>Atenção primeiro</h3><div class="overview-attention-grid">
-      ${attention("Tarefas atrasadas", lateTasks, "activities", (item) => `${assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client)} · ${dt(taskPlannedEnd(item))}`)}
+      ${attention("Tarefas atrasadas", lateTasks, "activities", (item) => dt(taskPlannedEnd(item)), true)}
       ${attention("Bloqueadas por dependências", blockedTasks, "activities", (item) => taskDependencies(item, model.allTasks).filter((row) => row.status !== "done").map(activityDisplayName).join("; "))}
       ${attention("Objetivos e metas · próximos 7 dias", upcoming, "objectives", (item) => `${item.overviewSection === "goals" ? "Meta" : "Objetivo"} · ${dt(item.due_date)}`)}
     </div></section>
@@ -9567,7 +9742,7 @@ function openConversationPopup(id) {
       </div>`;
     }).join("")
     : `<div class="panel-list">${esc(row.raw || row.summary || "Sem conteúdo.")}</div>`;
-  const ownerLine = owner ? `<div class="panel-list chat-owner">Responsável <b>${esc(userDisplayName(owner.id))}</b>${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
+  const ownerLine = owner ? `<div class="panel-list chat-owner">Responsável ${identityPersonHtml(owner.id)}${row.imported_at ? ` · ${esc(row.imported_at)}` : ""}</div>` : "";
   const unmatched = attachments.filter((attachment) => attachment.message_index == null);
   const unmatchedHtml = unmatched.length ? `<div class="panel-list"><strong>Mídias sem mensagem identificada</strong><div class="conversation-media-list">${mediaButtons(unmatched)}</div></div>` : "";
   sidePanel(`Conversa · ${row.contact_name || "Contato"}`, `${ownerLine}<div class="chat-log">${body}</div>${unmatchedHtml}`);
@@ -9753,6 +9928,14 @@ function render() {
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
   const logIcon = document.querySelector("#floating-log > span");
   if (logIcon) logIcon.innerHTML = window.CRM_NAV_ICONS?.log || "";
+  const helpIcon = document.querySelector("#floating-help > span");
+  if (helpIcon) helpIcon.innerHTML = window.CRM_NAV_ICONS?.help || "?";
+  const versionButton = document.querySelector('[data-action="updates"]');
+  if (versionButton) {
+    const label = versionButton.querySelector(".nav-label") || versionButton;
+    label.textContent = `Versão: ${window.CRM_APP_VERSION || "—"}`;
+    versionButton.title = versionButton.ariaLabel = label.textContent;
+  }
   document.querySelector('[data-action="chat"]')?.toggleAttribute("hidden", !currentUserCanUseChat());
   document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !mainModuleCan(tab.dataset.tab, "view")));
   document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(REGISTRATION_SECTIONS.map((id) => REGISTRATION_PERMISSION_MODULE[id])));
@@ -11181,62 +11364,165 @@ function setTheme(light) {
 
 function openSettings() {
   const c = getCfg();
+  const profile = currentProfile || cache?.users?.[0] || {};
+  const admin = currentUserIsAdmin();
+  const roleLabel = ({ admin: "Administrador", developer: "Desenvolvedor", collaborator: "Colaborador", client: "Cliente", supplier: "Fornecedor" })[profile.role] || "Usuário";
+  const drafts = {
+    photo: { path: profile.avatar_path || null, blob: null, url: "", changed: false, generation: 0 },
+    logo: { path: workspaceIdentity.logo_path || null, blob: null, url: "", changed: false, generation: 0 }
+  };
+  let saving = false;
+  let processing = 0;
+  let closed = false;
+  const cleanup = () => {
+    closed = true;
+    Object.values(drafts).forEach((draft) => { if (draft.url) URL.revokeObjectURL(draft.url); });
+  };
+  const exit = () => { if (saving) return; cleanup(); closeModal(); };
+  const photoControl = (kind, label, userId = "") => `<div class="profile-photo-control" data-photo-control="${kind}">
+    ${identityAvatarHtml(userId)}<div><div class="profile-photo-actions"><label class="btn" for="settings-${kind}">${label}</label>
+    <input id="settings-${kind}" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    <button class="btn" type="button" data-remove-photo="${kind}"${drafts[kind].path ? "" : " hidden"}>Remover</button></div>
+    <p class="profile-photo-note">PNG, JPG ou WebP · até 5 MB</p></div></div>`;
   const privacySettings = IS_EXTENSION_CONTEXT ? `<div class="help-content" style="padding-bottom:0"><h4>Privacidade da extensão</h4>
       <p><a href="privacy-policy.html" target="_blank" rel="noopener">Ler a Política de Privacidade</a> ou revogar o consentimento da extensão.</p>
     </div>` : "";
   const privacyButton = IS_EXTENSION_CONTEXT ? '<button class="btn danger" id="privacy-revoke" type="button">Revogar consentimento</button>' : "";
-  sidePanel("Configurações", `<div class="help-content" style="padding-bottom:0">
-      <h4 style="margin-top:0">Meus dados</h4>
-      <p>Usado pra te identificar nas conversas importadas ou sincronizadas pela extensão.</p>
-    </div>
+  sidePanel("Configurações", `<div class="profile-settings"><section><h4>Meu perfil</h4>
+    ${photoControl("photo", "Alterar foto", profile.id)}
     <div class="form">
-      <div class="field full"><label>Meu nome (como aparece nas conversas)</label>
-        <input data-k="myName" value="${esc(c.myName || "")}" placeholder="Ex.: Ulisses Ferreira"></div>
-      <div class="field full"><label>Meu usuário no Reddit</label>
-        <input data-k="myRedditUsername" value="${esc(c.myRedditUsername || "")}" placeholder="sem o u/"></div>
-    </div>
-    <div class="help-content" style="padding-bottom:0"><h4>Navegação</h4></div>
-    <div class="form"><div class="field full navigation-options" role="radiogroup" aria-label="Posição da navegação">
+      <div class="field full"><label for="settings-full-name">Nome completo</label><input id="settings-full-name" data-k="full_name" value="${esc(profile.full_name || profile.name || "")}" maxlength="160" autocomplete="name" required></div>
+      <div class="field full"><label for="settings-nickname">Apelido</label><input id="settings-nickname" data-k="nickname" value="${esc(profile.nickname || "")}" maxlength="80" autocomplete="nickname"></div>
+      <div class="field full"><label for="settings-email">E-mail</label><input id="settings-email" type="email" value="${esc(profile.email || "")}" autocomplete="email" readonly></div>
+      <div class="field full"><label for="settings-phone">Telefone</label><input id="settings-phone" data-k="phone" type="tel" value="${esc(profile.phone || "")}" maxlength="50" autocomplete="tel"></div>
+      <div class="field full"><label for="settings-company">Empresa</label><input id="settings-company" value="${esc(workspaceIdentity.company_name)}" readonly></div>
+      <div class="field"><label for="settings-job">Cargo</label><input id="settings-job" value="${esc(profile.job_title || profile.function_name || "Não informado")}" readonly></div>
+      <div class="field"><label for="settings-role">Tipo de acesso</label><input id="settings-role" value="${esc(roleLabel)}" readonly></div>
+    </div></section>
+    <section><h4>Navegação</h4><div class="form"><div class="field full navigation-options" role="radiogroup" aria-label="Posição da navegação">
       <label><input type="radio" name="navigation-mode" value="top"${navigationPreference.mode === "top" ? " checked" : ""}>Superior</label>
       <label><input type="radio" name="navigation-mode" value="sidebar"${navigationPreference.mode === "sidebar" ? " checked" : ""}>Lateral</label>
-    </div></div>
-    <div class="help-content" style="padding-bottom:0">
-      <h4>Conexão Supabase</h4>
-    </div>
-    <div class="form">
-      <div class="field full"><label>Supabase Project URL</label>
-        <input data-k="url" value="${esc(c.url)}" placeholder="https://xxxx.supabase.co"></div>
-      <div class="field full"><label>anon public key</label>
-        <input data-k="anonKey" value="${esc(c.anonKey)}" placeholder="eyJhbGci..."></div>
-    </div>
-    <div class="panel-list" style="padding-top:0">Deixe URL/key em branco para usar dados de exemplo.</div>
+    </div></div></section>
+    <section><h4>Identificação nas interações</h4><div class="form">
+      <div class="field full"><label for="settings-conversation-name">Nome nas conversas importadas</label><input id="settings-conversation-name" data-k="myName" value="${esc(c.myName || "")}" maxlength="160"></div>
+      <div class="field full"><label for="settings-reddit">Usuário no Reddit</label><input id="settings-reddit" data-k="myRedditUsername" value="${esc(c.myRedditUsername || "")}" placeholder="sem o u/" maxlength="80"></div>
+    </div></section>
+    ${admin ? `<section id="settings-workspace"><h4>Empresa da conta</h4>${workspaceIdentityReady ? `${photoControl("logo", "Alterar logo")}<div class="form"><div class="field full"><label for="settings-company-name">Nome da empresa</label><input id="settings-company-name" data-k="company_name" value="${esc(workspaceIdentity.company_name)}" maxlength="160" required></div></div>` : '<p>Não foi possível carregar os dados da empresa. Feche e abra as configurações para tentar novamente.</p>'}</section>` : ""}
     ${privacySettings}
-    <div class="modal-foot">${privacyButton}<button class="btn primary" id="save">Salvar e conectar</button></div>`, { closeOnOverlay: true });
+    <p id="settings-error" class="profile-settings-error" role="alert" hidden></p></div>
+    <div class="modal-foot">${privacyButton}<button class="btn" id="settings-cancel" type="button">Cancelar</button><button class="btn primary" id="save" type="button">Salvar</button></div>`, { onClose: exit });
+  document.getElementById("settings-cancel").addEventListener("click", exit);
+  const errorBox = document.getElementById("settings-error");
+  const showError = (message) => { errorBox.textContent = message; errorBox.hidden = !message; };
+  const saveButton = document.getElementById("save");
+  const drawPreview = async (kind) => {
+    const draft = drafts[kind];
+    const element = document.querySelector(`[data-photo-control="${kind}"] .identity-avatar`);
+    if (!element) return;
+    const generation = draft.generation;
+    element.dataset.identityPreview = "true";
+    element.querySelector("img")?.remove();
+    const url = draft.url || (kind === "photo" && !draft.path && workspaceIdentityReady ? await identitySignedUrl(workspaceIdentity.logo_path) : "");
+    if (closed || draft.generation !== generation || !element.isConnected || !url) return;
+    const img = new Image();
+    img.alt = "";
+    img.classList.toggle("identity-logo", kind === "logo" || !draft.path && !draft.blob);
+    img.onerror = () => img.remove();
+    img.src = url;
+    element.appendChild(img);
+  };
+  for (const kind of ["photo", "logo"]) {
+    document.getElementById(`settings-${kind}`)?.addEventListener("change", async (event) => {
+      const draft = drafts[kind];
+      const generation = ++draft.generation;
+      const file = event.target.files?.[0];
+      if (!file) return;
+      processing++;
+      saveButton.disabled = true;
+      showError("");
+      try {
+        const blob = await prepareIdentityImage(file, kind === "logo");
+        if (closed || generation !== draft.generation) return;
+        if (draft.url) URL.revokeObjectURL(draft.url);
+        draft.blob = blob;
+        draft.url = URL.createObjectURL(blob);
+        draft.changed = true;
+        document.querySelector(`[data-remove-photo="${kind}"]`).hidden = false;
+        await drawPreview(kind);
+      } catch (error) { if (!closed && generation === draft.generation) showError(error.message); }
+      finally { processing--; if (!closed) saveButton.disabled = saving || processing > 0; event.target.value = ""; }
+    });
+    document.querySelector(`[data-remove-photo="${kind}"]`)?.addEventListener("click", () => {
+      const draft = drafts[kind];
+      draft.generation++;
+      if (draft.url) URL.revokeObjectURL(draft.url);
+      Object.assign(draft, { path: null, blob: null, url: "", changed: true });
+      document.querySelector(`[data-remove-photo="${kind}"]`).hidden = true;
+      drawPreview(kind);
+    });
+  }
   document.getElementById("privacy-revoke")?.addEventListener("click", async () => {
+    if (saving || processing) return;
     if (!window.confirm("Revogar o consentimento da extensão? Será necessário aceitar novamente para usá-la.")) return;
     await savePrivacyConsent(null);
-    closeModal();
+    exit();
     await startApp();
   });
   document.getElementById("save").addEventListener("click", async () => {
+    if (saving || processing) return;
     const forms = document.querySelectorAll("#modal-root .form");
     const val = (k) => { for (const f of forms) { const el = f.querySelector(`[data-k="${k}"]`); if (el) return el.value.trim(); } return ""; };
-    const cfg = {
-      ...c,
-      myName: val("myName"),
-      myRedditUsername: val("myRedditUsername"),
-      url: val("url").replace(/\/$/, ""),
-      anonKey: val("anonKey")
-    };
-    saveNavigationPreference({ ...navigationPreference, mode: document.querySelector('input[name="navigation-mode"]:checked')?.value || "top" });
-    localStorage.setItem("crm_cfg", JSON.stringify(cfg));
-    closeModal();
-    if (cfg.url !== c.url || cfg.anonKey !== c.anonKey) {
-      toast(cfg.url && cfg.anonKey ? "Conectando…" : "Usando dados de exemplo.");
-      await init();
-    } else {
-      toast("Configurações salvas.");
+    if (!val("full_name")) { showError("Informe seu nome completo."); document.getElementById("settings-full-name").focus(); return; }
+    if (admin && workspaceIdentityReady && !val("company_name")) { showError("Informe o nome da empresa."); document.getElementById("settings-company-name").focus(); return; }
+    showError("");
+    const values = { full_name: val("full_name"), nickname: val("nickname"), phone: val("phone") };
+    const companyName = val("company_name");
+    const cfg = { ...c, myName: val("myName"), myRedditUsername: val("myRedditUsername") };
+    const navigationMode = document.querySelector('input[name="navigation-mode"]:checked')?.value || "top";
+    const uploaded = new Set();
+    let profileSaved = false;
+    saving = true;
+    document.querySelectorAll("#modal-root input,#modal-root button").forEach((el) => { el.disabled = true; });
+    saveButton.textContent = "Salvando…";
+    try {
+      const oldPhoto = profile.avatar_path;
+      const photoPath = drafts.photo.blob ? await uploadIdentityImage(drafts.photo.blob) : drafts.photo.path;
+      if (drafts.photo.blob) uploaded.add(photoPath);
+      const saved = await saveOwnIdentity(currentProfile || profile, { ...values, avatar_path: photoPath });
+      profileSaved = true;
+      uploaded.delete(photoPath);
+      Object.assign(profile, saved);
+      Object.assign(drafts.photo, { path: photoPath, blob: null, changed: false });
+      if (oldPhoto && oldPhoto !== photoPath) await deleteIdentityImage(oldPhoto).catch(() => {});
+      if (admin && workspaceIdentityReady && (drafts.logo.changed || companyName !== workspaceIdentity.company_name)) {
+        const oldLogo = workspaceIdentity.logo_path;
+        const logoPath = drafts.logo.blob ? await uploadIdentityImage(drafts.logo.blob, true) : drafts.logo.path;
+        if (drafts.logo.blob) uploaded.add(logoPath);
+        const branding = { company_name: companyName, logo_path: logoPath };
+        if (isLive()) {
+          const rows = await identityRequest("crm_workspace_settings?id=eq.true&select=*", { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(branding) });
+          if (!rows?.[0]) throw new Error("Não foi possível atualizar a empresa.");
+        }
+        workspaceIdentity = branding;
+        uploaded.delete(logoPath);
+        if (oldLogo && oldLogo !== logoPath) await deleteIdentityImage(oldLogo).catch(() => {});
+      }
+      localStorage.setItem("crm_cfg", JSON.stringify(cfg));
+      saveNavigationPreference({ ...navigationPreference, mode: navigationMode });
+      saving = false;
+      exit();
       render();
+      queueIdentityAvatars();
+      toast("Configurações salvas.");
+    } catch (error) {
+      for (const path of uploaded) await deleteIdentityImage(path).catch(() => {});
+      showError(`${profileSaved ? "Seu perfil foi salvo, mas a empresa não foi atualizada. " : ""}${error.message}`);
+    } finally {
+      saving = false;
+      if (!closed) {
+        document.querySelectorAll("#modal-root input,#modal-root button").forEach((el) => { el.disabled = false; });
+        saveButton.textContent = "Salvar";
+      }
     }
   });
 }
@@ -12693,7 +12979,7 @@ function renderRegistrationsSection() {
   }
   if (section === "users") {
     const users = cache.users || [];
-    const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
+    const rows = users.map((user) => `<tr><td><strong>${identityPersonHtml(user.id, user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
     root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} Usuários</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
@@ -17544,7 +17830,7 @@ function deleteToolEmail(id) {
 
 function openUpdatesModal() {
   sidePanel("Atualizações", `<div class="panel-list">
-    <div><strong>Versão web 0.1.0</strong></div>
+    <div><strong>Versão web ${esc(window.CRM_APP_VERSION || "—")}</strong></div>
     <div class="muted">Dependências entre metas, objetivos e tarefas; ajustes de modais; integração por usuário; e navegação de Cadastros revisada.</div>
   </div>`, { closeOnOverlay: true });
 }
@@ -17580,7 +17866,7 @@ function renderAdminLog() {
   const rows = adminLogState.errors.filter((item) => matches(`${userDisplayName(item.profile_id)} ${item.method} ${item.path} ${item.status} ${item.message}`));
   document.getElementById("admin-log-count").textContent = `${rows.length} erro(s) registrados`;
   body.innerHTML = `<table><thead><tr><th>Data/hora</th><th>Usuário</th><th>Método</th><th>Recurso</th><th>Status</th><th>Mensagem</th></tr></thead><tbody>${rows.map((item) => `<tr class="log-row-error">
-    <td>${esc(adminLogTime(item.created_at))}</td><td>${esc(item.profile_id ? userDisplayName(item.profile_id) : "—")}</td><td><strong>${esc(item.method || "—")}</strong></td>
+    <td>${esc(adminLogTime(item.created_at))}</td><td>${item.profile_id ? identityPersonHtml(item.profile_id) : "—"}</td><td><strong>${esc(item.method || "—")}</strong></td>
     <td class="log-detail">${esc(item.path || "—")}</td><td>${adminLogStatus(item.status, true)}</td><td class="log-detail">${esc(item.message || "—")}</td></tr>`).join("") || '<tr><td colspan="6" class="empty">Nenhum erro registrado.</td></tr>'}</tbody></table>`;
 }
 async function loadAdminLogErrors() {
@@ -17629,7 +17915,7 @@ function renderUserActivities() {
     || `${userDisplayName(row.profile_id)} ${userActivityText(row)}`.toLocaleLowerCase("pt-BR").includes(query));
   document.getElementById("user-activities-count").textContent = `${rows.length} atividade(s)`;
   body.innerHTML = `<table><thead><tr><th>Nome</th><th>Atividade</th><th>Data/hora</th></tr></thead><tbody>${rows.map((row) => `<tr>
-    <td><strong>${esc(userDisplayName(row.profile_id))}</strong></td><td>${esc(userActivityText(row))}</td><td>${esc(adminLogTime(row.created_at))}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">Nenhuma atividade registrada.</td></tr>'}</tbody></table>`;
+    <td>${identityPersonHtml(row.profile_id)}</td><td>${esc(userActivityText(row))}</td><td>${esc(adminLogTime(row.created_at))}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">Nenhuma atividade registrada.</td></tr>'}</tbody></table>`;
 }
 async function loadUserActivities() {
   userActivitiesState.loading = true;
@@ -17682,7 +17968,7 @@ function taskCommentsListHtml(task) {
     ...comments
   ];
   return items.length ? items.map((comment) => `<article class="task-comment-item">
-    <div><strong>${esc(comment.legacy ? "Nota anterior" : commentAuthorName(comment))}</strong><time>${esc(comment.created_at ? new Date(comment.created_at).toLocaleString("pt-BR") : "")}</time></div>
+    <div>${comment.legacy ? "<strong>Nota anterior</strong>" : identityPersonHtml(comment.author_id, commentAuthorName(comment))}<time>${esc(comment.created_at ? new Date(comment.created_at).toLocaleString("pt-BR") : "")}</time></div>
     <p>${esc(comment.body)}</p>
   </article>`).join("") : '<div class="empty">Nenhum comentário nesta tarefa.</div>';
 }
@@ -17890,7 +18176,7 @@ function internalChatRowsHtml() {
     const mine = latest?.sender_id === activeProfileId();
     const presence = internalChatPresence(user);
     return `<button class="internal-chat-contact${unreadCount ? " unread" : ""}" type="button" data-chat-user="${esc(user.id)}">
-      <span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span>
+      ${identityAvatarHtml(user.id)}
       <span class="internal-chat-contact-main"><span class="internal-chat-contact-head"><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><time>${esc(internalChatTime(latest?.created_at))}</time></span>
         <span class="internal-chat-preview">${latest ? `${mine ? "Você: " : ""}${esc(latest.body)}` : "Clique para iniciar uma conversa"}</span>
         <span class="internal-chat-contact-meta"><span class="user-presence ${presence.className}">${presence.label}</span><span class="conversation-state">${esc(state)}</span></span>
@@ -17926,7 +18212,7 @@ function renderInternalChatMessages({ scroll = false } = {}) {
   if (!log || !internalChatRecipientId) return;
   const messages = directConversationMessages(internalChatRecipientId);
   log.innerHTML = messages.length ? messages.map((message) => `<div class="internal-chat-message ${message.sender_id === activeProfileId() ? "mine" : "theirs"}">
-      <strong>${esc(userDisplayName(message.sender_id, cache, "Usuário"))}</strong>
+      ${identityPersonHtml(message.sender_id, userDisplayName(message.sender_id, cache, "Usuário"))}
       <p>${esc(message.body)}</p><span class="internal-chat-message-meta"><time>${esc(new Date(message.created_at).toLocaleString("pt-BR"))}</time>${message.sender_id === activeProfileId() ? `<span>${message.read_at ? "Lida" : "Enviada"}</span>` : ""}</span>
     </div>`).join("") : '<div class="empty">Comece a conversa.</div>';
   if (scroll) log.scrollTop = log.scrollHeight;
@@ -17990,7 +18276,7 @@ function openInternalChatThread(recipientId) {
   const isActive = user.status === "active";
   const presence = internalChatPresence(user);
   const panel = document.getElementById("internal-chat-panel");
-  panel.innerHTML = `<div class="internal-chat-thread-head"><button class="btn internal-chat-back" id="internal-chat-back" type="button" title="Voltar">‹</button><span class="internal-chat-avatar">${esc(internalChatInitials(user))}</span><span><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><small class="user-presence ${presence.className}">${presence.label}</small></span></div>
+  panel.innerHTML = `<div class="internal-chat-thread-head"><button class="btn internal-chat-back" id="internal-chat-back" type="button" title="Voltar">‹</button>${identityAvatarHtml(user.id)}<span><strong>${esc(userDisplayName(user.id, cache, "Usuário"))}</strong><small class="user-presence ${presence.className}">${presence.label}</small></span></div>
     <div class="internal-chat-log" id="internal-chat-log"></div>
     ${isActive ? '<form class="internal-chat-form" id="internal-chat-form"><textarea id="internal-chat-body" maxlength="4000" placeholder="Digite uma mensagem..." required></textarea><button class="btn primary" type="submit">Enviar</button></form>' : '<div class="internal-chat-disabled">Este usuário está inativo. O histórico permanece disponível para consulta.</div>'}`;
   document.getElementById("internal-chat-back").addEventListener("click", () => { renderInternalChatList(); refreshInternalChat(); });

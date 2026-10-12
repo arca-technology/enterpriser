@@ -16,7 +16,7 @@ const context = vm.createContext({
   taskIsBlocked: (item, rows) => (item.dependency_ids || []).some((id) => rows.find((row) => row.id === id)?.status !== 'done'),
   taskDependencies: (item, rows) => rows.filter((row) => item.dependency_ids?.includes(row.id)),
   taskStatusLabel: (status) => ({ todo: 'Em aberto', doing: 'Em andamento', done: 'Atendido' }[status] || status),
-  assigneeNames: () => 'Responsável', deliveryObjectiveDependencyState: () => ({ blocked: false }),
+  assigneeNames: () => 'Responsável', assigneeCellHtml: () => 'Responsável', deliveryObjectiveDependencyState: () => ({ blocked: false }),
 });
 const names = ['isoDay', 'normalizeProjectBusinessMetrics', 'deliveryGoalReached', 'deliveryGoalPercent', 'deliveryOverviewRevenue', 'deliveryOverviewModel', 'overviewItemButton', 'overviewExecutionChart', 'overviewRevenueChart', 'overviewChannelSummary', 'renderDeliveryOverview'];
 const functions = names.map((name) => source.match(new RegExp(`function ${name}\\([^]*?^}`, 'm'))[0]);
