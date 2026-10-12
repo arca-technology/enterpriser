@@ -52,6 +52,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.evaluate(() => scheduleMarkup([{ id: 'undated', title: '<Nome>', start: null, end: null }]).includes('Sem prazo definido')), true);
     assert.equal(await page.evaluate(() => scheduleMarkup([{ id: 'undated', title: '<Nome>' }]).includes('&lt;Nome&gt;')), true);
     await page.evaluate(() => closeFloaters());
+    await page.locator('[data-schedule-preset]').selectOption('all');
+    await page.locator('[data-schedule-filters]').click();
+    await page.locator('[data-schedule-status]').selectOption('all');
+    await page.locator('[data-schedule-filters]').click();
     assert.equal(await page.locator('#main .schedule-record').count(), 3);
     await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'schedule-projects-desktop.png') });
     await page.locator('#main .schedule-record').first().click();

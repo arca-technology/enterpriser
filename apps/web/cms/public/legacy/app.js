@@ -4260,36 +4260,260 @@ function renderCalendar(c) {
 function orderedScheduleItems(items) {
   return [...items].sort((a, b) => (dateOnly(a.start || a.end)?.getTime() ?? Infinity) - (dateOnly(b.start || b.end)?.getTime() ?? Infinity) || String(a.title).localeCompare(String(b.title), "pt-BR"));
 }
-function scheduleMarkup(items, extraClass = "") {
-  if (!items.length) return '<div class="empty">Nenhum registro para exibir no cronograma.</div>';
-  const groups = new Map();
-  orderedScheduleItems(items).forEach((item) => {
-    const date = dateOnly(item.start || item.end);
-    let key = "Sem prazo definido";
-    if (date) {
-      const monday = new Date(date);
-      monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
-      const sunday = new Date(monday);
-      sunday.setDate(sunday.getDate() + 6);
-      const format = (day) => day.toLocaleDateString("pt-BR");
-      key = `${format(monday)} a ${format(sunday)}`;
-    }
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(item);
-  });
-  return `<div class="schedule-view">${[...groups].map(([period, rows]) => `<section class="schedule-period"><h4>${esc(period)} <span>${rows.length}</span></h4><div>${rows.map((item) => `<button class="schedule-record ${extraClass}" type="button" data-id="${esc(item.id)}"><span class="schedule-name"><strong>${esc(item.title || "Sem nome")}</strong><small>${esc([item.client, item.detail].filter(Boolean).join(" · "))}</small></span><span class="schedule-dates"><span>Início: ${dateOnly(item.start) ? dt(item.start) : "—"}</span><span>Fim: ${dateOnly(item.end) ? dt(item.end) : "—"}</span></span></button>`).join("")}</div></section>`).join("")}</div>`;
+const scheduleViewStates = new Map();
+let scheduleResizeWired = false;
+
+function scheduleDay(value) {
+  const day = String(value || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const date = dateOnly(day);
+  return date && isoDay(date) === day ? Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / GANTT_DAY_MS : null;
 }
+
+function scheduleBounds(item) {
+  const start = scheduleDay(item.start), end = scheduleDay(item.end);
+  if (end == null) return null;
+  if (start != null && end != null && end < start) return null;
+  return { start: start ?? end, end: end ?? start, point: start == null || end == null || start === end };
+}
+
+function scheduleShiftDay(day, amount) {
+  const date = dateOnly(day);
+  if (!date) return "";
+  date.setDate(date.getDate() + Number(amount || 0));
+  return isoDay(date);
+}
+
+function schedulePeriod(preset, today, items = []) {
+  const date = dateOnly(today);
+  if (preset === "next30") return { start: today, end: scheduleShiftDay(today, 29) };
+  if (preset === "all") {
+    const days = items.flatMap((item) => { const range = scheduleBounds(item); return range ? [range.start, range.end] : []; });
+    if (days.length) {
+      const first = new Date(Math.min(...days) * GANTT_DAY_MS), last = new Date(Math.max(...days) * GANTT_DAY_MS);
+      return { start: first.toISOString().slice(0, 10), end: last.toISOString().slice(0, 10) };
+    }
+  }
+  const firstMonth = preset === "quarter" ? Math.floor(date.getMonth() / 3) * 3 : date.getMonth();
+  const months = preset === "quarter" ? 3 : 1;
+  return { start: isoDay(new Date(date.getFullYear(), firstMonth, 1, 12)), end: isoDay(new Date(date.getFullYear(), firstMonth + months, 0, 12)) };
+}
+
+function scheduleViewState(key, kind = "activities") {
+  const userKey = `${activeProfileId() || "anonymous"}:${key}`;
+  if (!scheduleViewStates.has(userKey)) scheduleViewStates.set(userKey, {
+    ...schedulePeriod(kind === "projects" ? "quarter" : "month", isoDay(new Date())),
+    preset: kind === "projects" ? "quarter" : "month", navigationMode: kind === "projects" ? "quarter" : "month", scale: "weeks", presentation: "auto", group: key.startsWith("delivery:") ? "none" : "client",
+    status: kind === "projects" ? "active" : kind === "deals" ? "open" : "pending", client: "", owner: "", onlyLate: false, undated: true,
+    filtersOpen: false, page: 1, expanded: new Set(), collapsed: new Set(), scrollLeft: 0, scrollTop: 0
+  });
+  return scheduleViewStates.get(userKey);
+}
+
+function scheduleItem(tab, row, c) {
+  const item = timelineItem(tab, row, c);
+  if (!item) return null;
+  const project = tab === "projects" ? row : c.projectById?.[row.project_id];
+  const owners = normalizeIdList(row.assignee_ids, row.owner_id).map((id) => ({ id, label: userDisplayName(id, c, "Usuário") }));
+  if (row.assign_to_client) owners.push({ id: "__client__", label: "Cliente" });
+  const client = row.client_name || project?.client_name || c.companyById?.[row.company_id || project?.company_id]?.trade_name || c.companyById?.[row.company_id || project?.company_id]?.legal_name || "Sem cliente";
+  const product = row.product_name || c.productById?.[row.product_id || project?.product_id]?.name || "Sem produto";
+  let start = item.start, end = item.end;
+  if (tab === "projects") end = row.end_date;
+  if (tab === "activities") {
+    const period = row.recurrence === "monthly" ? monthlyDeadlineRange(taskPlannedStart(row) || taskPlannedEnd(row), row.deadline_window) : null;
+    start = period?.start || taskPlannedStart(row);
+    end = period?.end || taskPlannedEnd(row);
+  }
+  const status = row.status;
+  return { ...item, start, end, status, kind: tab, client, product, owners,
+    title: tab === "activities" ? row.title || item.title : item.title, detail: tab === "projects" ? item.detail : [row.channel, row.module, row.submodule].filter(Boolean).join(" › "),
+    periodLabel: tab === "activities" ? taskDeadlinePeriod(row) : "",
+    statusLabel: tab === "projects" ? PROJECT_STATUS_LABEL[status] || "Sem status" : tab === "deals" ? ({ open: "Aberto", won: "Ganho", lost: "Perdido" }[status] || "Sem status") : taskStatusLabel(status)
+  };
+}
+
+function scheduleLate(item, today) {
+  return !["done", "canceled", "closed", "inactive", "won", "lost"].includes(item.status) && scheduleDay(item.end) != null && scheduleDay(item.end) < scheduleDay(today);
+}
+
+function scheduleFilterItems(items, settings, today) {
+  const first = scheduleDay(settings.start), last = scheduleDay(settings.end);
+  if (first == null || last == null || first > last) return [];
+  return orderedScheduleItems(items).filter((item) => {
+    const bounds = scheduleBounds(item);
+    const inPeriod = bounds ? bounds.start <= last && bounds.end >= first : settings.undated;
+    const status = settings.status === "all" || !settings.status || (settings.status === "pending" ? !["done", "closed", "won", "lost", "canceled", "inactive"].includes(item.status) : item.status === settings.status);
+    const owner = !settings.owner || (settings.owner === "__unassigned__" ? !item.owners?.length : item.owners?.some((person) => person.id === settings.owner));
+    return inPeriod && status && owner && (!settings.client || item.client === settings.client) && (!settings.onlyLate || scheduleLate(item, today));
+  });
+}
+
+function scheduleScale(settings) {
+  const first = scheduleDay(settings.start), last = scheduleDay(settings.end);
+  const days = Math.max(1, last - first + 1);
+  const mode = settings.scale === "days" && days <= 366 ? "days" : settings.scale !== "months" && days <= 1096 ? "weeks" : "months";
+  const ticks = [];
+  let cursor = settings.start;
+  for (let guard = 0; scheduleDay(cursor) <= last && guard < 400; guard += 1) {
+    const date = dateOnly(cursor);
+    const next = mode === "days" ? scheduleShiftDay(cursor, 1) : mode === "weeks" ? scheduleShiftDay(cursor, 7 - ((date.getDay() + 6) % 7)) : isoDay(new Date(date.getFullYear(), date.getMonth() + 1, 1, 12));
+    const end = Math.min(last + 1, scheduleDay(next));
+    const label = mode === "months" ? date.toLocaleDateString("pt-BR", { month: "short", year: "numeric" }).replace(".", "") : `${date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}${mode === "weeks" ? ` – ${dateOnly(scheduleShiftDay(next, -1) > settings.end ? settings.end : scheduleShiftDay(next, -1)).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}` : ""}`;
+    ticks.push({ label, left: (scheduleDay(cursor) - first) / days * 100, width: (end - scheduleDay(cursor)) / days * 100, weekend: mode === "days" && [0, 6].includes(date.getDay()) });
+    cursor = next;
+  }
+  return { first, last, days, mode, ticks, width: Math.max(640, ticks.length * (mode === "days" ? 40 : mode === "weeks" ? 140 : 120)) };
+}
+
+function scheduleProjectChildren(projectId, c) {
+  const tasks = currentUserCan("activities", "view") ? (c.activities || []).filter((task) => task.project_id === projectId).map((row) => scheduleItem("activities", row, c)) : [];
+  return [...tasks, ...(c.objectives || []).filter((row) => row.project_id === projectId).map((row) => scheduleItem("objectives", row, c)), ...(c.goals || []).filter((row) => row.project_id === projectId).map((row) => scheduleItem("goals", row, c))];
+}
+
+function scheduleMarkup(items, extraClass = "", options = {}) {
+  const key = options.key || "preview", kind = options.kind || "activities";
+  const settings = options.settings || { ...scheduleViewState(key, kind), status: "all" };
+  const today = isoDay(new Date());
+  const matches = scheduleFilterItems(items, settings, today);
+  const pages = Math.max(1, Math.ceil(matches.length / 50));
+  settings.page = Math.min(Math.max(1, settings.page), pages);
+  const offset = (settings.page - 1) * 50;
+  const rows = matches.slice(offset, offset + 50);
+  const scale = scheduleScale(settings);
+  const icon = (id, fallback = "") => window.CRM_NAV_ICONS?.[id] || fallback;
+  const choice = (value, label, selected) => `<option value="${esc(value)}"${value === selected ? " selected" : ""}>${esc(label)}</option>`;
+  const clients = [...new Set(items.map((item) => item.client).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+  const owners = [...new Map(items.flatMap((item) => item.owners || []).map((owner) => [owner.id, owner])).values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
+  const statuses = kind === "projects" ? [["active", "Ativas"], ["inactive", "Inativas"], ["closed", "Encerradas"]] : kind === "deals" ? [["open", "Abertos"], ["won", "Ganhos"], ["lost", "Perdidos"]] : [["pending", "Não concluídos"], ...TASK_STATUS.map((status) => [status.id, status.label])];
+  const filterCount = Number(settings.status !== "all") + Number(Boolean(settings.client)) + Number(Boolean(settings.owner)) + Number(settings.onlyLate) + Number(!settings.undated);
+  const controls = `<div class="schedule-toolbar"><div class="schedule-period-controls"><button class="schedule-icon" data-schedule-move="-1" title="Período anterior" aria-label="Período anterior">${icon("chevronLeft", "‹")}</button><button class="btn" data-schedule-today>Hoje</button><button class="schedule-icon" data-schedule-move="1" title="Próximo período" aria-label="Próximo período">${icon("chevronRight", "›")}</button><select data-schedule-preset aria-label="Atalho de período">${[["month", "Este mês"], ["next30", "Próximos 30 dias"], ["quarter", "Este trimestre"], ["all", "Todo o período"], ["custom", "Personalizado"]].map(([value, label]) => choice(value, label, settings.preset)).join("")}</select></div>
+    <div class="schedule-range"><label>De <input type="date" data-schedule-start value="${esc(settings.start)}" aria-label="Data inicial do cronograma"></label><label>Até <input type="date" data-schedule-end value="${esc(settings.end)}" aria-label="Data final do cronograma"></label></div>
+    <div class="schedule-display-controls"><label>Escala <select data-schedule-scale aria-label="Escala do cronograma">${[["days", "Dias"], ["weeks", "Semanas"], ["months", "Meses"]].map(([value, label]) => choice(value, label, scale.mode)).join("")}</select></label><div class="schedule-presentation" role="group" aria-label="Apresentação do cronograma"><button class="schedule-icon" data-schedule-presentation="timeline" aria-pressed="${settings.presentation === "timeline"}" title="Linha do tempo" aria-label="Linha do tempo">${icon("timeline")}</button><button class="schedule-icon" data-schedule-presentation="agenda" aria-pressed="${settings.presentation === "agenda"}" title="Agenda" aria-label="Agenda">${icon("log")}</button></div><button class="btn schedule-filter-trigger" data-schedule-filters aria-expanded="${settings.filtersOpen}">${icon("filter")}<span>Filtros${filterCount ? ` (${filterCount})` : ""}</span></button></div></div>
+    <p class="schedule-error" role="alert" hidden></p><div class="schedule-filter-panel"${settings.filtersOpen ? "" : " hidden"}><label>Status<select data-schedule-status>${choice("all", "Todos os status", settings.status)}${statuses.map(([value, label]) => choice(value, label, settings.status)).join("")}</select></label><label>Cliente<select data-schedule-client>${choice("", "Todos os clientes", settings.client)}${clients.map((label) => choice(label, label, settings.client)).join("")}</select></label><label>Responsável<select data-schedule-owner>${choice("", "Todos os responsáveis", settings.owner)}${choice("__unassigned__", "Sem responsável", settings.owner)}${owners.map((owner) => choice(owner.id, owner.label, settings.owner)).join("")}</select></label><label>Agrupar por<select data-schedule-group>${[["none", "Nenhum"], ["client", "Cliente"], ["product", "Produto"], ["owner", "Responsável"]].map(([value, label]) => choice(value, label, settings.group)).join("")}</select></label><label class="schedule-check"><input type="checkbox" data-schedule-late${settings.onlyLate ? " checked" : ""}>Somente atrasados</label><label class="schedule-check"><input type="checkbox" data-schedule-undated${settings.undated ? " checked" : ""}>Incluir sem prazo</label><button class="home-day-link" data-schedule-clear>Limpar filtros</button></div>`;
+  const statusTone = (item) => ["done", "closed", "won"].includes(item.status) ? "done" : ["inactive", "canceled", "lost"].includes(item.status) ? "canceled" : ["doing", "active"].includes(item.status) ? "doing" : "todo";
+  const dateLabel = (item) => item.periodLabel || `${item.start ? dt(item.start) : "Sem início"} · ${item.end ? dt(item.end) : "Sem término"}`;
+  const itemLabel = (item) => `<strong>${esc(item.client || item.title || "Sem cliente")}</strong><b>${esc(item.title || "Sem nome")}</b>${item.detail ? `<small>${esc(item.detail)}</small>` : ""}<small>${esc(dateLabel(item))}</small><span class="schedule-row-tags"><span class="schedule-status ${statusTone(item)}">${esc(item.statusLabel || taskStatusLabel(item.status))}</span>${scheduleLate(item, today) ? '<span class="schedule-late-tag">Atrasado</span>' : ""}${item.progress ? `<span>${Number(item.progress.percent || 0)}% geral</span>` : ""}</span>`;
+  const todayPosition = (scheduleDay(today) - scale.first + .5) / scale.days * 100;
+  const todayLine = todayPosition >= 0 && todayPosition <= 100 ? `<i class="schedule-today-line" style="left:${todayPosition}%" title="Hoje · ${dt(today)}"></i>` : "";
+  const grid = `<div class="schedule-track-grid">${scale.ticks.map((tick) => `<i class="${tick.weekend ? "weekend" : ""}" style="left:${tick.left}%;width:${tick.width}%"></i>`).join("")}</div>${todayLine}`;
+  const track = (item) => {
+    const bounds = scheduleBounds(item);
+    if (!bounds) return '<span class="schedule-no-date">Sem prazo definido</span>';
+    const left = (Math.max(bounds.start, scale.first) - scale.first) / scale.days * 100;
+    const width = (Math.min(bounds.end, scale.last) - Math.max(bounds.start, scale.first) + 1) / scale.days * 100;
+    const title = `${item.title} · ${item.client || ""} · ${dateLabel(item)} · ${item.statusLabel || ""}`;
+    const attrs = `data-schedule-open="${esc(item.id)}" data-schedule-kind="${esc(item.kind || kind)}" title="${esc(title)}" aria-label="${esc(title)}"`;
+    if (bounds.point) return `<button class="schedule-milestone ${statusTone(item)}" ${attrs} style="left:${(bounds.start - scale.first + .5) / scale.days * 100}%"><i></i></button>`;
+    return `<button class="schedule-bar ${statusTone(item)}${bounds.start < scale.first ? " clipped-start" : ""}${bounds.end > scale.last ? " clipped-end" : ""}" ${attrs} style="left:${left}%;width:${width}%">${item.progress ? `<i style="width:${Math.max(0, Math.min(100, Number(item.progress.percent || 0)))}%"></i>` : ""}<span>${esc(item.title)}${item.progress ? ` · ${Number(item.progress.percent || 0)}%` : ""}</span></button>`;
+  };
+  const rowHtml = (item, child = false) => `<div class="schedule-timeline-row${child ? " is-child" : ""}"><div class="schedule-sticky-label">${kind === "projects" && !child ? `<button class="schedule-icon schedule-expand" data-schedule-expand="${esc(item.id)}" title="${settings.expanded.has(item.id) ? "Recolher" : "Expandir"} tarefas, objetivos e metas" aria-expanded="${settings.expanded.has(item.id)}">${icon("chevronRight", "›")}</button>` : ""}<button class="schedule-record ${extraClass}" data-schedule-open="${esc(item.id)}" data-schedule-kind="${esc(item.kind || kind)}" data-id="${esc(item.id)}">${child ? `<span class="schedule-item-type">${esc(ENTITY_LABEL[item.kind] || "Registro")}</span>` : ""}${itemLabel(item)}</button></div><div class="schedule-track">${grid}${track(item)}</div></div>`;
+  const agendaHtml = (item, child = false) => `<div class="schedule-agenda-row${child ? " is-child" : ""}">${kind === "projects" && !child ? `<button class="schedule-icon" data-schedule-expand="${esc(item.id)}" title="Expandir ou recolher entrega" aria-expanded="${settings.expanded.has(item.id)}">${icon("chevronRight", "›")}</button>` : ""}<button class="schedule-agenda-open" data-schedule-open="${esc(item.id)}" data-schedule-kind="${esc(item.kind || kind)}">${child ? `<span class="schedule-item-type">${esc(ENTITY_LABEL[item.kind])}</span>` : ""}${itemLabel(item)}</button></div>`;
+  const groups = new Map();
+  rows.forEach((item) => {
+    const group = !scheduleBounds(item) ? "Sem prazo definido" : settings.group === "client" ? item.client || "Sem cliente" : settings.group === "product" ? item.product || "Sem produto" : settings.group === "owner" ? item.owners?.map((owner) => owner.label).join(", ") || "Sem responsável" : "No período";
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(item);
+  });
+  const groupHtml = (agenda) => [...groups].map(([label, entries]) => {
+    const collapsed = settings.collapsed.has(label);
+    return `<div class="schedule-group"><button class="schedule-group-title" data-schedule-collapse="${esc(label)}" aria-expanded="${!collapsed}">${icon("chevronRight", "›")}<strong>${esc(label)}</strong><span>${entries.length}</span></button><div${collapsed ? " hidden" : ""}>${entries.map((item) => {
+      const children = kind === "projects" && settings.expanded.has(item.id) && options.children ? scheduleFilterItems(options.children(item.id), { ...settings, status: "all" }, today) : [];
+      return `${agenda ? agendaHtml(item) : rowHtml(item)}${children.map((child) => agenda ? agendaHtml(child, true) : rowHtml(child, true)).join("")}${kind === "projects" && settings.expanded.has(item.id) && !children.length ? '<p class="schedule-children-empty">Nenhuma atividade vinculada neste período e nestes filtros.</p>' : ""}`;
+    }).join("")}</div></div>`;
+  }).join("");
+  const axis = `<div class="schedule-timeline-head"><div class="schedule-sticky-label">Cliente · ${esc(ENTITY_LABEL[kind] || "Registro")}</div><div class="schedule-axis">${scale.ticks.map((tick) => `<span style="left:${tick.left}%;width:${tick.width}%">${esc(tick.label)}</span>`).join("")}${todayLine}</div></div>`;
+  const countLabel = MODULE_COUNT_LABEL[kind] || "Registros";
+  const empty = '<div class="schedule-empty">Nenhum registro neste período e nestes filtros.</div>';
+  return `<section class="schedule-shell" data-schedule-key="${esc(key)}" data-presentation="${settings.presentation}">${controls}<div class="schedule-filter-summary" aria-live="polite"><span>${matches.length} ${esc(countLabel)} · ${dt(settings.start)} a ${dt(settings.end)}</span><span>${esc(statuses.find(([id]) => id === settings.status)?.[1] || "Todos os status")}${settings.client ? ` · ${esc(settings.client)}` : ""}${settings.owner ? ` · ${esc(owners.find((person) => person.id === settings.owner)?.label || "Sem responsável")}` : ""}${settings.onlyLate ? " · Somente atrasados" : ""}${!settings.undated ? " · Apenas com prazo" : ""}</span></div>
+    <div class="schedule-chart-scroll" tabindex="0" aria-label="Linha do tempo do cronograma"><div class="schedule-chart" style="--schedule-axis-width:${scale.width}px">${axis}${rows.length ? groupHtml(false) : empty}</div></div><div class="schedule-agenda">${rows.length ? groupHtml(true) : empty}</div>
+    <div class="schedule-legend"><span><i class="todo"></i>Em aberto</span><span><i class="doing"></i>Em andamento / ativo</span><span><i class="done"></i>Atendido / encerrado</span><span><i class="canceled"></i>Cancelado / inativo</span><span>◆ Data pontual</span><span class="schedule-today-key">Hoje</span></div><div class="table-pagination schedule-pagination"><span>${matches.length ? offset + 1 : 0}–${Math.min(offset + 50, matches.length)} de ${matches.length}</span><div><button class="schedule-icon" data-schedule-page="-1" title="Página anterior"${settings.page === 1 ? " disabled" : ""}>${icon("chevronLeft", "‹")}</button><span>Página ${settings.page} de ${pages}</span><button class="schedule-icon" data-schedule-page="1" title="Próxima página"${settings.page === pages ? " disabled" : ""}>${icon("chevronRight", "›")}</button></div></div></section>`;
+}
+
+function wireSchedule(root, items, settings, options) {
+  const shell = root.querySelector(".schedule-shell");
+  if (!shell) return;
+  const scroll = shell.querySelector(".schedule-chart-scroll");
+  scroll.scrollLeft = settings.scrollLeft;
+  scroll.scrollTop = settings.scrollTop;
+  scroll.addEventListener("scroll", () => { settings.scrollLeft = scroll.scrollLeft; settings.scrollTop = scroll.scrollTop; }, { passive: true });
+  const rerender = () => {
+    const focused = shell.contains(document.activeElement) ? [...document.activeElement.attributes].find((attr) => attr.name.startsWith("data-schedule-")) : null;
+    options.render();
+    if (focused) [...root.querySelectorAll(`[${focused.name}="${CSS.escape(focused.value)}"]`)].find((control) => control.getClientRects().length)?.focus({ preventScroll: true });
+  };
+  const resetPage = () => { settings.page = 1; settings.scrollLeft = 0; settings.scrollTop = 0; rerender(); };
+  const error = (message) => { const node = shell.querySelector(".schedule-error"); node.textContent = message; node.hidden = !message; };
+  shell.querySelectorAll("[data-schedule-start],[data-schedule-end]").forEach((input) => input.addEventListener("change", () => {
+    const start = shell.querySelector("[data-schedule-start]"), end = shell.querySelector("[data-schedule-end]");
+    const a = scheduleDay(start.value), b = scheduleDay(end.value);
+    const invalid = a == null || b == null || b < a || b - a > 3660;
+    start.setAttribute("aria-invalid", String(invalid)); end.setAttribute("aria-invalid", String(invalid));
+    if (invalid) { error("Informe início e fim válidos, nessa ordem, em um intervalo de até 10 anos."); return; }
+    Object.assign(settings, { start: start.value, end: end.value, preset: "custom", navigationMode: "range" }); resetPage();
+  }));
+  shell.querySelector("[data-schedule-preset]").onchange = (event) => {
+    if (event.target.value === "custom") { settings.preset = "custom"; shell.querySelector("[data-schedule-start]").focus(); return; }
+    const range = schedulePeriod(event.target.value, isoDay(new Date()), items);
+    if (scheduleDay(range.end) - scheduleDay(range.start) > 3660) { event.target.value = settings.preset; error("Selecione um intervalo de até 10 anos nas datas."); return; }
+    Object.assign(settings, range, { preset: event.target.value, navigationMode: ["month", "quarter"].includes(event.target.value) ? event.target.value : "range" }); resetPage();
+  };
+  shell.querySelectorAll("[data-schedule-move]").forEach((button) => button.onclick = () => {
+    const shift = Number(button.dataset.scheduleMove), date = dateOnly(settings.start);
+    if (["month", "quarter"].includes(settings.navigationMode)) {
+      const months = settings.navigationMode === "quarter" ? 3 : 1;
+      const start = new Date(date.getFullYear(), date.getMonth() + months * shift, 1, 12);
+      Object.assign(settings, { start: isoDay(start), end: isoDay(new Date(start.getFullYear(), start.getMonth() + months, 0, 12)) });
+    } else {
+      const days = scheduleDay(settings.end) - scheduleDay(settings.start) + 1;
+      Object.assign(settings, { start: scheduleShiftDay(settings.start, days * shift), end: scheduleShiftDay(settings.end, days * shift), preset: "custom" });
+    }
+    settings.preset = "custom";
+    resetPage();
+  });
+  shell.querySelector("[data-schedule-today]").onclick = () => {
+    const today = isoDay(new Date());
+    Object.assign(settings, schedulePeriod("month", today), { preset: "month", navigationMode: "month" }); resetPage();
+    const newScroll = root.querySelector(".schedule-chart-scroll"), axis = root.querySelector(".schedule-axis");
+    if (newScroll?.clientWidth && axis) {
+      const labelWidth = root.querySelector(".schedule-timeline-head>.schedule-sticky-label").offsetWidth;
+      const scale = scheduleScale(settings);
+      newScroll.scrollLeft = Math.max(0, (scheduleDay(today) - scale.first + .5) / scale.days * axis.clientWidth - (newScroll.clientWidth - labelWidth) / 2);
+      settings.scrollLeft = newScroll.scrollLeft;
+    }
+  };
+  shell.querySelector("[data-schedule-scale]").onchange = (event) => {
+    const days = scheduleDay(settings.end) - scheduleDay(settings.start) + 1;
+    if ((event.target.value === "days" && days > 366) || (event.target.value === "weeks" && days > 1096)) { event.target.value = scheduleScale(settings).mode; error("Reduza o período para usar essa escala: dias até 1 ano; semanas até 3 anos."); return; }
+    settings.scale = event.target.value; settings.scrollLeft = 0; rerender();
+  };
+  shell.querySelectorAll("[data-schedule-presentation]").forEach((button) => button.onclick = () => { settings.presentation = button.dataset.schedulePresentation; rerender(); });
+  shell.querySelector("[data-schedule-filters]").onclick = () => { settings.filtersOpen = !settings.filtersOpen; rerender(); };
+  for (const key of ["status", "client", "owner", "group"]) shell.querySelector(`[data-schedule-${key}]`).onchange = (event) => { settings[key] = event.target.value; resetPage(); };
+  for (const [attr, key] of [["late", "onlyLate"], ["undated", "undated"]]) shell.querySelector(`[data-schedule-${attr}]`).onchange = (event) => { settings[key] = event.target.checked; resetPage(); };
+  shell.querySelector("[data-schedule-clear]").onclick = () => { Object.assign(settings, { status: "all", client: "", owner: "", onlyLate: false, undated: true }); resetPage(); };
+  shell.querySelectorAll("[data-schedule-expand]").forEach((button) => button.onclick = () => { const id = button.dataset.scheduleExpand; settings.expanded.has(id) ? settings.expanded.delete(id) : settings.expanded.add(id); rerender(); });
+  shell.querySelectorAll("[data-schedule-collapse]").forEach((button) => button.onclick = () => { const label = button.dataset.scheduleCollapse; settings.collapsed.has(label) ? settings.collapsed.delete(label) : settings.collapsed.add(label); rerender(); });
+  shell.querySelectorAll("[data-schedule-page]").forEach((button) => button.onclick = () => { settings.page += Number(button.dataset.schedulePage); settings.scrollTop = 0; rerender(); });
+  shell.querySelectorAll("[data-schedule-open]").forEach((button) => button.onclick = () => options.open(button.dataset.scheduleKind, button.dataset.scheduleOpen));
+  syncSchedulePresentation();
+  if (!scheduleResizeWired) { window.addEventListener("resize", syncSchedulePresentation, { passive: true }); scheduleResizeWired = true; }
+}
+
+function syncSchedulePresentation() {
+  document.querySelectorAll(".schedule-shell").forEach((shell) => {
+    const presentation = shell.dataset.presentation === "auto" ? (window.matchMedia("(max-width: 767px)").matches ? "agenda" : "timeline") : shell.dataset.presentation;
+    shell.querySelectorAll("[data-schedule-presentation]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.schedulePresentation === presentation)));
+  });
+}
+
 function renderSchedule(c) {
-  const items = orderedScheduleItems(rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter(Boolean));
-  const totalPages = Math.max(1, Math.ceil(items.length / state.pageSize));
-  const page = Math.min(Math.max(1, state.pages[state.tab] || 1), totalPages);
-  state.pages[state.tab] = page;
-  const start = (page - 1) * state.pageSize;
+  const kind = state.tab, key = `main:${kind}`;
+  const items = rowsFor(kind, c).map((row) => scheduleItem(kind, row, c)).filter(Boolean);
+  const settings = scheduleViewState(key, kind);
   const main = document.getElementById("main");
-  main.innerHTML = `<div class="schedule-shell">${scheduleMarkup(items.slice(start, start + state.pageSize))}<div class="table-pagination"><span>${items.length ? start + 1 : 0}-${Math.min(start + state.pageSize, items.length)} de ${items.length}</span><div><button class="btn" id="schedule-prev"${page === 1 ? " disabled" : ""}>‹</button><span>Página ${page} de ${totalPages}</span><button class="btn" id="schedule-next"${page === totalPages ? " disabled" : ""}>›</button></div></div></div>`;
-  main.querySelectorAll(".schedule-record").forEach((button) => button.addEventListener("click", () => openTimelineRecord(state.tab, button.dataset.id)));
-  main.querySelector("#schedule-prev").addEventListener("click", () => { state.pages[state.tab]--; render(); });
-  main.querySelector("#schedule-next").addEventListener("click", () => { state.pages[state.tab]++; render(); });
+  main.innerHTML = scheduleMarkup(items, "", { key, kind, settings, children: (id) => scheduleProjectChildren(id, c) });
+  wireSchedule(main, items, settings, { render, open: openTimelineRecord });
 }
 function renderGantt(c) {
   const allItems = rowsFor(state.tab, c).map((row) => timelineItem(state.tab, row, c)).filter((item) => item && dateOnly(item.start));
@@ -6863,7 +7087,7 @@ function renderProjectBoard(projectId) {
       : ["matrix", "kanban"].includes(view) ? renderTaskMatrix(rows)
       : view === "calendar" ? renderProjectTaskCalendar(rows)
       : view === "gantt" ? renderProjectTaskGantt(rows)
-      : view === "schedule" ? scheduleMarkup(rows.map((task) => ({ id: task.id, title: activityDisplayName(task), detail: taskStatusLabel(task.status), start: taskPlannedStart(task), end: taskPlannedEnd(task) })), "project-schedule-item")
+      : view === "schedule" ? scheduleMarkup(rows.map((task) => scheduleItem("activities", task, cache)), "project-schedule-item", { key: `delivery:${projectId}:activities`, kind: "activities", settings: scheduleViewState(`delivery:${projectId}:activities`) })
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_TASK_ADAPTER, "", `delivery:${projectId}`).html
       : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
@@ -6883,6 +7107,10 @@ function renderProjectBoard(projectId) {
   if (projectBoardState.section === "objectives" && view === "table") wireDeliveryObjectives(projectId);
   if (projectBoardState.section === "goals" && view === "table") wireDeliveryGoals(projectId);
   wireProjectBoard(projectId);
+  if (view === "schedule") {
+    const items = rows.map((task) => scheduleItem("activities", task, cache));
+    wireSchedule(root, items, scheduleViewState(`delivery:${projectId}:activities`), { render: () => renderProjectBoard(projectId), open: (_kind, id) => openActivityChecklist(id) });
+  }
   if (view === "mindmap") {
     root.querySelectorAll(".delivery-mind-task-open[data-id]").forEach((button) =>
       button.addEventListener("click", () => openDeliveryTaskDrawer(projectId, button.dataset.id)));
@@ -7562,7 +7790,7 @@ function wireProjectBoard(projectId) {
     projectBoardState.calendarCursor = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`; renderProjectBoard(projectId);
   });
   document.getElementById("project-calendar-today")?.addEventListener("click", () => { projectBoardState.calendarCursor = null; renderProjectBoard(projectId); });
-  document.querySelectorAll(".project-calendar-item,.project-gantt-item,.project-schedule-item").forEach((button) =>
+  document.querySelectorAll(".project-calendar-item,.project-gantt-item").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
   document.querySelectorAll("#project-board-root .checklist-open").forEach((button) =>
     button.addEventListener("click", () => openActivityChecklist(button.dataset.id)));
@@ -11020,6 +11248,8 @@ function openSettings() {
 const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Interações"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"], ["goals", "Metas"], ["objectives", "Objetivos"]];
 const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentos"], ["tool-tables", "Planilhas"], ["social", "Social"]];
 const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
+const HELP_SCHEDULE_SECTION = { title: "Cronograma e período", lead: "Cronograma mostra quais entregas e atividades acontecem no período escolhido. Gantt mantém a visão detalhada do planejamento e do progresso. Apenas visualizar, filtrar e expandir não altera datas ou status.",
+  cards: [["Intervalo e escala", "De e Até limitam os registros. Este mês, Próximos 30 dias, Este trimestre e Todo o período preenchem as datas; Hoje volta ao mês atual. Escala em Dias, Semanas ou Meses só muda o detalhe visual, não o filtro. Setas percorrem meses/trimestres nos respectivos atalhos, ou intervalos com a mesma duração no modo personalizado."], ["Entregas que atravessam o período", "Uma entrega de julho a dezembro continua aparecendo ao consultar outubro. Basta o intervalo dela coincidir com pelo menos um dia selecionado. A barra pode aparecer recortada nas extremidades, mas as datas reais continuam indicadas à esquerda."], ["Status e atraso", "Amarelo indica Em aberto, azul Em andamento/Ativo, verde Atendido/Encerrado e cinza Cancelado/Inativo. Atrasado é um aviso separado; não muda a cor do status. Atendidas, encerradas e canceladas não são tratadas como atrasadas."], ["Responsáveis e clientes", "Filtros permite escolher status, cliente, responsável, somente atrasados e incluir registros sem prazo. Agrupe por cliente, produto ou responsáveis. Limpar filtros preserva o intervalo de datas. Os filtros do cronograma não alteram os filtros das outras visualizações."], ["Sem prazo e janelas", "Registros sem datas ficam no grupo Sem prazo definido, se habilitado. Um prazo pontual aparece como losango. Tarefas com janela mensal ou Semana 1 a 4 ocupam o intervalo inteiro; não recebem um dia de vencimento arbitrário."], ["Entregas e celular", "Expanda uma entrega para consultar suas tarefas, objetivos e metas no mesmo período. Clique no nome ou na barra para abrir os detalhes. No celular, Agenda é a apresentação inicial; Linha do tempo permanece disponível. As escolhas são mantidas por módulo nesta sessão, sem mudar os dados."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
 const HELP_TASK_DATES_SECTION = { title: "Datas previstas e reais", lead: "<b>Previsto é o planejamento; real é o que aconteceu.</b> Começar o período não significa que a tarefa já começou ou que está atrasada.",
@@ -11105,6 +11335,7 @@ const HELP_PAGES = {
       HELP_TASK_OPERATIONS_SECTION,
       HELP_TASK_WINDOWS_SECTION,
       HELP_TASK_SETUP_SECTION,
+      HELP_SCHEDULE_SECTION,
       { title: "Visão geral · acompanhamento do cliente", lead: "Separe execução, resultados e dados do negócio. Atendidas / previstas até hoje considera apenas tarefas com término previsto até a data atual; tarefas futuras e canceladas não reduzem esse percentual. Sem tarefas previstas, não há percentual de execução.", cards: [["Atenção primeiro", "Atrasos, dependências pendentes e objetivos ou metas com prazo nos próximos sete dias. Clique no item para abrir a aba correspondente com seu nome na busca."], ["Objetivos em risco", "Objetivos ainda não concluídos com prazo vencido ou dependências pendentes. É um sinal operacional, não uma previsão automática do resultado."], ["Execução semanal", "Compara o término previsto com conclusões pela data real de término nas últimas oito semanas. Atendidas sem data real ficam fora do gráfico e são informadas separadamente."], ["Dados do mês", "Faturamento, SKUs e fornecedores registrados no mês atual da entrega. A variação exige faturamento do mês anterior maior que zero. Dado ausente não significa zero; Dados não tem barra de conclusão."], ["Metas por indicador", "Cada meta mantém seu valor atual, alvo e atingimento. Não há média de indicadores de unidades diferentes."], ["Resumo por canal", "Expanda um canal para consultar tarefas, objetivos e metas. O gráfico de faturamento permite escolher um canal e mostra até os últimos doze meses registrados."]] },
       { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
       { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Os itens ativos são comparados com Requer no Setup das tarefas. Todos os requisitos devem estar ativos; o campo Canal não controla mais a liberação. Canais ativados não podem ser desativados depois de salvo.",
@@ -11123,6 +11354,7 @@ const HELP_PAGES = {
       HELP_TASK_WINDOWS_SECTION,
       HELP_TASK_OPERATIONS_SECTION,
       HELP_TASK_SETUP_SECTION,
+      HELP_SCHEDULE_SECTION,
       HELP_RECORD_ACTIONS_SECTION,
       { title: "Acompanhar", steps: ["Filtre por cliente, status, prioridade ou responsável.", "Altere o status direto na linha.", "Clique no lápis para abrir a tarefa no formulário da entrega."] },
       { title: "Agrupar e editar em massa", cards: [["≡ Agrupar por cliente", "Um grupo por cliente com a contagem; use ▸ para abrir um ou todos."], ["Edição em massa", "Neste módulo altera <b>Status</b> e <b>Prioridade</b>. Marque as tarefas, clique em ✎ em AÇÕES e escolha o valor."]] }
