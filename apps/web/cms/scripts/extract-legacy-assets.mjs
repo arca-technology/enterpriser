@@ -2,8 +2,8 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
-import { UserRound, UsersRound, Building2, MessagesSquare, BriefcaseBusiness, Package, ListChecks, Logs, CircleHelp, Database, Wrench, Globe, History, GitBranch, Target, Flag, Folder, Mail, Workflow, FileText, Table2, EllipsisVertical, ChevronRight, ChevronLeft, ChartNoAxesGantt, SlidersHorizontal } from "lucide";
-import { faFacebook, faInstagram, faLinkedin, faReddit, faTiktok, faYoutube } from "@fortawesome/free-brands-svg-icons";
+import { UserRound, UsersRound, Building2, MessagesSquare, BriefcaseBusiness, Package, ListChecks, Logs, CircleHelp, Database, Wrench, Globe, History, GitBranch, Target, Flag, Folder, Mail, Workflow, FileText, Table2, EllipsisVertical, ChevronRight, ChevronLeft, ChartNoAxesGantt, SlidersHorizontal, Zap } from "lucide";
+import { faFacebook, faInstagram, faLinkedin, faReddit, faTiktok, faYoutube, faWhatsapp } from "@fortawesome/free-brands-svg-icons";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const html = await readFile(path.join(root, "index.html"), "utf8");
@@ -30,12 +30,12 @@ const iconNodes = { contacts: UsersRound, companies: Building2, conversations: M
   log: Logs, help: CircleHelp, registrations: Database, tools: Wrench, social: Globe, updates: History,
   products: Package, pipelines: GitBranch, users: UsersRound, goals: Target, objectives: Flag,
   files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2, cms: BriefcaseBusiness, more: EllipsisVertical, chevronRight: ChevronRight,
-  chevronLeft: ChevronLeft, timeline: ChartNoAxesGantt, filter: SlidersHorizontal, person: UserRound };
+  chevronLeft: ChevronLeft, timeline: ChartNoAxesGantt, filter: SlidersHorizontal, person: UserRound, automation: Zap, sms: MessagesSquare };
 const escapeAttribute = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const navigationIcons = Object.fromEntries(Object.entries(iconNodes).map(([key, nodes]) => [key,
   `<svg viewBox="0 0 24 24" aria-hidden="true">${nodes.map(([tag, attributes]) => `<${tag} ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeAttribute(value)}"`).join(" ")}/>`).join("")}</svg>`
 ]));
-for (const [key, definition] of Object.entries({ facebook: faFacebook, instagram: faInstagram, linkedin: faLinkedin, reddit: faReddit, tiktokshop: faTiktok, youtube: faYoutube })) {
+for (const [key, definition] of Object.entries({ facebook: faFacebook, instagram: faInstagram, linkedin: faLinkedin, reddit: faReddit, tiktokshop: faTiktok, youtube: faYoutube, whatsapp: faWhatsapp })) {
   const [width, height, , , paths] = definition.icon;
   navigationIcons[key] = `<svg class="brand-icon" viewBox="0 0 ${width} ${height}" aria-hidden="true">${[paths].flat().map((data) => `<path d="${escapeAttribute(data)}"/>`).join("")}</svg>`;
 }

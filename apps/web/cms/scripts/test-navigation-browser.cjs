@@ -222,7 +222,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#tabs [data-tab="projects"]').hover();
     await page.locator('#sidebar-submodules [data-section="overview"]').click();
     await page.screenshot({ path: path.join(require('node:os').tmpdir(), 'navigation-delivery-sidebar.png') });
-    await page.locator('#sidebar-module-context #shell-close').click();
+    assert.equal(await page.locator('#sidebar-module-context').count(), 0);
+    await page.keyboard.press('Escape');
     assert.equal(await page.locator('#sidebar-module-context').count(), 0);
     assert.equal(await page.locator('#tabs [data-tab="contacts"]').isDisabled(), false);
     await page.locator('#app-sidebar [data-action="registrations"]').hover();

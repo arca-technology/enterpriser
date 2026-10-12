@@ -335,6 +335,13 @@ const ENTITY_LABEL = { home: "Home", contacts: "Pessoas", companies: "Empresas",
 const PM_TEMPLATE_MODULE = { activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates" };
 const REGISTRATION_SECTIONS = ["products", "pipelines", "users", "emails"];
 const TOOL_SECTIONS = [["files", "Arquivos"], ["processes", "Processos"], ["documents", "Documentos"], ["tables", "Planilhas"]];
+const AUTOMATION_SECTIONS = [
+  { id: "automation-emails", label: "E-mails", permission: "emails", icon: "emails" },
+  { id: "automation-whatsapp", label: "WhatsApp", permission: "conversations", icon: "whatsapp" },
+  { id: "automation-instagram", label: "Instagram", permission: "conversations", icon: "instagram" },
+  { id: "automation-sms", label: "SMS", permission: "conversations", icon: "sms" }
+];
+let automationSection = "automation-emails";
 const MODULE_COUNT_LABEL = { ...ENTITY_LABEL, pipelines: "Pipelines", users: "Usuários", emails: "Emails", files: "Arquivos", processes: "Processos", documents: "Documentos", tables: "Planilhas" };
 
 function mainModuleCan(tab, action = "view") {
@@ -2185,7 +2192,7 @@ function openMobileMenu(deliveryOnly = false) {
   } else if (!deliveryOnly) {
     addButton("Visão geral", window.CRM_NAV_ICONS?.projects, () => document.getElementById("brand-home").click());
     document.querySelectorAll('#tabs .tab:not([hidden])').forEach((source) => addButton(source.querySelector('.nav-label')?.textContent || source.title, window.CRM_NAV_ICONS?.[source.dataset.tab], () => source.click(), source.disabled));
-    for (const action of ["registrations", "tools", "social"]) {
+    for (const action of ["registrations", "tools", "social", "automation"]) {
       const source = document.querySelector(`.foot-btn[data-action="${action}"]`);
       if (!source || source.hidden || source.disabled) continue;
       const items = sidebarSubmodules(action).filter((item) => currentUserCan(item.permission, "view"));
@@ -2193,7 +2200,7 @@ function openMobileMenu(deliveryOnly = false) {
       details.innerHTML = `<summary>${source.querySelector('.nav-label')?.textContent || esc(source.textContent.trim())}</summary>`;
       content.appendChild(details);
       items.forEach((item) => {
-        addButton(item.label, window.CRM_NAV_ICONS?.[item.id] || window.CRM_NAV_ICONS?.[action], () => action === "registrations" ? openRegistrationsModal(item.id) : action === "tools" ? openToolsModal(item.id) : openSocialModal(item.id));
+        addButton(item.label, window.CRM_NAV_ICONS?.[item.icon || item.id] || window.CRM_NAV_ICONS?.[action], () => action === "registrations" ? openRegistrationsModal(item.id) : action === "tools" ? openToolsModal(item.id) : action === "automation" ? openAutomationModal(item.id) : openSocialModal(item.id));
         details.appendChild(content.lastElementChild);
       });
     }
@@ -2202,7 +2209,7 @@ function openMobileMenu(deliveryOnly = false) {
   utilities.className = "mobile-menu-utilities";
   content.appendChild(utilities);
   document.querySelectorAll('.foot-btn[data-action="help"],.foot-btn[data-action="log"],.foot-btn[data-action="updates"],#app-header .actions .ico,#app-sidebar .actions .ico').forEach((source) => {
-    if (source.hidden) return;
+    if (source.hidden || source.id === "sidebar-utility-more") return;
     addButton(source.title || source.querySelector('.nav-label')?.textContent || source.textContent.trim(), source.querySelector("svg")?.outerHTML || window.CRM_NAV_ICONS?.[source.dataset.action], () => source.click(), source.disabled);
     utilities.appendChild(content.lastElementChild);
   });
@@ -3124,17 +3131,17 @@ function applyNavigationPreference() {
       const button = document.querySelector(`#app-sidebar [data-action="${action}"],#app-footer [data-action="${action}"]`);
       if (button) support.appendChild(button);
     });
-    sidebar.querySelector(".sidebar-modules").appendChild(support);
-    sidebar.appendChild(sidebar.querySelector(".sidebar-bottom"));
+    sidebar.append(sidebar.querySelector(".sidebar-bottom"), support);
   } else {
     sidebar.querySelectorAll(".sidebar-support .foot-btn").forEach((button) => footer.querySelector(".sidebar-support").appendChild(button));
-    ["registrations", "tools", "social"].forEach((action) => {
+    ["registrations", "tools", "social", "automation"].forEach((action) => {
       const button = footerModules.querySelector(`[data-action="${action}"]`);
       if (button) footerModules.appendChild(button);
     });
     header.append(brand, tabs, actions);
     footer.appendChild(footerModules);
   }
+  queueSidebarFit();
 }
 function saveNavigationPreference(value) {
   navigationPreference = normalizeNavigationPreference(value);
@@ -3155,6 +3162,7 @@ function sidebarSubmodules(action) {
   if (action === "registrations") return REGISTRATION_SECTIONS.map((id) => ({ id, label: REGISTRATION_LABEL[id], permission: REGISTRATION_PERMISSION_MODULE[id] }));
   if (action === "tools") return TOOL_SECTIONS.map(([id, label]) => ({ id, label, permission: id }));
   if (action === "social") return Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => ({ id, label, permission: id }));
+  if (action === "automation") return AUTOMATION_SECTIONS;
   return [];
 }
 let sidebarHoverCloseTimer;
@@ -3162,6 +3170,8 @@ function sidebarHoverEnabled() {
   return window.matchMedia("(hover:hover) and (pointer:fine)").matches && window.innerWidth >= 768;
 }
 function sidebarSubmoduleParent(action) {
+  if (action === "sidebar-utilities") return document.getElementById("sidebar-utility-more");
+  if (action === "sidebar-navigation") return document.getElementById("sidebar-nav-more");
   return document.querySelector(`#app-sidebar [data-action="${action}"],#app-sidebar [data-tab="${action}"]`);
 }
 function closeSidebarSubmodules() {
@@ -3194,9 +3204,9 @@ function openSidebarSubmodules(button, hover = false) {
   panel.dataset.parent = action;
   panel.setAttribute("role", "menu");
   panel.setAttribute("aria-label", button.title);
-  panel.innerHTML = `<div class="sidebar-flyout-title">${esc(button.title)}</div>${items.map((item) => `<button class="sidebar-submodule" role="menuitem" type="button" data-section="${esc(item.id)}"><span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[item.id] || window.CRM_NAV_ICONS?.[action] || ""}</span><span>${esc(item.label)}</span></button>`).join("")}`;
+  panel.innerHTML = `<div class="sidebar-flyout-title">${esc(button.title)}</div>${items.map((item) => `<button class="sidebar-submodule" role="menuitem" type="button" data-section="${esc(item.id)}"><span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[item.icon || item.id] || window.CRM_NAV_ICONS?.[action] || ""}</span><span>${esc(item.label)}</span></button>`).join("")}`;
   const currentModule = document.querySelector("#modal-root > .sidebar-module-overlay")?.dataset.navigationModule;
-  const currentSection = currentModule === action ? (action === "projects" ? projectBoardState.section : action === "registrations" ? registrationsState.section : action === "tools" ? toolsState.section : socialState.section) : null;
+  const currentSection = currentModule === action ? (action === "projects" ? projectBoardState.section : action === "registrations" ? registrationsState.section : action === "tools" ? toolsState.section : action === "automation" ? automationSection : socialState.section) : null;
   panel.querySelectorAll("[data-section]").forEach((item) => { if (item.dataset.section === currentSection) item.setAttribute("aria-current", "page"); });
   document.body.appendChild(panel);
   positionSidebarSubmodules();
@@ -3211,6 +3221,7 @@ function openSidebarSubmodules(button, hover = false) {
     }
     else if (action === "registrations") openRegistrationsModal(item.id);
     else if (action === "tools") openToolsModal(item.id);
+    else if (action === "automation") openAutomationModal(item.id);
     else openSocialModal(item.id);
   }));
   const buttons = [...panel.querySelectorAll(".sidebar-submodule")];
@@ -3230,6 +3241,102 @@ function openSidebarSubmodules(button, hover = false) {
   panel.addEventListener("pointerleave", () => { if (sidebarHoverEnabled()) sidebarHoverCloseTimer = setTimeout(closeSidebarSubmodules, 180); });
   if (!hover) buttons[0]?.focus();
 }
+const SIDEBAR_FIT_CLASSES = ["sidebar-compact", "sidebar-dense", "sidebar-utilities-grouped", "sidebar-utilities-minimal", "sidebar-nav-grouped"];
+let sidebarFitFrame = 0;
+let sidebarFitObserver = null;
+function queueSidebarFit() {
+  if (sidebarFitFrame) return;
+  sidebarFitFrame = requestAnimationFrame(() => { sidebarFitFrame = 0; fitSidebarLayout(); });
+}
+function fitSidebarLayout() {
+  const sidebar = document.getElementById("app-sidebar");
+  if (!sidebar) return;
+  sidebarFitObserver?.disconnect();
+  try {
+  const utilityMore = document.getElementById("sidebar-utility-more");
+  const navMore = document.getElementById("sidebar-nav-more");
+  document.body.classList.remove(...SIDEBAR_FIT_CLASSES);
+  const setHidden = (element, hidden) => { if (element && element.hidden !== hidden) element.hidden = hidden; };
+  setHidden(utilityMore, true);
+  setHidden(navMore, true);
+  if (navigationPreference.mode !== "sidebar" || !sidebar?.clientHeight) return;
+  const modes = [[], ["sidebar-utilities-grouped"], ["sidebar-compact", "sidebar-utilities-grouped"],
+    ["sidebar-compact", "sidebar-dense", "sidebar-utilities-minimal"],
+    ["sidebar-compact", "sidebar-dense", "sidebar-utilities-minimal", "sidebar-nav-grouped"]];
+  const modules = sidebar.querySelector(".sidebar-modules");
+  for (const mode of modes) {
+    document.body.classList.remove(...SIDEBAR_FIT_CLASSES);
+    document.body.classList.add(...mode);
+    setHidden(utilityMore, !mode.some((name) => name.startsWith("sidebar-utilities-")));
+    setHidden(navMore, !mode.includes("sidebar-nav-grouped"));
+    if (modules.scrollHeight <= modules.clientHeight + 1 && sidebar.scrollHeight <= sidebar.clientHeight + 1) break;
+  }
+  } finally {
+    sidebarFitObserver?.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  }
+}
+function openSidebarSourceMenu(anchor, sources, parent) {
+  if (anchor.disabled) return;
+  const alreadyOpen = document.getElementById("sidebar-submodules")?.dataset.parent === parent;
+  closeSidebarSubmodules();
+  if (alreadyOpen) return;
+  const panel = document.createElement("div");
+  panel.id = "sidebar-submodules";
+  panel.className = "sidebar-flyout";
+  panel.dataset.parent = parent;
+  panel.setAttribute("role", "menu");
+  panel.setAttribute("aria-label", anchor.title);
+  panel.innerHTML = `<div class="sidebar-flyout-title">${esc(anchor.title)}</div>`;
+  sources.filter((source) => !source.hidden).forEach((source) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "sidebar-submodule";
+    item.setAttribute("role", "menuitem");
+    item.disabled = source.disabled;
+    item.innerHTML = `<span class="nav-icon" aria-hidden="true">${source.querySelector("svg")?.outerHTML || ""}</span><span>${esc(source.getAttribute("aria-label") || source.title || source.textContent.trim())}</span>`;
+    item.addEventListener("click", () => {
+      closeSidebarSubmodules();
+      if (source.dataset.tab === "projects" && document.body.classList.contains("sidebar-delivery-open")) openSidebarSubmodules(source);
+      else source.click();
+    });
+    panel.appendChild(item);
+  });
+  document.body.appendChild(panel);
+  anchor.setAttribute("aria-expanded", "true");
+  positionSidebarSubmodules();
+  const buttons = [...panel.querySelectorAll("button:not(:disabled)")];
+  buttons[0]?.focus();
+  panel.addEventListener("keydown", (event) => {
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const index = buttons.indexOf(document.activeElement);
+      buttons[event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1 : (index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+    }
+    if (event.key === "Escape") { event.stopPropagation(); closeSidebarSubmodules(); anchor.focus(); }
+  });
+}
+function openSidebarUtilities() {
+  const selector = document.body.classList.contains("sidebar-utilities-minimal") ? ".actions>.ico:not(#sidebar-utility-more)" : '.actions>.ico:is([data-action="activities"],[data-action="integrations"],[data-action="theme"])';
+  openSidebarSourceMenu(document.getElementById("sidebar-utility-more"), [...document.querySelectorAll(`#app-sidebar ${selector}`)], "sidebar-utilities");
+}
+function openSidebarNavigation() {
+  openSidebarSourceMenu(document.getElementById("sidebar-nav-more"), [...document.querySelectorAll("#app-sidebar #tabs .tab,#app-sidebar .foot-right .foot-btn")], "sidebar-navigation");
+}
+function initSidebarResponsive() {
+  const sidebar = document.getElementById("app-sidebar");
+  if (!sidebar) return;
+  document.getElementById("sidebar-utility-more").innerHTML = window.CRM_NAV_ICONS?.more || "⋮";
+  document.getElementById("sidebar-nav-more").innerHTML = window.CRM_NAV_ICONS?.integrations || window.CRM_NAV_ICONS?.registrations || "≡";
+  sidebar.querySelectorAll("#sidebar-utility-more,#sidebar-nav-more").forEach((button) => button.setAttribute("aria-controls", "sidebar-submodules"));
+  document.getElementById("sidebar-utility-more").addEventListener("click", openSidebarUtilities);
+  document.getElementById("sidebar-nav-more").addEventListener("click", openSidebarNavigation);
+  window.addEventListener("resize", queueSidebarFit);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(queueSidebarFit).observe(sidebar);
+  sidebarFitObserver = new MutationObserver(queueSidebarFit);
+  sidebarFitObserver.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  queueSidebarFit();
+}
+
 let state = {
   tab: "home", view: "dashboard", sortK: null, sortDir: 1, q: "", filters: {},
   groupActivitiesByClient: false,
@@ -9941,6 +10048,7 @@ function render() {
   document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(REGISTRATION_SECTIONS.map((id) => REGISTRATION_PERMISSION_MODULE[id])));
   document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(TOOL_SECTIONS.map(([id]) => id)));
   document.querySelector('[data-action="social"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.keys(SOCIAL_MODULE_LABELS)));
+  document.querySelector('[data-action="automation"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(AUTOMATION_SECTIONS.map((section) => section.permission)));
   const hasConversationSelection = state.selectedConversations.size > 0;
   const isHome = state.tab === "home";
   document.body.classList.toggle("home-day-mode", isHome);
@@ -10276,18 +10384,7 @@ function syncSidebarModuleNavigation() {
   }
   document.querySelectorAll("#app-sidebar .foot-btn").forEach((button) => button.classList.toggle("sidebar-current", button.dataset.action === moduleId));
   document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", moduleId === button.dataset.tab || (!moduleId && button.dataset.tab === state.tab)));
-  if (moduleId) {
-    const context = document.createElement("div");
-    context.id = "sidebar-module-context";
-    context.setAttribute("aria-label", "Navegação do módulo aberto");
-    const header = document.querySelector(".sidebar-module > h3");
-    const close = header?.querySelector("#shell-close");
-    if (close) {
-      close.setAttribute("aria-label", "Fechar módulo (Esc)");
-      context.appendChild(close);
-    }
-    document.querySelector("#app-sidebar .sidebar-modules")?.appendChild(context);
-  }
+  queueSidebarFit();
 }
 function closeSidebarModuleView() {
   if (document.querySelector("#modal-root > .sidebar-module-overlay")) closeModal();
@@ -14301,6 +14398,28 @@ function toolsDisabledFooter() {
     <button class="foot-btn" disabled>SOCIAL</button>
     <button class="foot-btn" disabled>ATUALIZAÇÕES</button>
   </div>`;
+}
+
+function openAutomationModal(section = automationSection) {
+  const available = AUTOMATION_SECTIONS.filter((item) => currentUserCan(item.permission, "view"));
+  if (!available.length) { toast("Você não possui acesso à Automação.", true); return; }
+  automationSection = available.some((item) => item.id === section) ? section : available[0].id;
+  const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Automação">${available.map((item) => `<button class="modal-header-tab${item.id === automationSection ? " active" : ""}" role="tab" aria-selected="${item.id === automationSection}" data-automation-tab="${item.id}">${esc(item.label)}</button>`).join("")}</div>`;
+  shell("Automação", '<div id="automation-root" class="tools-root"></div>', {
+    navigationModule: "automation", cls: "full registrations-modal", headerCenter,
+    titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
+  });
+  const draw = () => {
+    const current = AUTOMATION_SECTIONS.find((item) => item.id === automationSection);
+    document.getElementById("automation-root").innerHTML = `<div class="automation-heading"><h2>Automação · ${esc(current.label)}</h2><span class="automation-state">Em preparação</span></div><div class="empty">Nenhuma automação configurada.</div>`;
+    document.querySelectorAll("[data-automation-tab]").forEach((button) => {
+      const active = button.dataset.automationTab === automationSection;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+  };
+  document.querySelectorAll("[data-automation-tab]").forEach((button) => button.addEventListener("click", () => { automationSection = button.dataset.automationTab; draw(); }));
+  draw();
 }
 
 function openToolsModal(section = "files") {
@@ -18330,6 +18449,7 @@ function handleAction(action) {
   if (action === "log") { openAdminLog(); return; }
   if (action === "tools" || action === "files") { openToolsModal(); return; }
   if (action === "social") { openSocialModal(); return; }
+  if (action === "automation") { openAutomationModal(); return; }
   if (action === "updates") { openUpdatesModal(); return; }
   if (action === "pipeline") { openPipelinesModal(); return; }
   if (action === "registrations") { openRegistrationsModal(); return; }
@@ -18638,8 +18758,8 @@ document.getElementById("import-file").addEventListener("change", async (e) => {
 document.getElementById("associate-contact").addEventListener("click", () => openAssociateContactModal());
 document.getElementById("create-deal-from-selection").addEventListener("click", () => createDealFromSelectedConversations());
 document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
-  const label = { log: "Log", help: "Ajuda", registrations: "Cadastros", tools: "Ferramentas", social: "Social", updates: "Atualizações" }[button.dataset.action] || button.textContent.trim();
-  const nested = ["registrations", "tools", "social"].includes(button.dataset.action);
+  const label = { log: "Log", help: "Ajuda", registrations: "Cadastros", tools: "Ferramentas", social: "Social", automation: "Automação", updates: `Versão: ${window.CRM_APP_VERSION || "—"}` }[button.dataset.action] || button.textContent.trim();
+  const nested = ["registrations", "tools", "social", "automation"].includes(button.dataset.action);
   button.title = label;
   button.setAttribute("aria-label", label);
   if (nested) {
@@ -18647,12 +18767,12 @@ document.querySelectorAll("#app-footer [data-action]").forEach((button) => {
     button.setAttribute("aria-controls", "sidebar-submodules");
     button.setAttribute("aria-expanded", "false");
   }
-  button.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.action] || ""}</span><span class="nav-label">${esc(label)}</span>${nested ? `<span class="nav-chevron" aria-hidden="true">${window.CRM_NAV_ICONS?.chevronRight || "›"}</span>` : ""}`;
+  button.innerHTML = `${button.dataset.action === "updates" ? "" : `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[button.dataset.action] || ""}</span>`}<span class="nav-label">${esc(label)}</span>${nested ? `<span class="nav-chevron" aria-hidden="true">${window.CRM_NAV_ICONS?.chevronRight || "›"}</span>` : ""}`;
 });
 document.querySelectorAll(".ico, .foot-btn").forEach((b) =>
   b.addEventListener("click", () => {
     if (b.disabled) return;
-    if (navigationPreference.mode === "sidebar" && b.closest("#app-sidebar") && ["registrations", "tools", "social"].includes(b.dataset.action)) {
+    if (navigationPreference.mode === "sidebar" && b.closest("#app-sidebar") && ["registrations", "tools", "social", "automation"].includes(b.dataset.action)) {
       openSidebarSubmodules(b);
       return;
     }
@@ -18678,7 +18798,7 @@ document.addEventListener("keydown", (event) => {
 }, true);
 window.addEventListener("resize", closeRecordActions);
 document.addEventListener("scroll", closeRecordActions, true);
-document.querySelectorAll('#app-footer [data-action="registrations"],#app-footer [data-action="tools"],#app-footer [data-action="social"],#tabs [data-tab="projects"]').forEach((button) => {
+document.querySelectorAll('#app-footer [data-action="registrations"],#app-footer [data-action="tools"],#app-footer [data-action="social"],#app-footer [data-action="automation"],#tabs [data-tab="projects"]').forEach((button) => {
   button.addEventListener("pointerenter", () => {
     if (navigationPreference.mode !== "sidebar" || !sidebarHoverEnabled() || button.disabled) return;
     if (button.dataset.tab === "projects" && !document.body.classList.contains("sidebar-delivery-open")) return;
@@ -18690,6 +18810,7 @@ document.querySelectorAll('#app-footer [data-action="registrations"],#app-footer
 });
 window.addEventListener("resize", closeSidebarSubmodules);
 document.querySelector(".sidebar-modules")?.addEventListener("scroll", positionSidebarSubmodules);
+initSidebarResponsive();
 
 // ---------- Bootstrap ----------
 function setConn() {
