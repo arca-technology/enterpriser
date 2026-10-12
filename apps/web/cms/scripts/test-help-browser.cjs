@@ -20,7 +20,13 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.evaluate(async () => { await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin(); loadNavigationPreference(); render(); });
     for (const mode of ['top', 'sidebar']) {
       await page.evaluate((mode) => { closeModal(); saveNavigationPreference({ mode }); state.tab = 'activities'; render(); }, mode);
-      await page.evaluate(() => openHelpModal());
+      assert.equal(await page.locator('#data-btn').evaluate((button) => button.nextElementSibling.id), 'toolbar-help');
+      if (await page.locator('#data-btn').isVisible()) {
+        const data = await page.locator('#data-btn').boundingBox();
+        const help = await page.locator('#toolbar-help').boundingBox();
+        assert.ok(help.x >= data.x + data.width, 'Help must appear to the right of Data');
+      }
+      await page.locator('.module-help-btn:visible').first().click();
       assert.equal(await page.locator('#help-panel .help-panel-body h2').innerText(), 'Tarefas');
       assert.equal(await page.locator('#modal-root').innerHTML(), '');
       assert.equal(await page.locator('#help-panel .modal-header-tabs').count(), 0);
@@ -40,10 +46,15 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#help-panel').count(), 0);
       await page.evaluate(() => openRegistrationsModal('activities'));
-      const savedMarkup = await page.locator('#registrations-root').innerHTML();
+      const moduleMarkup = () => page.locator('#registrations-root').evaluate((root) => {
+        const copy = root.cloneNode(true);
+        copy.querySelectorAll('.module-help-btn').forEach((button) => button.remove());
+        return copy.innerHTML;
+      });
+      const savedMarkup = await moduleMarkup();
       await page.evaluate(() => openHelpModal());
       assert.equal(await page.evaluate(() => helpContextId), 'reg-activities');
-      assert.equal(await page.locator('#registrations-root').innerHTML(), savedMarkup);
+      assert.equal(await moduleMarkup(), savedMarkup);
       await page.keyboard.press('Escape');
       assert.equal(await page.locator('#registrations-root').count(), 1);
       await page.evaluate(() => closeModal());
@@ -55,10 +66,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.locator('#help-draft').inputValue(), 'Texto ainda não salvo');
       await page.evaluate(() => closeModal());
     }
-    await page.evaluate(() => { openProjectBoard(cache.projects[0].id); projectBoardState.section = 'data'; renderProjectBoard(); });
-    await page.locator('#floating-help').click();
+    await page.evaluate(() => { openProjectBoard(cache.projects[0].id); projectBoardState.section = 'data'; renderProjectBoard(cache.projects[0].id); });
+    await page.locator('#project-board-root .module-help-btn').click();
     assert.equal(await page.evaluate(() => helpContextId), 'delivery-data');
-    assert.equal(await page.locator('#floating-help').isEnabled(), true);
+    assert.equal(await page.locator('#project-board-root .module-help-btn').isEnabled(), true);
     await page.screenshot({ path: path.join(os.tmpdir(), 'help-delivery-desktop.png') });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.locator('#help-panel').evaluate((el) => el.getBoundingClientRect().left), 0);
@@ -75,6 +86,17 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#project-board-root').count(), 1);
     assert.equal(await page.locator('#help-panel').count(), 0);
     assert.equal(await page.locator('#modal-root').evaluate((el) => el.inert), false);
+    await page.evaluate(() => { closeModal(); state.tab = 'home'; render(); });
+    assert.equal(await page.locator('#floating-log').isVisible(), false);
+    assert.equal(await page.locator('#floating-help').count(), 0);
+    await page.locator('.home-help-button').click();
+    assert.equal(await page.evaluate(() => helpContextId), 'home');
+    await page.locator('#help-close').click();
+    await page.locator('[data-mobile-tab="contacts"]').click();
+    await page.locator('#toolbar-help').click();
+    assert.equal(await page.evaluate(() => helpContextId), 'contacts');
+    await page.locator('#help-close').click();
+    assert.equal(await page.locator('#toolbar-help').evaluate((button) => button === document.activeElement), true);
     assert.deepEqual(errors, []);
     console.log('Contextual help, search, catalog, preserved modules, Escape, desktop/mobile and both navigation modes passed.');
   } finally { await browser.close(); }

@@ -5199,7 +5199,7 @@ function renderHome(c) {
     const label = item.user.nickname || item.user.full_name || item.user.name || "Usuário";
     return `<button class="home-day-workload" data-home-owner="${esc(item.user.id)}">${identityAvatarHtml(item.user.id, label)}<strong>${esc(label)}</strong><div class="home-day-loadbar" aria-label="${item.count - item.late} no prazo, ${item.late} atrasadas"><span style="width:${(item.count - item.late) / maxLoad * 100}%"></span><span class="amber" style="width:${item.late / maxLoad * 100}%"></span></div><small>${item.count} abertas · <b>${item.late}</b></small></button>`;
   }).join("") || '<p class="home-day-empty">Nenhuma tarefa pendente atribuída nesta visão.</p>'}</div></section>` : "";
-  document.getElementById("main").innerHTML = `<div class="home-day"><div class="home-day-heading"><div><p>${esc(dateLabel[0].toLocaleUpperCase("pt-BR") + dateLabel.slice(1))}</p><h1>${greeting}${name ? `, ${esc(name)}` : ""}</h1></div>${teamAllowed ? `<div class="home-day-scope" role="group" aria-label="Visão da Home"><button data-home-scope="mine" aria-pressed="${mine}" class="${mine ? "active" : ""}">Minha visão</button><button data-home-scope="team" aria-pressed="${!mine}" class="${mine ? "" : "active"}">Equipe</button></div>` : ""}</div>
+  document.getElementById("main").innerHTML = `<div class="home-day"><div class="home-day-heading"><div><p>${esc(dateLabel[0].toLocaleUpperCase("pt-BR") + dateLabel.slice(1))}</p><h1>${greeting}${name ? `, ${esc(name)}` : ""}</h1></div>${teamAllowed ? `<div class="home-day-scope" role="group" aria-label="Visão da Home"><button data-home-scope="mine" aria-pressed="${mine}" class="${mine ? "active" : ""}">Minha visão</button><button data-home-scope="team" aria-pressed="${!mine}" class="${mine ? "" : "active"}">Equipe</button></div>` : ""}<button class="btn module-help-btn home-help-button" type="button" data-action="help" data-help-page="home" title="Ajuda geral" aria-label="Ajuda geral" aria-expanded="false">?</button></div>
     <div class="home-day-alerts">${canTasks ? alert("Tarefas atrasadas", model.buckets.late.length, `em ${count(new Set(model.buckets.late.map((task) => task.project_id)).size, "entrega")}`, "Ver atrasadas", "late", "red") : ""}${canProjects ? alert("Entregas em risco", riskCount, "tarefas ou resultados fora do prazo", "Ver entregas", "risk", "amber") : ""}${canProjects ? alert("Metas abaixo da curva", model.curves.length, `em ${count(new Set(model.curves.map((item) => item.project.company_id || item.project.id)).size, "cliente")}`, "Ver metas", "goals", "amber") : ""}${canInteractions ? alert("Interações sem resposta", model.unanswered.length, `última mensagem recebida há mais de 48 h${model.unknownConversations ? ` · ${model.unknownConversations} sem identificação suficiente` : ""}`, "Responder", "interactions", "blue") : ""}</div>
     <div class="home-day-summaries">${canDeals ? summary("Receita ganha · total", esc(brl(model.revenue)), count(model.won.length, "negócio ganho registrado", "negócios ganhos registrados"), "won") : ""}${canDeals ? summary("Pipeline aberto", count(model.openDeals.length, "negócio"), esc(brl(model.pipelineAmount)), "deals") : ""}${canProjects ? summary("Entregas ativas", model.projects.length, mine ? "sob sua responsabilidade ou com suas atividades" : "em acompanhamento pela equipe", "projects") : ""}${canTasks ? summary("Concluídas na semana", model.completed.length, "tarefas com término real nesta semana", "completed") : ""}</div>
     <div class="home-day-main">${tasksHtml}${healthHtml}</div><div class="home-day-bottom">${funnelHtml}${curvesHtml}${workloadHtml}</div>${!canTasks && !canProjects && !canDeals && !canInteractions ? '<p class="home-day-empty">Nenhum módulo de acompanhamento liberado para este perfil.</p>' : ""}</div>`;
@@ -10080,8 +10080,6 @@ function render() {
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
   const logIcon = document.querySelector("#floating-log > span");
   if (logIcon) logIcon.innerHTML = window.CRM_NAV_ICONS?.log || "";
-  const helpIcon = document.querySelector("#floating-help > span");
-  if (helpIcon) helpIcon.innerHTML = window.CRM_NAV_ICONS?.help || "?";
   const versionButton = document.querySelector('[data-action="updates"]');
   if (versionButton) {
     const label = versionButton.querySelector(".nav-label") || versionButton;
@@ -11849,6 +11847,40 @@ let helpObserver = null;
 let helpReturnFocus = null;
 const helpMobileMedia = window.matchMedia("(max-width: 767px)");
 let helpInertSurfaces = [];
+function syncToolbarHelp() {
+  document.querySelectorAll("#data-btn,.project-data-btn,.registration-data-btn,.tools-data-btn,.social-data-btn").forEach((dataButton) => {
+    if (dataButton.nextElementSibling?.classList.contains("module-help-btn")) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn module-help-btn";
+    button.dataset.action = "help";
+    button.title = "Ajuda do módulo";
+    button.setAttribute("aria-label", button.title);
+    dataButton.after(button);
+  });
+  document.querySelectorAll(".delivery-overview-heading,.project-data-header").forEach((heading) => {
+    if (heading.querySelector(".module-help-btn")) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn module-help-btn";
+    button.dataset.action = "help";
+    button.title = "Ajuda do módulo";
+    button.setAttribute("aria-label", button.title);
+    heading.appendChild(button);
+  });
+  document.querySelectorAll(".module-help-btn").forEach((button) => {
+    if (!button.dataset.helpWired) {
+      button.dataset.helpWired = "true";
+      button.innerHTML = window.CRM_NAV_ICONS?.help || "?";
+      button.addEventListener("click", () => openHelpModal(button.dataset.helpPage || currentHelpContext()));
+    }
+    const open = Boolean(document.getElementById("help-panel"));
+    button.classList.toggle("help-active", open);
+    button.setAttribute("aria-expanded", String(open));
+    if (open) button.setAttribute("aria-controls", "help-panel");
+    else button.removeAttribute("aria-controls");
+  });
+}
 function syncHelpMobileSurfaces() {
   helpInertSurfaces.forEach(([element, inert]) => { element.inert = inert; });
   helpInertSurfaces = [];
@@ -13749,9 +13781,10 @@ document.getElementById("mobile-module-track")?.addEventListener("keydown", (eve
 window.addEventListener("resize", revealMobileModule, { passive: true });
 document.getElementById("mobile-more")?.addEventListener("click", () => openMobileMenu());
 document.getElementById("mobile-filter-btn")?.addEventListener("click", openMobileFilters);
-const mobileNavigationObserver = new MutationObserver(syncMobileNavigation);
+const mobileNavigationObserver = new MutationObserver(() => { syncMobileNavigation(); syncToolbarHelp(); });
 ["main", "modal-root"].forEach((id) => { const surface = document.getElementById(id); if (surface) mobileNavigationObserver.observe(surface, { childList: true, subtree: true }); });
 syncMobileNavigation();
+syncToolbarHelp();
 let socialChannelProfilesLoaded = false;
 
 function normalizeSocialUsername(value, channel) {

@@ -123,7 +123,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       assert.equal(await page.locator('#app-sidebar [data-action="log"],#app-footer [data-action="log"]').count(), 0);
       const log = await page.locator('#floating-log').boundingBox();
-      assert.ok(log && log.x + log.width === width && Math.abs(log.y + log.height / 2 - 450) < 1);
+      if (width >= 768) assert.ok(log && log.x + log.width === width && Math.abs(log.y + log.height / 2 - 450) < 1);
+      else assert.equal(log, null);
       if (width >= 768) {
         assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
         assert.deepEqual(await page.evaluate(() => sidebarSubmodules('registrations').map((item) => item.id)), ['products', 'pipelines', 'users', 'emails']);

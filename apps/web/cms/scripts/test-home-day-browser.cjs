@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
 (async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, reducedMotion: 'reduce' });
+    const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, reducedMotion: 'reduce', hasTouch: true });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     if (process.env.CMS_TEST_URL) {
@@ -58,6 +58,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.ok(await page.locator('.home-day-bottom [role="progressbar"]').count());
     await page.screenshot({ path: path.join(os.tmpdir(), 'home-day-bottom.png') });
     await page.locator('.home-day-heading').scrollIntoViewIfNeeded();
+    const touch = await page.context().newCDPSession(page);
     for (const mode of ['top', 'sidebar']) {
       await page.evaluate((mode) => saveNavigationPreference({ mode }), mode);
       for (const width of [1920, 1440, 1024, 768, 390, 320]) {
@@ -65,6 +66,30 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${mode} ${width}: document overflow`);
         const overflow = await page.locator('.home-day-panel,.home-day-alert,.home-day-summary,.home-day-task,.home-day-panel-head').evaluateAll((els) => els.filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.className));
         assert.deepEqual(overflow, [], `${mode} ${width}: internal overflow`);
+        assert.equal(await page.locator('.home-help-button').isVisible(), true);
+        if (width < 768) {
+          assert.equal(await page.locator('#floating-log').isVisible(), false);
+          await page.locator('#main').evaluate((main) => { main.scrollTop = 0; });
+          assert.equal(await page.locator('#main').evaluate((main) => getComputedStyle(main).overflowY), 'auto');
+          const bounds = await page.locator('#main').boundingBox();
+          const x = bounds.x + 24, startY = bounds.y + bounds.height - 80;
+          await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: startY }] });
+          for (let y = startY - 20; y > bounds.y + 120; y -= 30) {
+            await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y }] });
+          }
+          await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+          await page.waitForFunction(() => document.getElementById('main').scrollTop > 100);
+          await page.locator('#main').evaluate((main) => { main.scrollTop = main.scrollHeight; });
+          assert.equal(await page.locator('.home-day-bottom').evaluate((bottom) => {
+            const main = document.getElementById('main').getBoundingClientRect();
+            return bottom.getBoundingClientRect().bottom <= main.bottom + 1;
+          }), true, `${mode} ${width}: final Home section is reachable`);
+          await page.screenshot({ path: path.join(os.tmpdir(), `home-scroll-bottom-${mode}-${width}.png`) });
+          await page.locator('#main').evaluate((main) => { main.scrollTop = 0; });
+          await page.locator('.home-help-button').click();
+          assert.equal(await page.evaluate(() => helpContextId), 'home');
+          await page.locator('#help-close').click();
+        }
         await page.screenshot({ path: path.join(os.tmpdir(), `home-day-${mode}-${width}.png`), fullPage: false });
       }
     }
