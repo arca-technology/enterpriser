@@ -28,7 +28,7 @@ await mkdir(path.join(root, "public", "legacy"), { recursive: true });
 const iconNodes = { contacts: UsersRound, companies: Building2, conversations: MessagesSquare, deals: BriefcaseBusiness, projects: Package, activities: ListChecks,
   log: Logs, help: CircleHelp, registrations: Database, tools: Wrench, social: Globe, updates: History,
   products: Package, pipelines: GitBranch, users: UsersRound, goals: Target, objectives: Flag,
-  files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2, more: EllipsisVertical, chevronRight: ChevronRight };
+  files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2, cms: BriefcaseBusiness, more: EllipsisVertical, chevronRight: ChevronRight };
 const escapeAttribute = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const navigationIcons = Object.fromEntries(Object.entries(iconNodes).map(([key, nodes]) => [key,
   `<svg viewBox="0 0 24 24" aria-hidden="true">${nodes.map(([tag, attributes]) => `<${tag} ${Object.entries(attributes).map(([name, value]) => `${name}="${escapeAttribute(value)}"`).join(" ")}/>`).join("")}</svg>`

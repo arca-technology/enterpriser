@@ -141,7 +141,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.evaluate(() => {
       const oldCan = currentUserCan;
       currentUserCan = (id) => id === 'emails';
-      try { openSidebarSubmodules(document.querySelector('#app-sidebar [data-action="tools"]')); }
+      try { openSidebarSubmodules(document.querySelector('#app-sidebar [data-action="registrations"]')); }
       finally { currentUserCan = oldCan; }
     });
     assert.deepEqual(await page.locator('#sidebar-submodules [data-section]').evaluateAll((buttons) => buttons.map((button) => button.dataset.section)), ['emails']);

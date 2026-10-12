@@ -20,14 +20,15 @@
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg); color:var(--text);
-    font-family:var(--font-urbanist),Urbanist,sans-serif;
+    font-family:var(--font-inter,Inter),Arial,sans-serif;
     font-size:13px; display:flex; flex-direction:column; min-height:100vh}
+  button,input,select,textarea{font-family:inherit}
 
   header{position:relative;display:flex;align-items:center;gap:20px;background:var(--panel);
     border-bottom:1px solid var(--border);padding:0 10px;height:49px;flex:0 0 49px;box-sizing:border-box}
   body.light header{box-shadow:0 1px 5px rgba(26,43,68,.08)}
   .brand-home{min-width:190px;border:0;background:transparent;color:var(--text);cursor:pointer;padding:8px 0;
-    text-align:left;font:inherit;font-size:13px;font-weight:800;letter-spacing:.2px;white-space:nowrap}
+    text-align:left;font:inherit;font-family:var(--font-urbanist,Urbanist),Arial,sans-serif;font-size:13px;font-weight:800;letter-spacing:0;white-space:nowrap}
   .brand-home span{color:var(--blue)}
   .brand-home:hover,.brand-home.active{color:var(--blue)}
   nav{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:5px;overflow-x:auto}
@@ -2030,6 +2031,12 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .pm-mode-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;flex-shrink:0;min-width:96px;height:30px;padding:0 8px;font-size:11px}
   .pm-mode-button[hidden]{display:none}
   .pm-mode-button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .registration-brand{font-family:var(--font-urbanist,Urbanist),Arial,sans-serif;font-weight:800}
+  .sidebar-system{display:none}
+  body.navigation-sidebar .sidebar-head{height:68px;min-height:68px;gap:1px}
+  body.navigation-sidebar .sidebar-system{display:flex;align-items:center;justify-content:center;gap:3px;color:var(--muted);font-size:8px;font-weight:700;line-height:16px}
+  .sidebar-system svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+  .data-table[data-tab="goals"] .main-result-name,.data-table[data-tab="objectives"] .main-result-name{left:72px}
   .sb-center:has(.pm-mode-button:not([hidden])),.registration-toolbar-center:has(.pm-mode-button){gap:8px}
   .sb-center:has(.pm-mode-button:not([hidden])) .search,.registration-toolbar-center:has(.pm-mode-button) .search{width:0;min-width:0;flex:1}
   .sb-center:has(.pm-mode-button:not([hidden])) .plus,.registration-toolbar-center:has(.pm-mode-button) .plus{position:static;flex-shrink:0}
@@ -2110,7 +2117,7 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </form>
   </div>
   <aside id="app-sidebar" aria-label="Navegação principal" hidden>
-    <div class="sidebar-head"></div>
+    <div class="sidebar-head"><span class="sidebar-system" aria-label="Sistema CMS"><span class="sidebar-system-icon" aria-hidden="true"></span><span>CMS</span></span></div>
     <div class="sidebar-modules"></div>
     <div class="sidebar-support" aria-label="Ajuda e histórico"></div>
     <div class="sidebar-bottom"></div>

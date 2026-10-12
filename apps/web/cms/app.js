@@ -333,7 +333,9 @@ function checklistProgress(value) {
 }
 const ENTITY_LABEL = { home: "Home", contacts: "Pessoas", companies: "Empresas", conversations: "Interações", deals: "Negócios", products: "Produtos", projects: "Entregas", activities: "Tarefas", goals: "Metas", objectives: "Objetivos" };
 const PM_TEMPLATE_MODULE = { activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates" };
-const REGISTRATION_SECTIONS = ["products", "pipelines", "users"];
+const REGISTRATION_SECTIONS = ["products", "pipelines", "users", "emails"];
+const TOOL_SECTIONS = [["files", "Arquivos"], ["processes", "Processos"], ["documents", "Documentos"], ["tables", "Planilhas"]];
+const MODULE_COUNT_LABEL = { ...ENTITY_LABEL, pipelines: "Pipelines", users: "Usuários", emails: "Emails", files: "Arquivos", processes: "Processos", documents: "Documentos", tables: "Planilhas" };
 
 function mainModuleCan(tab, action = "view") {
   if (!PM_TEMPLATE_MODULE[tab]) return currentUserCan(tab, action);
@@ -437,12 +439,12 @@ const PERMISSION_GROUPS = [
     ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"]
   ] },
   { label: "Cadastros", modules: [
-    ["products", "Produtos"], ["pipelines", "Pipeline"], ["users", "Usuários"],
+    ["products", "Produtos"], ["pipelines", "Pipeline"], ["users", "Usuários"], ["emails", "Emails"],
     ["activityTemplates", "Tarefas"], ["goalTemplates", "Metas"], ["objectiveTemplates", "Objetivos"]
   ] },
   { label: "Ferramentas", modules: [
-    ["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"],
-    ["documents", "Documentação"], ["tables", "Tabelas"]
+    ["files", "Arquivos"], ["processes", "Processos"],
+    ["documents", "Documentos"], ["tables", "Planilhas"]
   ] },
   { label: "Social", modules: [
     ["facebook", "Facebook"], ["instagram", "Instagram"], ["linkedin", "LinkedIn"],
@@ -450,7 +452,7 @@ const PERMISSION_GROUPS = [
   ] }
 ];
 const REGISTRATION_PERMISSION_MODULE = {
-  products: "products", pipelines: "pipelines", users: "users",
+  products: "products", pipelines: "pipelines", users: "users", emails: "emails",
   activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates"
 };
 function defaultUserPermissions() {
@@ -2927,6 +2929,7 @@ function applyNavigationPreference() {
   const header = document.getElementById("app-header");
   if (!sidebar || !tabs || !header) return;
   const lateral = navigationPreference.mode === "sidebar";
+  sidebar.querySelector(".sidebar-system-icon").innerHTML = window.CRM_NAV_ICONS?.cms || "";
   document.body.classList.toggle("navigation-sidebar", lateral);
   document.body.classList.toggle("navigation-collapsed", lateral && navigationPreference.collapsed);
   closeMobileNavigation();
@@ -2975,7 +2978,7 @@ function closeMobileNavigation() {
 function sidebarSubmodules(action) {
   if (action === "projects" && document.body.classList.contains("sidebar-delivery-open")) return [...document.querySelectorAll('.sidebar-module [data-project-section]')].map((button) => ({ id: button.dataset.projectSection, label: button.textContent.trim(), permission: "projects" })).concat([{ id: "back", label: "Voltar para Entregas", permission: "projects" }]);
   if (action === "registrations") return REGISTRATION_SECTIONS.map((id) => ({ id, label: REGISTRATION_LABEL[id], permission: REGISTRATION_PERMISSION_MODULE[id] }));
-  if (action === "tools") return [["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].map(([id, label]) => ({ id, label, permission: id }));
+  if (action === "tools") return TOOL_SECTIONS.map(([id, label]) => ({ id, label, permission: id }));
   if (action === "social") return Object.entries(SOCIAL_MODULE_LABELS).map(([id, label]) => ({ id, label, permission: id }));
   return [];
 }
@@ -3060,7 +3063,7 @@ let state = {
   selectedConversations: new Set(),
   bulkSelections: {
     contacts: new Set(), companies: new Set(), deals: new Set(), products: new Set(),
-    projects: new Set(), activities: new Set()
+    projects: new Set(), activities: new Set(), goals: new Set(), objectives: new Set()
   },
   pages: { contacts: 1, companies: 1, conversations: 1, deals: 1, products: 1, projects: 1, activities: 1, goals: 1, objectives: 1 },
   pageSize: 50, kanbanPipelineId: null, calendarCursor: null
@@ -3722,7 +3725,7 @@ function renderTable(c) {
     ? allRows.filter((row) => pageClientNames.has(String(row.client_name || "Sem cliente")))
     : paginated ? allRows.slice(pageStart, currentPage * state.pageSize) : allRows;
   const filters = tabFilters();
-  const selectable = ["conversations", "contacts", "companies", "deals", "products", "projects", "activities"].includes(state.tab);
+  const selectable = ["conversations", "contacts", "companies", "deals", "products", "projects", "activities", "goals", "objectives"].includes(state.tab);
   const selectedSet = state.tab === "conversations" ? state.selectedConversations : state.bulkSelections[state.tab];
   const rowKey = pk(state.tab);
   const selectedVisible = selectable ? rows.filter((r) => selectedSet.has(String(r[rowKey]))) : [];
@@ -3811,7 +3814,7 @@ function renderTable(c) {
   const pagination = paginated ? `<div class="table-pagination">
     <span>${paginationLength ? groupByClient
       ? `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength} clientes · ${allRows.length} tarefas`
-      : `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength}` : "0 registros"}</span>
+      : `${pageStart + 1}-${Math.min(currentPage * state.pageSize, paginationLength)} de ${paginationLength} ${MODULE_COUNT_LABEL[state.tab]}` : `0 ${MODULE_COUNT_LABEL[state.tab]}`}</span>
     <div><button class="btn" id="page-prev"${currentPage <= 1 ? " disabled" : ""}>‹</button><span>Página ${currentPage} de ${totalPages}</span><button class="btn" id="page-next"${currentPage >= totalPages ? " disabled" : ""}>›</button></div>
   </div>` : "";
   const emptyColspan = cols.length + (selectable ? 1 : 0) + 2;
@@ -5335,7 +5338,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("pa-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field task-form-wide"><label>Depende de</label>${multiPickerHtml("pa-dependencies", dependencyOptions, selectedDependencies, "Selecionar dependências")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
-      <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
+      <div class="field"><label>Planilhas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar planilhas")}</div>
     </div>
     <div class="modal-foot">${editing && !productActivityParentGroupId ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
@@ -6065,7 +6068,7 @@ function renderTaskTable(tasks) {
       <th class="project-task-name-col">Tarefa</th><th>Origem</th><th>Prioridade</th><th class="compact-multi-cell">Depende de</th><th>Informação</th><th>Grupo</th><th>Subgrupo</th><th>Setor</th><th>Subsetor</th><th>Módulo</th><th>Submódulo</th><th>Categoria</th><th>Canal</th><th>Tipo</th><th>Recorrência</th><th>Dias úteis</th><th>Checklist</th><th>Subtarefas</th><th>Objetivo</th><th class="compact-multi-cell">Responsáveis</th><th>Referências</th><th>Início previsto</th><th>Término previsto</th><th>Início real</th><th>Término real</th><th>Status</th><th>Prazo</th><th>Comentários</th>
       <th>Cliente</th><th>Produto</th><th>Requer no Setup</th><th>Prazo sugerido</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="33" class="empty">Sem tarefas.</td></tr>'}</tbody></table>
-  </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length}` : "0 registros"}</span>
+  </div><div class="table-pagination"><span>${tasks.length ? `${start + 1}-${Math.min(start + projectBoardState.pageSize, tasks.length)} de ${tasks.length} Tarefas` : "0 Tarefas"}</span>
     <div><button class="btn" id="project-page-prev"${projectBoardState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${projectBoardState.page} de ${totalPages}</span><button class="btn" id="project-page-next"${projectBoardState.page >= totalPages ? " disabled" : ""}>›</button></div>
   </div></div>`;
 }
@@ -7016,7 +7019,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       <div class="field"><label>Responsáveis</label>${multiPickerHtml("project-task-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Cargos responsáveis</label>${multiPickerHtml("project-task-assignee-job-titles", assigneeJobTitleOptions(), selectedJobTitles, "Selecionar cargos")}</div>
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("project-task-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
-      <div class="field"><label>Tabelas de apoio</label>${multiPickerHtml("project-task-tables", taskTableOptions(), selectedTables, "Selecionar tabelas")}</div>
+      <div class="field"><label>Planilhas de apoio</label>${multiPickerHtml("project-task-tables", taskTableOptions(), selectedTables, "Selecionar planilhas")}</div>
       <div class="field"><label>Início previsto</label><input id="project-task-planned-start" type="date" value="${esc(current.planned_start_date || "")}"></div>
       <div class="field"><label>Término previsto</label><input id="project-task-planned-end" type="date" value="${esc(taskPlannedEnd(current) || "")}"></div>
       <div class="field"><label>Início real</label><input id="project-task-actual-start" type="date" value="${esc(current.actual_start_date || "")}"></div>
@@ -9273,7 +9276,7 @@ function render() {
   document.querySelector('[data-action="chat"]')?.toggleAttribute("hidden", !currentUserCanUseChat());
   document.querySelectorAll("#tabs .tab").forEach((tab) => tab.toggleAttribute("hidden", !mainModuleCan(tab.dataset.tab, "view")));
   document.querySelector('[data-action="registrations"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(REGISTRATION_SECTIONS.map((id) => REGISTRATION_PERMISSION_MODULE[id])));
-  document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(["files", "emails", "processes", "documents", "tables"]));
+  document.querySelector('[data-action="tools"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(TOOL_SECTIONS.map(([id]) => id)));
   document.querySelector('[data-action="social"]')?.toggleAttribute("hidden", !hasAnyModuleAccess(Object.keys(SOCIAL_MODULE_LABELS)));
   const hasConversationSelection = state.selectedConversations.size > 0;
   const isHome = state.tab === "home";
@@ -9338,7 +9341,7 @@ function render() {
   } else {
   const total = catalog ? (state.tab === "activities" ? loadProductActivities() : state.tab === "goals" ? loadProductGoals() : loadProductObjectives()).length : (cache[state.tab] || []).length;
   const shown = rowsFor(state.tab, cache).length;
-  document.getElementById("count").textContent = shown === total ? `${total} itens` : `${shown}/${total}`;
+  document.getElementById("count").textContent = `${shown === total ? total : `${shown}/${total}`} ${MODULE_COUNT_LABEL[state.tab]}`;
   }
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === state.tab));
   document.getElementById("brand-home")?.classList.toggle("active", isHome);
@@ -10762,7 +10765,7 @@ function openSettings() {
 // submódulos de Cadastros, Ferramentas e Social na barra de ferramentas.
 // Cada página tem apresentação e seções com passo a passo, recursos e dicas.
 const HELP_HEADER_SLOTS = [["contacts", "Pessoas"], ["companies", "Empresas"], ["conversations", "Interações"], ["deals", "Negócios"], ["projects", "Entregas"], ["activities", "Tarefas"], ["goals", "Metas"], ["objectives", "Objetivos"]];
-const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentação"], ["tool-tables", "Tabelas"], ["social", "Social"]];
+const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pipeline"], ["reg-users", "Usuários"], ["tool-files", "Arquivos"], ["tool-emails", "Emails"], ["tool-processes", "Processos"], ["tool-documents", "Documentos"], ["tool-tables", "Planilhas"], ["social", "Social"]];
 const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
 const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
@@ -10896,7 +10899,7 @@ const HELP_PAGES = {
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
     lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
     sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
-  "tool-emails": { kicker: "Ferramentas", title: "Emails", path: ["Rodapé", "Ferramentas", "Emails"],
+  "tool-emails": { kicker: "Cadastros", title: "Emails", path: ["Rodapé", "Cadastros", "Emails"],
     lead: "Contas criadas automaticamente para as entregas no domínio <b>@ecommerce365.com.br</b>.",
     sections: [{ title: "Usar", cards: [["Senha", "Pode ser revelada ou copiada. Fica criptografada no banco."], ["Busca", "Filtre por entrega, cliente ou endereço."]] }] },
   "tool-processes": { kicker: "Ferramentas", title: "Processos", path: ["Rodapé", "Ferramentas", "Processos"],
@@ -10906,10 +10909,10 @@ const HELP_PAGES = {
         tips: ["Escolher uma etapa anterior como próxima cria um retrabalho (loop)."] },
       { title: "Fluxo BPMN", cards: [["Símbolos", "Início no círculo verde, fim no círculo vermelho, decisões em losango e setas com o rótulo das saídas."], ["Raias", "No botão à direita do painel: Responsável, Sistema ou Módulo (agrupado por Submódulo)."], ["Card da etapa", "Sistema na vertical à esquerda, módulo/submódulo acima do nome. ⓘ (ao lado das raias) mostra também os detalhes da etapa no próprio card."], ["Controles", "⇆/⇅ orientação, zoom, ✋ mãozinha e ⛶ tela cheia no painel do canto."], ["Exportar", "Em tela cheia aparecem PDF e PNG, com o fluxo inteiro em fundo branco."], ["Editar", "Clique na etapa para ver os detalhes; <b>Editar processo</b> abre o formulário por cima do fluxo e, ao salvar, ele é redesenhado."]] }
     ] },
-  "tool-documents": { kicker: "Ferramentas", title: "Documentação", path: ["Rodapé", "Ferramentas", "Documentação"],
+  "tool-documents": { kicker: "Ferramentas", title: "Documentos", path: ["Rodapé", "Ferramentas", "Documentos"],
     lead: "Documentos em slides com blocos, formatação, cores, orientação e breadcrumb.",
     sections: [{ title: "Criar um documento", steps: ["Informe Categoria, Canal, Módulo, Submódulo e Tipo.", "O nome é montado sozinho: <b>CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | TIPO</b>.", "Monte os slides com os blocos.", "Use ≡ para agrupar por Categoria + Canal + Módulo."] }] },
-  "tool-tables": { kicker: "Ferramentas", title: "Tabelas", path: ["Rodapé", "Ferramentas", "Tabelas"],
+  "tool-tables": { kicker: "Ferramentas", title: "Planilhas", path: ["Rodapé", "Ferramentas", "Planilhas"],
     lead: "Tabelas personalizadas com abas, que podem ser referenciadas nas tarefas.",
     sections: [
       { title: "Estrutura e nome", steps: ["Na barra da tabela preencha Categoria, Canal, Módulo, Submódulo e Nome.", "Marque <b>Usar como nome do arquivo</b> para o nome virar CATEGORIA | CANAL | MÓDULO | SUBMÓDULO | NOME.", "Salve."] },
@@ -10952,7 +10955,7 @@ for (const section of ["goals", "objectives"]) {
 
 function currentHelpContext() {
   if (document.getElementById("project-board-root")) return `delivery-${projectBoardState.section || "overview"}`;
-  if (document.getElementById("registrations-root")) return `reg-${registrationsState.section}`;
+  if (document.getElementById("registrations-root")) return registrationsState.section === "emails" ? "tool-emails" : `reg-${registrationsState.section}`;
   if (document.getElementById("tools-root")) return `tool-${toolsState.section}`;
   if (document.getElementById("social-root")) return "social";
   return HELP_PAGE_BY_MAIN[state.tab] || "home";
@@ -11522,7 +11525,8 @@ const REGISTRATION_LABEL = {
   users: "Usuários",
   activities: "Tarefas",
   goals: "Metas",
-  objectives: "Objetivos"
+  objectives: "Objetivos",
+  emails: "Emails"
 };
 let registrationsState = { section: "products", tables: {} };
 
@@ -12152,6 +12156,13 @@ function renderRegistrationsSection() {
     if (!currentUserCan(permissionModule, "edit")) currentRoot.querySelectorAll(".reg-product-edit,.reg-pipeline-edit,.reg-template-edit,.reg-user-edit").forEach((button) => { button.disabled = true; });
     if (!currentUserCan(permissionModule, "clone")) currentRoot.querySelectorAll(".reg-template-clone").forEach((button) => { button.disabled = true; });
   });
+  if (section === "emails") {
+    root.innerHTML = '<div id="tools-root" class="tools-root"></div>';
+    if (toolsState.section !== "emails") toolsState.search = "";
+    toolsState.section = "emails";
+    renderToolsSection();
+    return;
+  }
   if (section === "products") {
     const rows = cache.products.map((product) => `<tr>
       <td><div class="registrations-product"><strong>${esc(product.name || "—")}</strong><small>${esc(product.description || "Sem descrição")}</small></div></td>
@@ -12163,7 +12174,7 @@ function renderRegistrationsSection() {
         edit: { className: "edit reg-product-edit", attrs: { "data-id": product.id }, title: "Editar produto" }
       })}</td>
     </tr>`).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${cache.products.length} produto(s)</span><button class="btn primary" id="registration-add">+ Produto</button></div>
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${cache.products.length} Produtos</span><button class="btn primary" id="registration-add">+ Produto</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Produto</th><th>Categoria</th><th>Status</th><th>Valor</th><th>Duração</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">Nenhum produto cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", () => openForm("products", null, { returnToRegistrations: "products" }));
     root.querySelectorAll(".reg-product-setup").forEach((button) => button.addEventListener("click", () => openProductActivities(button.dataset.id, { returnToRegistrations: "products" })));
@@ -12177,7 +12188,7 @@ function renderRegistrationsSection() {
       const stages = Array.isArray(pipeline.stages) ? pipeline.stages : [];
       return `<tr><td><strong>${esc(pipeline.name || "—")}</strong></td><td>${stages.length}</td><td>${esc(stages.join(" → ") || "—")}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "reg-pipeline-edit", attrs: { "data-id": pipeline.id }, title: "Editar pipeline" } })}</td></tr>`;
     }).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${pipelines.length}/${MAX_PIPELINES} pipeline(s)</span><button class="btn primary" id="registration-add"${pipelines.length >= MAX_PIPELINES ? " disabled" : ""}>+ Pipeline</button></div>
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${pipelines.length}/${MAX_PIPELINES} Pipelines</span><button class="btn primary" id="registration-add"${pipelines.length >= MAX_PIPELINES ? " disabled" : ""}>+ Pipeline</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Pipeline</th><th>Etapas</th><th>Fluxo</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="4" class="empty">Nenhum pipeline cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -12195,7 +12206,7 @@ function renderRegistrationsSection() {
   if (section === "users") {
     const users = cache.users || [];
     const rows = users.map((user) => `<tr><td><strong>${esc(user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} usuário(s)</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} Usuários</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
       <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
@@ -12674,7 +12685,7 @@ function renderRegistrationPagination(table, total, totalPages) {
   const tableState = registrationTableState();
   const start = total ? (tableState.page - 1) * tableState.pageSize + 1 : 0;
   const end = Math.min(tableState.page * tableState.pageSize, total);
-  footer.innerHTML = `<span>${total ? `${start}-${end} de ${total}` : "0 registros"}</span><div><button class="btn reg-page-prev"${tableState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${tableState.page} de ${totalPages}</span><button class="btn reg-page-next"${tableState.page >= totalPages ? " disabled" : ""}>›</button></div>`;
+  footer.innerHTML = `<span>${total ? `${start}-${end} de ${total}` : "0"} ${MODULE_COUNT_LABEL[registrationsState.section]}</span><div><button class="btn reg-page-prev"${tableState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${tableState.page} de ${totalPages}</span><button class="btn reg-page-next"${tableState.page >= totalPages ? " disabled" : ""}>›</button></div>`;
   footer.querySelector(".reg-page-prev").addEventListener("click", () => { tableState.page -= 1; applyRegistrationTableState(table); });
   footer.querySelector(".reg-page-next").addEventListener("click", () => { tableState.page += 1; applyRegistrationTableState(table); });
 }
@@ -12738,7 +12749,7 @@ function openRegistrationColumnFilter(header, table, key) {
 }
 
 function registrationTemplateTable(singular, count, firstColumn, extraHeaders, rows, colspan, addLabel = firstColumn) {
-  return `<div class="modal-toolbar"><span class="muted">${count} ${singular}(s) cadastrada(s) nos produtos</span><button class="btn primary" id="registration-add">+ ${addLabel}</button></div>
+  return `<div class="modal-toolbar"><span class="muted">${count} ${{ tarefa: "Tarefas", meta: "Metas", objetivo: "Objetivos" }[singular]} nos produtos</span><button class="btn primary" id="registration-add">+ ${addLabel}</button></div>
     <div class="product-activity-list"><table><thead><tr><th>${firstColumn}</th>${extraHeaders}${tableActionsHead()}</tr></thead><tbody>${rows || `<tr><td colspan="${colspan}" class="empty">Nenhum registro cadastrado.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -13519,17 +13530,18 @@ function toolsDisabledFooter() {
 }
 
 function openToolsModal(section = "files") {
-  const available = ["files", "emails", "processes", "documents", "tables"].filter((id) => currentUserCan(id, "view"));
+  if (section === "emails") { openRegistrationsModal("emails"); return; }
+  const available = TOOL_SECTIONS.map(([id]) => id).filter((id) => currentUserCan(id, "view"));
   if (!available.length) { toast("Você não possui acesso às Ferramentas.", true); return; }
   if (!available.includes(section)) section = available[0];
   if (toolsState.section !== section) toolsState.search = "";
   toolsState.section = section;
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Ferramentas">
-    ${[["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${section === id ? " active" : ""}" data-tools-tab="${id}" role="tab">${label}</button>`).join("")}
+    ${TOOL_SECTIONS.filter(([id]) => available.includes(id)).map(([id, label]) => `<button class="modal-header-tab${section === id ? " active" : ""}" data-tools-tab="${id}" role="tab">${label}</button>`).join("")}
   </div>`;
   shell("Ferramentas", `<div id="tools-root" class="tools-root"></div>${toolsDisabledFooter()}`, {
     navigationModule: "tools",
-    navigationTitle: `Ferramentas · ${[["files", "Arquivos"], ["emails", "Emails"], ["processes", "Processos"], ["documents", "Documentação"], ["tables", "Tabelas"]].find(([id]) => id === section)?.[1] || section}`,
+    navigationTitle: `Ferramentas · ${MODULE_COUNT_LABEL[section]}`,
     cls: "full registrations-modal",
     headerCenter,
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
@@ -13567,7 +13579,7 @@ function toolsPaginationHtml(total, section = toolsState.section) {
   const totalPages = Math.max(1, Math.ceil(total / tableState.pageSize));
   const start = total ? (tableState.page - 1) * tableState.pageSize + 1 : 0;
   const end = Math.min(tableState.page * tableState.pageSize, total);
-  return `<div class="table-pagination tools-pagination"><span>${total ? `${start}-${end} de ${total}` : "0 registros"}</span>
+  return `<div class="table-pagination tools-pagination"><span>${total ? `${start}-${end} de ${total}` : "0"} ${MODULE_COUNT_LABEL[section]}</span>
     <div><button class="btn tools-page-prev"${tableState.page <= 1 ? " disabled" : ""}>‹</button><span>Página ${tableState.page} de ${totalPages}</span><button class="btn tools-page-next"${tableState.page >= totalPages ? " disabled" : ""}>›</button></div></div>`;
 }
 
@@ -13591,7 +13603,7 @@ function toolEmailValue(account, key) {
 
 function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlaceholder = "Buscar...") {
   return `<div class="tools-toolbar">
-    <div class="registration-toolbar-left"><span class="registration-toolbar-title">Ferramentas</span><span class="muted">${count} item(ns)</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${toolsState.section === "emails" ? "Cadastros" : "Ferramentas"}</span><span class="muted">${count} ${MODULE_COUNT_LABEL[toolsState.section]}</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search tools-search" placeholder="${esc(searchPlaceholder)}" value="${esc(toolsState.search || "")}">${canAdd ? `<button class="btn primary plus" id="${addId}" title="${esc(addTitle)}">+</button>` : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn tools-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn tools-data-btn" type="button" title="Dados">⬆⬇</button></div>
   </div>`;
@@ -13611,7 +13623,7 @@ function wireToolsToolbar(root) {
     event.stopPropagation();
     openSecondaryColumnManager({
       scope: `tools:${toolsState.section}`,
-      label: toolsState.section === "files" ? "Arquivos" : toolsState.section === "emails" ? "Emails" : toolsState.section === "processes" ? "Processos" : toolsState.section === "documents" ? "Documentação" : "Tabelas",
+      label: MODULE_COUNT_LABEL[toolsState.section],
       definitions: TOOL_COLUMN_DEFS[toolsState.section],
       onChange: renderToolsSection
     });
@@ -13648,7 +13660,7 @@ function openToolsDataMenu(anchor) {
   const panel = document.createElement("div");
   panel.id = "tools-data-dd";
   panel.className = "data-dd";
-  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>Ferramentas</span></div>
+  panel.innerHTML = `<div class="dd-head"><span>Dados</span><span>${toolsState.section === "emails" ? "Cadastros" : "Ferramentas"}</span></div>
     <div class="dd-head"><span>Exportar</span><span>CSV</span></div>
     <button class="dd-menu-btn tools-export-all" type="button">Exportar todas as colunas</button>
     ${toolsState.section === "tables" && currentUserIsAdmin() ? '<div class="dd-head"><span>Importar</span><span>Nova tabela</span></div><button class="dd-menu-btn tools-import-table" type="button">CSV, XLS ou XLSX</button>' : ""}`;
@@ -13705,7 +13717,7 @@ function customTableSheetFromMatrix(matrix, name, index = 0) {
 }
 
 async function importCustomTableFile(file) {
-  if (!requireCurrentUserPermission("tables", "create", "Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "create", "Planilhas")) return;
   const parser = globalThis.XLSX;
   if (!parser?.read || !parser?.utils?.sheet_to_json) {
     toast("O leitor de planilhas ainda não foi carregado. Atualize a página e tente novamente.", true);
@@ -13860,13 +13872,13 @@ function renderSocialSection() {
   const columns = visibleSocialColumns();
   const tableState = socialTableState();
   root.innerHTML = `<div class="tools-toolbar">
-      <div class="registration-toolbar-left"><span class="registration-toolbar-title">Social</span><span class="muted">0 item(ns)</span></div>
+      <div class="registration-toolbar-left"><span class="registration-toolbar-title">Social</span><span class="muted">0 ${esc(SOCIAL_MODULE_LABELS[socialState.section])}</span></div>
       <div class="registration-toolbar-center"><input class="search registration-toolbar-search social-search" placeholder="Buscar..." value="${esc(socialState.search)}"><button class="btn primary plus" type="button" disabled title="Cadastro será definido">+</button></div>
       <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn social-cols-btn" type="button" title="Selecionar colunas">⊞</button><button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button><button class="view" type="button" disabled title="Dashboard" aria-label="Dashboard">${viewButtonInner("dashboard")}</button><button class="btn social-data-btn" type="button" title="Dados">⬆⬇</button></div>
     </div>
     <div class="registration-filter-strip tools-filter-strip"><div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button></div>
     <div class="table-wrap tools-table-wrap"><table><thead><tr>${columns.map((column) => `<th data-social-key="${esc(column.k)}" title="Clique para ordenar.">${esc(column.h)}${tableState.sortKey === column.k ? ` <span class="arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}${tableActionsHead()}</tr></thead><tbody><tr><td colspan="${columns.length + 1}" class="tool-empty">Nenhum registro em ${esc(SOCIAL_MODULE_LABELS[socialState.section])}.</td></tr></tbody></table></div>
-    <div class="table-pagination tools-pagination"><span>0 registros</span><div><button class="btn" disabled>‹</button><span>Página 1 de 1</span><button class="btn" disabled>›</button></div></div>`;
+    <div class="table-pagination tools-pagination"><span>0 ${esc(SOCIAL_MODULE_LABELS[socialState.section])}</span><div><button class="btn" disabled>‹</button><span>Página 1 de 1</span><button class="btn" disabled>›</button></div></div>`;
   root.querySelector(".social-search")?.addEventListener("input", (event) => {
     socialState.search = event.target.value;
   });
@@ -14283,7 +14295,7 @@ const DOCUMENT_BLOCK_TYPES = {
   link: "Link"
 };
 const DOCUMENT_TYPE_LABELS = {
-  documentation: "Documentação",
+  documentation: "Documentos",
   procedure: "Procedimento",
   specification: "Especificação"
 };
@@ -14661,7 +14673,7 @@ function updateToolCustomTableCache(saved) {
 }
 
 function openToolCustomTableEditor(id = null, readOnly = false) {
-  if (!requireCurrentUserPermission("tables", readOnly ? "view" : id ? "edit" : "create", "Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", readOnly ? "view" : id ? "edit" : "create", "Planilhas")) return;
   const source = toolCustomTableRows().find((item) => item.id === id);
   if (id && !source) return;
   const draft = normalizeCustomTable(source || {
@@ -15061,7 +15073,7 @@ function openToolCustomTableEditor(id = null, readOnly = false) {
 }
 
 async function cloneToolCustomTable(id) {
-  if (!requireCurrentUserPermission("tables", "clone", "Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "clone", "Planilhas")) return;
   const source = toolCustomTableRows().find((item) => item.id === id);
   if (!source) return;
   const sheets = source.sheets.map((sourceSheet) => {
@@ -15096,7 +15108,7 @@ async function cloneToolCustomTable(id) {
 }
 
 async function deleteToolCustomTable(id) {
-  if (!requireCurrentUserPermission("tables", "delete", "Tabelas")) return;
+  if (!requireCurrentUserPermission("tables", "delete", "Planilhas")) return;
   const item = toolCustomTableRows().find((table) => table.id === id);
   if (!item || !window.confirm(`Excluir a tabela "${item.name}"?`)) return;
   try {
@@ -15297,7 +15309,7 @@ function openToolDocument(id) {
 }
 
 function openLegacyToolDocumentForm(id = null) {
-  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentação")) return;
+  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentos")) return;
   const current = toolDocumentRows().find((item) => item.id === id) || {};
   let slides = normalizeDocumentSlides(current.slides, current.content, current.title);
   let activeIndex = 0;
@@ -15490,7 +15502,7 @@ function openLegacyToolDocumentForm(id = null) {
 }
 
 function openToolDocumentForm(id = null) {
-  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentação")) return;
+  if (!requireCurrentUserPermission("documents", id ? "edit" : "create", "Documentos")) return;
   const current = toolDocumentRows().find((item) => item.id === id) || {};
   documentationEditorState = {
     id,
@@ -15960,7 +15972,7 @@ function wireDocumentationEditorPage() {
 }
 
 async function cloneToolDocument(id) {
-  if (!requireCurrentUserPermission("documents", "clone", "Documentação")) return;
+  if (!requireCurrentUserPermission("documents", "clone", "Documentos")) return;
   const source = toolDocumentRows().find((item) => item.id === id);
   if (!source) return;
   const slides = normalizeDocumentSlides(source.slides, source.content, source.title).map((page) => ({
@@ -15998,7 +16010,7 @@ async function cloneToolDocument(id) {
 }
 
 async function deleteToolDocument(id) {
-  if (!requireCurrentUserPermission("documents", "delete", "Documentação")) return;
+  if (!requireCurrentUserPermission("documents", "delete", "Documentos")) return;
   const documentItem = toolDocumentRows().find((item) => item.id === id);
   if (!documentItem || !window.confirm(`Excluir a documentação "${documentItem.title}"?`)) return;
   try {
@@ -16394,7 +16406,7 @@ function processFlowSvgMarkup(process, steps) {
     if (meta) parts.push(t(box.x + 36, box.y + 22 + title.length * 13.5 + 2, meta.length > 34 ? `${meta.slice(0, 33)}…` : meta, 9, 500, color.muted));
   });
   parts.push("</g>");
-  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="Urbanist, Arial, Helvetica, sans-serif">${parts.join("")}</svg>`, width, height };
+  return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="Inter, Arial, Helvetica, sans-serif">${parts.join("")}</svg>`, width, height };
 }
 
 async function processFlowPngBlob(process, steps, scale = 2) {

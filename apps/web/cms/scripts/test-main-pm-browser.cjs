@@ -29,7 +29,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.deepEqual(await page.locator('#tabs .nav-label').allTextContents(), ['Pessoas', 'Empresas', 'Interações', 'Negócios', 'Entregas', 'Tarefas', 'Metas', 'Objetivos']);
     assert.equal(await page.locator('#tabs .nav-module-divider').count(), 1);
     await page.evaluate(() => openRegistrationsModal());
-    assert.deepEqual(await page.locator('[data-registration-tab]').allTextContents(), ['Produtos', 'Pipeline', 'Usuários']);
+    assert.deepEqual(await page.locator('[data-registration-tab]').allTextContents(), ['Produtos', 'Pipeline', 'Usuários', 'Emails']);
+    await page.locator('[data-registration-tab="emails"]').click();
+    assert.equal(await page.locator('#registrations-root #tools-root').count(), 1);
+    assert.equal(await page.evaluate(() => currentHelpContext()), 'tool-emails');
+    assert.equal(await page.locator('#tools-root .registration-toolbar-left .muted:not([hidden])').innerText().then((text) => text.endsWith('Emails')), true);
     await page.evaluate(() => closeModal());
     await page.locator('#tabs [data-tab="activities"]').click();
     await page.locator('#new').click();
@@ -69,6 +73,13 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.waitForFunction((section) => (section === 'goals' ? loadDeliveryGoals() : loadDeliveryObjectives()).some((item) => item.name === `Cadastro principal ${section}`), section);
       assert.equal(await page.evaluate((section) => (section === 'goals' ? loadProductGoals() : loadProductObjectives()).find((item) => item.name === `Cadastro principal ${section}`).product_id, section), 'pr2');
       await page.locator('#main [data-pm-mode]').click();
+      assert.equal(await page.locator('#count').innerText(), `1 ${section === 'goals' ? 'Metas' : 'Objetivos'}`);
+      assert.equal(await page.locator('#main thead .select-head').count(), 1);
+      assert.equal(await page.locator('#main thead .expand-head').count(), 1);
+      await page.locator('#select-all-rows').check();
+      assert.equal(await page.locator('#main .row-select:checked').count(), 1);
+      await page.locator('#main .table-bulk-clear').click();
+      assert.equal(await page.locator('#main .row-select:checked').count(), 0);
       assert.equal(await page.locator('#main .record-primary-cell').count(), 1);
       await page.locator('#main .record-primary-cell').click();
       assert.equal(await page.evaluate(() => projectBoardState.section), section);
@@ -115,7 +126,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.ok(log && log.x + log.width === width && Math.abs(log.y + log.height / 2 - 450) < 1);
       if (width >= 768) {
         assert.equal(await page.locator('#app-sidebar #tabs .nav-icon svg').count(), 8);
-        assert.deepEqual(await page.evaluate(() => sidebarSubmodules('registrations').map((item) => item.id)), ['products', 'pipelines', 'users']);
+        assert.deepEqual(await page.evaluate(() => sidebarSubmodules('registrations').map((item) => item.id)), ['products', 'pipelines', 'users', 'emails']);
+        assert.deepEqual(await page.evaluate(() => sidebarSubmodules('tools').map((item) => item.label)), ['Arquivos', 'Processos', 'Documentos', 'Planilhas']);
+        assert.equal(await page.locator('.sidebar-system').innerText(), 'CMS');
+        assert.equal(await page.locator('.sidebar-system-icon svg').count(), 1);
         await page.locator('#new:visible,#registration-add:visible').click();
         assert.equal(await page.locator('.activity-form-drawer').evaluate((el) => el.getBoundingClientRect().left), 64);
         await page.keyboard.press('Escape');

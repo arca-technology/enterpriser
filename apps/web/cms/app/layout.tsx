@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
-import { Urbanist } from "next/font/google";
+import { Inter, Urbanist } from "next/font/google";
 import "./globals.css";
 
 const urbanist = Urbanist({
   subsets: ["latin"],
   display: "swap",
   variable: "--font-urbanist",
+});
+
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
 });
 
 export const metadata: Metadata = {
@@ -15,8 +21,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="pt-BR" className={urbanist.variable}>
-      <body className={urbanist.className}>{children}</body>
+    <html lang="pt-BR" className={`${urbanist.variable} ${inter.variable}`}>
+      <body className={inter.className}>{children}</body>
     </html>
   );
 }
