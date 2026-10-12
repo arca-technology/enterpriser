@@ -1,0 +1,91 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { chromium } = require('playwright');
+const root = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
+const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^startApp\(\);/m, '');
+(async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+    const errors = [], writes = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => { if (request.method() !== 'GET') writes.push(request.url()); });
+    await page.route('**/*', (route) => route.request().url() === 'http://deal-owner.localhost/' ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
+    await page.goto('http://deal-owner.localhost/');
+    await page.evaluate(() => { window.CRM_CONFIG = {}; });
+    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
+    await page.addScriptTag({ content: source });
+    await page.evaluate(async () => {
+      await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin(); loadNavigationPreference();
+      currentProfile = cache.users[0]; state.tab = 'deals'; state.view = 'table'; render();
+    });
+    assert.equal(await page.locator('th[data-k="owner_id"]').innerText(), 'RESPONSÁVEL');
+    assert.ok(await page.locator('td[data-k="owner_id"] .identity-avatar').count() > 0);
+    const initial = await page.evaluate(() => ({ deal: cache.deals[0], users: cache.users.map((u) => ({ id: u.id, name: userDisplayName(u.id) })) }));
+    const next = initial.users.find((u) => u.id !== initial.deal.owner_id);
+    assert.ok(next);
+    await page.evaluate((id) => openForm('deals', id), initial.deal.id);
+    assert.equal(await page.locator('select[data-k="owner_id"]').inputValue(), initial.deal.owner_id);
+    await page.locator('select[data-k="owner_id"]').selectOption(next.id);
+    await page.waitForFunction((id) => document.querySelector('select[data-k="owner_id"]').closest('.identity-select')?.querySelector('.identity-avatar')?.dataset.identityUser === id, next.id);
+    await page.locator('#save').click();
+    await page.waitForFunction(() => !document.getElementById('save'));
+    assert.equal(await page.evaluate((id) => cache.deals.find((d) => d.id === id).owner_id, initial.deal.id), next.id);
+    assert.match(await page.locator('tr').filter({ has: page.locator(`.deal-details-btn[data-id="${initial.deal.id}"]`) }).locator('td[data-k="owner_id"]').innerText(), new RegExp(next.name));
+    await page.evaluate((id) => openForm('deals', id), initial.deal.id);
+    await page.locator('select[data-k="owner_id"]').selectOption('');
+    await page.locator('#save').click();
+    await page.waitForFunction(() => !document.getElementById('save'));
+    assert.equal(await page.evaluate((id) => cache.deals.find((d) => d.id === id).owner_id, initial.deal.id), null);
+    await page.evaluate(() => {
+      DEMO.pipelines[0].name = 'Padrão';
+      cache.users.push({ id: 'retired', full_name: 'Responsável anterior', role: 'collaborator', status: 'inactive' });
+      cache.userById.retired = cache.users.at(-1);
+      cache.users.push({ id: 'external', full_name: 'Cliente externo', role: 'client', status: 'active' });
+      cache.userById.external = cache.users.at(-1);
+      DEMO.deals[0].owner_id = 'retired';
+      cache.deals[0].owner_id = 'retired';
+      openForm('deals', cache.deals[0].id);
+    });
+    assert.equal(await page.locator('select[data-k="owner_id"]').inputValue(), 'retired');
+    assert.equal(await page.locator('select[data-k="owner_id"] option[value="retired"]').count(), 1);
+    await page.locator('#cancel').click();
+    await page.evaluate(() => openForm('deals', null, { defaults: { no_company: true, product_id: cache.products[0].id, contact_id: cache.contacts[0].id } }));
+    assert.equal(await page.locator('select[data-k="owner_id"]').inputValue(), initial.users[0].id);
+    assert.equal(await page.locator('select[data-k="owner_id"] option[value="retired"],select[data-k="owner_id"] option[value="external"]').count(), 0);
+    await page.locator('select[data-k="owner_id"]').selectOption(next.id);
+    await page.locator('#save').click();
+    await page.waitForFunction(() => !document.getElementById('save'));
+    const created = await page.evaluate(() => cache.deals.at(-1));
+    assert.equal(created.owner_id, next.id);
+    assert.equal(created.stage, 'Lead');
+    assert.equal(created.status, 'open');
+    await page.evaluate(() => loadAll());
+    assert.equal(await page.evaluate((id) => cache.deals.find((d) => d.id === id).owner_id, created.id), next.id);
+    assert.equal(await page.evaluate((id) => columns('deals', cache).find((col) => col.k === 'owner_id').csv(id), next.id), next.name);
+    const card = await page.evaluate((id) => dealCardHtml(cache.deals.find((d) => d.id === id), cache), created.id);
+    assert.ok(card.includes('identity-avatar') && card.includes(next.name));
+    assert.equal(await page.evaluate(() => dealOwnerOptions(['missing']).some((option) => option.value === 'missing')), true);
+    assert.ok(await page.evaluate(() => importSpec('deals').columns.some((col) => col.key === 'owner_id')));
+    await page.evaluate(async (ownerId) => {
+      saveConversations([{ id: 'owner-conversion', contact_id: cache.contacts[0].id, contact_name: cache.contacts[0].name, source: 'WhatsApp', owner_id: ownerId }]);
+      await convertImportToDeal('owner-conversion', { noCompany: true, productId: cache.products[0].id });
+    }, next.id);
+    assert.equal(await page.evaluate(() => cache.deals.at(-1).owner_id), next.id);
+    for (const mode of ['top', 'sidebar']) {
+      await page.evaluate((mode) => { saveNavigationPreference({ mode }); openForm('deals', cache.deals.at(-1).id); }, mode);
+      await page.setViewportSize({ width: 390, height: 740 });
+      assert.equal(await page.locator('select[data-k="owner_id"]').isVisible(), true);
+      assert.ok(await page.locator('#save').evaluate((el) => el.getBoundingClientRect().bottom <= innerHeight));
+      await page.screenshot({ path: path.join(os.tmpdir(), `deal-owner-${mode}-mobile.png`) });
+      await page.locator('#cancel').click();
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    assert.deepEqual(writes, []);
+    assert.deepEqual(errors, []);
+    console.log('Deal owner passed: existing field, change/clear/create persistence, historical owners, staff-only choices, avatars, CSV/import, default Lead and responsive drawers.');
+  } finally { await browser.close(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });

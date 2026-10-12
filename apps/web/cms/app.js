@@ -2524,6 +2524,7 @@ function columns(tab, c) {
       { k: "title", h: "Negócio", fmt: (v, row) => esc(c.productById[row.product_id]?.name || v || "—") },
       { k: "company_id", h: "Empresa", fmt: (v, row) => row.no_company ? '<span class="muted">Não possui empresa</span>' : c.companyById[v]?.legal_name || c.companyById[v]?.name || "—" },
       { k: "contact_id", h: "Pessoa", fmt: (v) => esc(c.contactById[v]?.name || "—") },
+      { k: "owner_id", h: "Responsável", fmt: (v) => v ? identityPersonHtml(v) : "—", csv: (v) => v ? userDisplayName(v, c, "—") : "—" },
       { k: "pipeline_id", h: "Pipeline", fmt: (v) => c.pipelineById?.[v]?.name || "—", cls: "muted" },
       { k: "stage", h: "Etapa", fmt: (v) => v ? badge("lead", v) : "—" },
       { k: "status", h: "Status", fmt: (v) => badge(v, STATUS_LABEL[v]) },
@@ -3028,6 +3029,7 @@ function fields(tab, c) {
       { k: "company_id", label: "Empresa", type: "search", options: companyRefOptions(c), placeholder: "Buscar por nome ou CNPJ" },
       { k: "no_company", label: "Não possui empresa", type: "checkbox", embedded: true },
       { k: "contact_id", label: "Contato", type: "select", options: [] },
+      { k: "owner_id", label: "Responsável", type: "select", options: dealOwnerOptions(), def: currentProfile?.id || "", full: true },
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c) },
       { k: "no_product", label: "Não possui produto", type: "checkbox", embedded: true },
       { k: "title", label: "Nome do produto não cadastrado", full: true, placeholder: "Digite o nome do produto" },
@@ -4206,6 +4208,7 @@ function dealCardHtml(d, c) {
   return `<div class="card" data-id="${esc(d.id)}">
       <div class="t">${esc(d.title)}</div>
       <div class="m">${esc(c.companyById[d.company_id]?.legal_name || c.companyById[d.company_id]?.name || "—")}</div>
+      <div class="m">${d.owner_id ? identityPersonHtml(d.owner_id) : '<span class="muted">Sem responsável</span>'}</div>
       <div class="v">${brl(d.amount)}</div></div>`;
 }
 function dealColumnHtml(label, items, c, opts = {}) {
@@ -6274,6 +6277,14 @@ let projectBoardState = { projectId: null, view: "dashboard", section: "overview
 
 function internalAssigneeUser(user) {
   return ["admin", "collaborator"].includes(normalizedProfileRole(user?.role)) && (user?.status || "active") === "active";
+}
+
+function dealOwnerOptions(selected = []) {
+  const options = assigneePickerOptions(selected).filter((option) => option.value !== CLIENT_ASSIGNEE_VALUE);
+  for (const id of normalizeIdList(selected)) {
+    if (!options.some((option) => option.value === id)) options.push({ value: id, label: userDisplayName(id), userId: id });
+  }
+  return options;
 }
 
 function assigneePickerOptions(selected = []) {
@@ -8975,6 +8986,7 @@ function importSpec(tab, c = cache) {
     columns: [
       { key: "company_id", header: "Empresa", type: "company", note: "CNPJ ou nome; vazio = não possui empresa" },
       { key: "contact_id", header: "Contato", type: "contact", note: "Nome ou e-mail da pessoa cadastrada" },
+      { key: "owner_id", header: "Responsável", type: "select", options: () => dealOwnerOptions() },
       { key: "product_id", header: "Produto", type: "select", options: () => refOptions("products", c) },
       { key: "title", header: "Nome do produto não cadastrado", note: "Preencha somente quando não houver produto" },
       { key: "lead_source", header: "Origem do lead", type: "select", options: () => opts(SOURCES) }
@@ -10002,7 +10014,7 @@ async function convertImportToDeal(id, options = null) {
       company_id: options ? options.companyId || null : normalizeIdList(contact.company_ids, contact.company_id)[0] || null,
       no_company: Boolean(options?.noCompany),
       product_id: product?.id || null,
-      owner_id: null,
+      owner_id: row.owner_id || currentProfile?.id || null,
       lead_source: "WhatsApp",
       amount: productStandardPrice(product)
     };
@@ -10471,6 +10483,8 @@ function openForm(tab, id, opts = {}) {
   const record = id ? c[tab].find((r) => r[pk(tab)] === id) : null;
   const fs = fields(tab, c);
   if (tab === "deals") {
+    const ownerField = fs.find((f) => f.k === "owner_id");
+    if (ownerField) ownerField.options = dealOwnerOptions(normalizeIdList([], record?.owner_id || opts.defaults?.owner_id));
     const stageField = fs.find((f) => f.k === "stage");
     if (stageField) stageField.options = pipelineStageOptions(c, record?.pipeline_id);
   }
@@ -10508,8 +10522,9 @@ function openForm(tab, id, opts = {}) {
         <input type="hidden" data-k="${f.k}" value="${esc(val || "")}">
         <datalist id="${listId}">${f.options.map((option) => `<option value="${esc(option.label)}"></option>`).join("")}</datalist>`;
     } else if (f.type === "select") {
+      if (f.k === "owner_id") startIdentityObserver();
       const opts = ['<option value="">—</option>']
-        .concat(f.options.map((o) => `<option value="${esc(o.value)}"${o.value === val ? " selected" : ""}>${esc(o.label)}</option>`));
+        .concat(f.options.map((o) => `<option${o.userId ? ` data-identity-option="${esc(o.userId)}"` : ""} value="${esc(o.value)}"${o.value === val ? " selected" : ""}>${esc(o.label)}</option>`));
       ctrl = `<select data-k="${f.k}"${isLocked ? " disabled" : ""}>${opts.join("")}</select>`;
     } else if (f.type === "checkbox") {
       ctrl = `<input type="checkbox" data-k="${f.k}"${val ? " checked" : ""}${isLocked ? " disabled" : ""}>`;
