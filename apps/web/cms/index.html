@@ -2133,7 +2133,14 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   .conversation-edit-panel>.panel-list,.conversation-edit-panel>.modal-foot{flex:0 0 auto}
   .registration-brand{font-family:var(--font-urbanist,Urbanist),Arial,sans-serif;font-weight:800}
   .sidebar-system{display:none}
-  body.navigation-sidebar .sidebar-head{height:68px;min-height:68px;gap:1px}
+  body.navigation-sidebar #app-sidebar .sidebar-head{height:auto;min-height:0;gap:0;margin-bottom:6px;border:0;align-items:stretch}
+  body.navigation-sidebar .sidebar-brand-slot,body.navigation-sidebar #app-sidebar .sidebar-system,body.navigation-sidebar .sidebar-company-slot{display:flex;align-items:center;justify-content:center;box-sizing:border-box;flex-shrink:0;border-bottom:1px solid var(--border2)}
+  body.navigation-sidebar .sidebar-brand-slot{height:var(--sidebar-brand-height,40px)}
+  body.navigation-sidebar #app-sidebar .sidebar-system,body.navigation-sidebar.sidebar-dense #app-sidebar .sidebar-system{height:var(--sidebar-system-height,20px);min-height:0;overflow:hidden}
+  body.navigation-sidebar .sidebar-company-slot{height:var(--sidebar-company-height,32px)}
+  body.navigation-sidebar #app-sidebar .sidebar-company-logo{width:24px;height:24px;flex-basis:24px;border:0;border-radius:4px;background:transparent}
+  body.navigation-sidebar #app-sidebar .sidebar-company-logo img{padding:0}
+  body.navigation-sidebar.sidebar-dense #app-sidebar .sidebar-head{height:auto;min-height:0;margin-bottom:2px}
   body.navigation-sidebar .sidebar-system{display:flex;align-items:center;justify-content:center;gap:3px;color:var(--muted);font-size:8px;font-weight:700;line-height:16px}
   .sidebar-system svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
   .data-table[data-tab="goals"] .main-result-name,.data-table[data-tab="objectives"] .main-result-name{left:72px}
@@ -2395,7 +2402,11 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     </form>
   </div>
   <aside id="app-sidebar" aria-label="Navegação principal" hidden>
-    <div class="sidebar-head"><span class="sidebar-system" aria-label="Sistema CMS"><span class="sidebar-system-icon" aria-hidden="true"></span><span>CMS</span></span></div>
+    <div class="sidebar-head">
+      <div class="sidebar-brand-slot"></div>
+      <span class="sidebar-system" aria-label="Sistema CMS"><span class="sidebar-system-icon" aria-hidden="true"></span><span>CMS</span></span>
+      <div class="sidebar-company-slot" role="img" aria-label="Logo da empresa"></div>
+    </div>
     <div class="sidebar-modules"><button class="ico sidebar-nav-more" id="sidebar-nav-more" type="button" title="Módulos" aria-label="Módulos" aria-haspopup="menu" aria-expanded="false" hidden></button></div>
     <div class="sidebar-support" aria-label="Versão do aplicativo"></div>
     <div class="sidebar-bottom"></div>

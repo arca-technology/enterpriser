@@ -3195,6 +3195,12 @@ function queueIdentityAvatars() {
   identityFrame = requestAnimationFrame(() => { identityFrame = 0; hydrateIdentityAvatars(); });
 }
 function hydrateIdentityAvatars() {
+  const companySlot = document.querySelector(".sidebar-company-slot");
+  if (companySlot) {
+    const label = workspaceIdentityReady ? workspaceIdentity.company_name || "Empresa" : "Empresa";
+    companySlot.title = label;
+    companySlot.setAttribute("aria-label", `Logo de ${label}`);
+  }
   document.querySelectorAll("select option[data-identity-option]").forEach((option) => {
     const select = option.closest("select");
     if (select.dataset.identitySelect) return;
@@ -3475,7 +3481,13 @@ function applyNavigationPreference() {
   const footerModules = document.querySelector("#app-footer > .foot-right,#app-sidebar .foot-right");
   footerModules.querySelectorAll("[aria-haspopup]").forEach((button) => button.setAttribute("aria-haspopup", lateral ? "menu" : "dialog"));
   if (lateral) {
-    sidebar.querySelector(".sidebar-head").prepend(brand);
+    sidebar.querySelector(".sidebar-brand-slot").appendChild(brand);
+    const company = sidebar.querySelector(".sidebar-company-slot");
+    if (!company.firstElementChild) {
+      company.innerHTML = `<span class="identity-avatar sidebar-company-logo" data-identity-user="" aria-hidden="true">${window.CRM_NAV_ICONS?.companies || ""}</span>`;
+      startIdentityObserver();
+    }
+    queueIdentityAvatars();
     sidebar.querySelector(".sidebar-modules").append(tabs, footerModules);
     sidebar.querySelector(".sidebar-bottom").appendChild(actions);
     const support = sidebar.querySelector(".sidebar-support");
@@ -3600,6 +3612,25 @@ function queueSidebarFit() {
   if (sidebarFitFrame) return;
   sidebarFitFrame = requestAnimationFrame(() => { sidebarFitFrame = 0; fitSidebarLayout(); });
 }
+function alignSidebarSlots(sidebar) {
+  const host = document.querySelector("#modal-root > .sidebar-module-overlay") || document;
+  const visible = (selector) => [...host.querySelectorAll(selector)].find((element) => element.getClientRects().length);
+  const toolbar = visible(".subbar,.registration-toolbar,.tools-toolbar,.project-data-toolbar");
+  const strip = visible(".filter-strip,.registration-filter-strip");
+  const header = visible("thead");
+  const top = sidebar.getBoundingClientRect().top;
+  const toolbarBottom = toolbar ? toolbar.getBoundingClientRect().bottom : top + 40;
+  const headerTop = header?.querySelector("th")?.getBoundingClientRect().top;
+  const sizes = {
+    "--sidebar-brand-height": Math.max(40, toolbarBottom - top),
+    "--sidebar-system-height": headerTop != null ? Math.max(0, headerTop - toolbarBottom) : (strip?.getBoundingClientRect().height || 20),
+    "--sidebar-company-height": header?.getBoundingClientRect().height || 32
+  };
+  for (const [property, height] of Object.entries(sizes)) {
+    const value = `${height}px`;
+    if (sidebar.style.getPropertyValue(property) !== value) sidebar.style.setProperty(property, value);
+  }
+}
 function fitSidebarLayout() {
   const sidebar = document.getElementById("app-sidebar");
   if (!sidebar) return;
@@ -3612,6 +3643,7 @@ function fitSidebarLayout() {
   setHidden(utilityMore, true);
   setHidden(navMore, true);
   if (navigationPreference.mode !== "sidebar" || !sidebar?.clientHeight) return;
+  alignSidebarSlots(sidebar);
   const modes = [[], ["sidebar-utilities-grouped"], ["sidebar-compact", "sidebar-utilities-grouped"],
     ["sidebar-compact", "sidebar-dense", "sidebar-utilities-minimal"],
     ["sidebar-compact", "sidebar-dense", "sidebar-utilities-minimal", "sidebar-nav-grouped"]];
@@ -3686,6 +3718,11 @@ function initSidebarResponsive() {
   if (typeof ResizeObserver !== "undefined") new ResizeObserver(queueSidebarFit).observe(sidebar);
   sidebarFitObserver = new MutationObserver(queueSidebarFit);
   sidebarFitObserver.observe(sidebar, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  const contentObserver = new MutationObserver(queueSidebarFit);
+  ["main", "modal-root"].forEach((id) => {
+    const host = document.getElementById(id);
+    if (host) contentObserver.observe(host, { childList: true, subtree: true });
+  });
   queueSidebarFit();
 }
 
@@ -5618,6 +5655,11 @@ function productActivityIdentity(item) {
     .join("|");
 }
 
+function productResultIdentity(item) {
+  return JSON.stringify([item?.category, item?.channel, item?.name]
+    .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")));
+}
+
 function renderProductActivityChecklistEditor() {
   const root = document.getElementById("pa-checklist");
   if (!root) return;
@@ -5857,12 +5899,14 @@ async function saveProductObjective() {
   if (productObjectiveSavePending) return;
   const name = document.getElementById("po-name").value.trim();
   if (!name) { toast("Informe o objetivo.", true); return; }
+  const category = document.getElementById("po-category").value.trim();
+  const channel = document.getElementById("po-channel").value.trim();
   const rows = loadProductObjectives();
   const current = rows.find((item) => item.id === productActivityState.objectiveEditId);
   const duplicate = rows.find((item) => item.id !== current?.id
     && item.product_id === productActivityState.productId
-    && String(item.name || "").trim().toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
-  if (duplicate) { toast("Já existe um objetivo com este nome neste produto.", true); return; }
+    && productResultIdentity(item) === productResultIdentity({ name, category, channel }));
+  if (duplicate) { toast("Já existe um objetivo com a mesma categoria, canal e nome neste produto.", true); return; }
   const recordId = current?.id || crypto.randomUUID();
   const dependencyObjectiveIds = multiPickerValues("po-objective-dependencies");
   const dependencyActivityIds = multiPickerValues("po-activity-dependencies");
@@ -5878,8 +5922,8 @@ async function saveProductObjective() {
     name,
     completion_criteria: document.getElementById("po-criteria").value.trim(),
     comments: document.getElementById("po-comments").value.trim(),
-    category: document.getElementById("po-category").value.trim(),
-    channel: document.getElementById("po-channel").value.trim(),
+    category,
+    channel,
     notes: document.getElementById("po-notes").value.trim(),
     default_owner_id: assignees.ids[0] || null,
     default_assignee_ids: assignees.ids,
@@ -6054,12 +6098,14 @@ async function saveProductGoal() {
   const metric = document.getElementById("pg-metric").value.trim();
   const targetValue = document.getElementById("pg-target").value;
   if (!name || !metric || targetValue === "") { toast("Informe a meta, o indicador e o valor-alvo.", true); return; }
+  const category = document.getElementById("pg-category").value.trim();
+  const channel = document.getElementById("pg-channel").value.trim();
   const rows = loadProductGoals();
   const current = rows.find((item) => item.id === productActivityState.goalEditId);
   const duplicate = rows.find((item) => item.id !== current?.id
     && item.product_id === productActivityState.productId
-    && String(item.name || "").trim().toLocaleLowerCase("pt-BR") === name.toLocaleLowerCase("pt-BR"));
-  if (duplicate) { toast("Já existe uma meta com este nome neste produto.", true); return; }
+    && productResultIdentity(item) === productResultIdentity({ name, category, channel }));
+  if (duplicate) { toast("Já existe uma meta com a mesma categoria, canal e nome neste produto.", true); return; }
   const recordId = current?.id || crypto.randomUUID();
   const dependencyGoalIds = multiPickerValues("pg-goal-dependencies");
   const dependencyActivityIds = multiPickerValues("pg-activity-dependencies");
@@ -6078,8 +6124,8 @@ async function saveProductGoal() {
     target_value: Number(targetValue),
     unit: document.getElementById("pg-unit").value.trim(),
     comments: document.getElementById("pg-comments").value.trim(),
-    category: document.getElementById("pg-category").value.trim(),
-    channel: document.getElementById("pg-channel").value.trim(),
+    category,
+    channel,
     notes: document.getElementById("pg-notes").value.trim(),
     target_days: targetDays === "" ? null : Number(targetDays),
     default_owner_id: assignees.ids[0] || null,
@@ -6212,7 +6258,7 @@ function openReadyActivityPicker() {
         if (!source.objective_template_id || objectiveMap.has(source.objective_template_id)) continue;
         const sourceObjective = objectiveRows.find((item) => item.id === source.objective_template_id);
         if (!sourceObjective) { objectiveMap.set(source.objective_template_id, null); continue; }
-        let targetObjective = targetObjectives.find((item) => item.name.trim().toLocaleLowerCase("pt-BR") === sourceObjective.name.trim().toLocaleLowerCase("pt-BR"));
+        let targetObjective = targetObjectives.find((item) => productResultIdentity(item) === productResultIdentity(sourceObjective));
         if (!targetObjective) {
           const now = new Date().toISOString();
           const objectiveDraft = {
@@ -6566,7 +6612,7 @@ async function saveProductActivity() {
       const existing = related.find((item) => item.product_id === productId) || (current?.product_id === productId ? current : null);
       const targetObjective = productId === productActivityState.productId
         ? selectedObjective
-        : loadProductObjectives().find((item) => item.product_id === productId && selectedObjective && item.name.trim().toLocaleLowerCase("pt-BR") === selectedObjective.name.trim().toLocaleLowerCase("pt-BR"));
+        : loadProductObjectives().find((item) => item.product_id === productId && selectedObjective && productResultIdentity(item) === productResultIdentity(selectedObjective));
       const targetDependencies = selectedDependencies.map((selectedDependency) => productId === productActivityState.productId
         ? selectedDependency
         : productRows.find((item) => productActivityIdentity(item) === productActivityIdentity(selectedDependency))).filter(Boolean);
@@ -10515,6 +10561,7 @@ function render() {
   }
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === state.tab));
   document.getElementById("brand-home")?.classList.toggle("active", isHome);
+  queueSidebarFit();
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === state.view));
 }
 
