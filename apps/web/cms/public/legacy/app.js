@@ -567,6 +567,48 @@ const REGISTRATION_PERMISSION_MODULE = {
   products: "products", pipelines: "pipelines", users: "users", emails: "emails",
   activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates"
 };
+const ACCESS_PROFILE_LABEL = { custom: "Personalizado", collaborator: "Colaborador", project_manager: "Gerente de Projetos" };
+const AUTO_ASSIGNMENT_FIELDS = [
+  { task: "category", profile: "auto_assignment_categories", label: "Categoria" },
+  { task: "channel", profile: "auto_assignment_channels", label: "Canal" },
+  { task: "module", profile: "auto_assignment_modules", label: "Módulo" },
+  { task: "submodule", profile: "auto_assignment_submodules", label: "Submódulo" }
+];
+function currentUserIsPmManager(profile = currentProfile) {
+  return profile?.status === "active" && profile.role === "collaborator" && profile.access_profile === "project_manager";
+}
+function accessProfileLabel(profile) {
+  if (profile?.role === "admin") return "Administrador";
+  if (["developer", "client"].includes(profile?.role)) return "Somente leitura";
+  return ACCESS_PROFILE_LABEL[profile?.access_profile] || ACCESS_PROFILE_LABEL.custom;
+}
+function accessProfilePermissions(accessProfile, role = "collaborator") {
+  if (accessProfile !== "project_manager" || role !== "collaborator") return defaultPermissionsForRole(role);
+  const permissions = emptyUserPermissions();
+  for (const id of ["contacts", "companies", "products", "pipelines", "users", "activityTemplates", "goalTemplates", "objectiveTemplates", "files", "processes", "documents", "tables"]) permissions[id].view = true;
+  for (const id of ["projects", "activities"]) Object.assign(permissions[id], { view: true, create: true, edit: true, operate: true });
+  return permissions;
+}
+function userAccessDraft(profile = {}) {
+  return { access_profile: profile.access_profile || "custom", ...Object.fromEntries(AUTO_ASSIGNMENT_FIELDS.map((field) => [field.profile, normalizeTextList(profile[field.profile])])) };
+}
+function automaticTaskRuleMatches(profile, task) {
+  const rules = AUTO_ASSIGNMENT_FIELDS.map((field) => ({ choices: normalizeTextList(profile[field.profile]), value: String(task[field.task] || "").trim().toLocaleLowerCase("pt-BR") }));
+  return rules.some((rule) => rule.choices.length) && rules.every((rule) => !rule.choices.length || rule.choices.some((choice) => choice.toLocaleLowerCase("pt-BR") === rule.value));
+}
+function automaticTaskAssignees(task, users = cache?.users || []) {
+  return users.filter((profile) => profile.status === "active" && ["admin", "collaborator"].includes(profile.role)
+    && (profile.role === "admin" || (profile.permissions?.activities?.view === true && (profile.permissions.activities.operate === true || profile.permissions.activities.edit === true)))
+    && automaticTaskRuleMatches(profile, task)).sort((a, b) => compareLabels(a.nickname || a.full_name || a.email, b.nickname || b.full_name || b.email) || compareLabels(a.id, b.id)).map((profile) => profile.id);
+}
+function automaticallyAssignTask(task) {
+  if (task.owner_id || normalizeIdList(task.assignee_ids).length || normalizeTextList(task.assignee_job_titles).length || task.assign_to_client) return task;
+  const ids = automaticTaskAssignees(task);
+  return ids.length ? { ...task, owner_id: ids[0], assignee_ids: ids } : task;
+}
+function userAssignmentOptions(field, selected = []) {
+  return normalizeTextList([...(cache?.productActivities || []), ...(cache?.activityRecords || [])].map((row) => row[field.task]).concat(selected)).map((value) => ({ value, label: value }));
+}
 function defaultUserPermissions() {
   const permissions = {};
   PERMISSION_GROUPS.forEach((group) => group.modules.forEach(([moduleId]) => {
@@ -901,7 +943,8 @@ async function fetchTable(name) {
 }
 async function createRow(table, body) {
   if (!requireDataPermission(table, "create")) throw new Error("Operação não permitida para este usuário.");
-  if (isLive() && currentProfile?.role === "collaborator" && table === "activities" && !currentUserOwnsOperational(body)) throw new Error("Uma nova tarefa deve incluir você como responsável.");
+  if (!isLive() && table === "activities") body = automaticallyAssignTask(body);
+  if (isLive() && currentProfile?.role === "collaborator" && !currentUserIsPmManager() && table === "activities" && !currentUserOwnsOperational(body)) throw new Error("Uma nova tarefa deve incluir você como responsável.");
   if (table === "pipelines") validatePipelineStages(null, body.stages, []);
   if (!isLive()) {
     const row = PK_COLUMN[table] ? { ...body } : { id: crypto.randomUUID(), ...body };
@@ -1190,7 +1233,7 @@ function currentUserOwnsOperational(row) {
   return Boolean(title && normalizeTextList(row.assignee_job_titles).some((item) => item.toLocaleLowerCase("pt-BR") === title));
 }
 function visibleOperationalTasks(rows) {
-  if (!isLive() || currentProfile?.role !== "collaborator") return rows;
+  if (!isLive() || currentProfile?.role !== "collaborator" || (currentUserIsPmManager() && currentUserCan("activities", "view"))) return rows;
   const byId = new Map(rows.map((row) => [row.id, row]));
   const visible = new Set();
   const pending = rows.filter(currentUserOwnsOperational);
@@ -1207,17 +1250,17 @@ function visibleOperationalTasks(rows) {
 }
 function canEditOperational(table, row, action = "edit") {
   const module = table === "activities" ? "activities" : "projects";
-  return currentUserCan(module, action) && (!isLive() || currentProfile?.role !== "collaborator" || currentUserOwnsOperational(row));
+  return currentUserCan(module, action) && (!isLive() || currentProfile?.role !== "collaborator" || currentUserIsPmManager() || currentUserOwnsOperational(row));
 }
 function requireOperationalOwnership(table, id, patch = null) {
-  if (!isLive() || currentProfile?.role !== "collaborator" || !["activities", "deliveryGoals", "deliveryObjectives"].includes(table)) return;
+  if (!isLive() || currentProfile?.role !== "collaborator" || currentUserIsPmManager() || !["activities", "deliveryGoals", "deliveryObjectives"].includes(table)) return;
   const rows = table === "activities" ? cache?.activityRecords : cache?.[table];
   const row = rows?.find((row) => row.id === id);
   if (!currentUserOwnsOperational(row)) throw new Error("Este registro está disponível somente para consulta: você não é responsável.");
   if (patch && !currentUserOwnsOperational({ ...row, ...patch })) throw new Error("Mantenha você ou seu cargo entre os responsáveis deste registro.");
 }
 function canCorrectTaskDates(task) {
-  return canEditOperational("activities", task) && (currentUserIsAdmin() || workspaceIdentity.task_date_migration_enabled === true);
+  return canEditOperational("activities", task) && (currentUserIsAdmin() || currentUserIsPmManager() || workspaceIdentity.task_date_migration_enabled === true);
 }
 function loadProductActivities() {
   if (isLive() && cache?.productActivities) return cache.productActivities;
@@ -8042,7 +8085,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
   const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
-  if (!editId && isLive() && currentProfile?.role === "collaborator") selectedAssignees.add(currentProfile.id);
+  if (!editId && isLive() && currentProfile?.role === "collaborator" && !currentUserIsPmManager()) selectedAssignees.add(currentProfile.id);
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -9452,7 +9495,7 @@ function registrationImportSpec(section, c = cache) {
       { key: "nickname", header: "Apelido" },
       { key: "email", header: "E-mail", req: true },
       { key: "phone", header: "Telefone" },
-      { key: "role", header: "Perfil", type: "select", options: () => Object.entries(ROLE_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = Colaborador" },
+      { key: "role", header: "Tipo de usuário", type: "select", options: () => Object.entries(ROLE_LABEL).map(([value, label]) => ({ value, label })), note: "Vazio = Colaborador" },
       { key: "function_name", header: "Função" },
       { key: "job_title", header: "Cargo" },
       { key: "status", header: "Status", type: "select", options: () => [{ value: "active", label: "Ativo" }, { value: "inactive", label: "Inativo" }], note: "Vazio = Ativo" }
@@ -11806,7 +11849,8 @@ function openSettings() {
       <div class="field full"><label for="settings-phone">Telefone</label><input id="settings-phone" data-k="phone" type="tel" value="${esc(profile.phone || "")}" maxlength="50" autocomplete="tel"></div>
       <div class="field full"><label for="settings-company">Empresa</label><input id="settings-company" value="${esc(workspaceIdentity.company_name)}" readonly></div>
       <div class="field"><label for="settings-job">Cargo</label><input id="settings-job" value="${esc(profile.job_title || profile.function_name || "Não informado")}" readonly></div>
-      <div class="field"><label for="settings-role">Tipo de acesso</label><input id="settings-role" value="${esc(roleLabel)}" readonly></div>
+       <div class="field"><label for="settings-role">Tipo de usuário</label><input id="settings-role" value="${esc(roleLabel)}" readonly></div>
+       <div class="field full"><label for="settings-access-profile">Perfil de acesso</label><input id="settings-access-profile" value="${esc(accessProfileLabel(profile))}" readonly></div>
     </div></section>
     <section><h4>Navegação</h4><div class="form"><div class="field full navigation-options" role="radiogroup" aria-label="Posição da navegação">
       <label><input type="radio" name="navigation-mode" value="top"${navigationPreference.mode === "top" ? " checked" : ""}>Superior</label>
@@ -12506,8 +12550,8 @@ function openUsersModal(editId = null, returnToRegistrations = false) {
   if (!requireCurrentUserAdmin("Usuários")) return;
   const user = editId && editId !== "new" ? cache.users.find((item) => item.id === editId) : null;
   umReturnToRegistrations = returnToRegistrations;
-  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: normalizedProfileRole(user.role), company_ids: normalizeTextList(user.company_ids), function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id), permissions: normalizeUserPermissions(user.permissions) };
-  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
+  if (user) umState = { mode: "form", editId: user.id, full_name: user.full_name || user.name || "", nickname: user.nickname || "", email: user.email || "", phone: user.phone || "", role: normalizedProfileRole(user.role), company_ids: normalizeTextList(user.company_ids), function_name: user.function_name || "", job_title: user.job_title || "", status: user.status || "active", password: "", hasAccess: Boolean(user.auth_user_id), permissions: normalizeUserPermissions(user.permissions), ...userAccessDraft(user) };
+  else if (editId === "new") umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator"), ...userAccessDraft({ access_profile: "collaborator" }) };
   else umState = { mode: "list" };
   const title = user ? "Editar usuário" : editId === "new" ? "Novo usuário" : "Usuários · Responsáveis";
   const nestedRegistration = Boolean(returnToRegistrations && document.getElementById("registrations-root"));
@@ -12544,7 +12588,7 @@ function usersListHtml() {
   const list = cache?.users || [];
   const rows = list.map((u) => `<div class="entity-row">
       <div class="entity-main"><b>${esc(u.full_name || u.name || "—")}</b><span class="muted"> · ${esc(u.nickname ? `Apelido: ${u.nickname}` : "Sem apelido")} · ${esc(u.email || "sem e-mail")}</span>
-        <div class="muted" style="margin-top:4px">Perfil: ${esc(ROLE_LABEL[u.role] || u.role || "—")} · Função: ${esc(u.function_name || "—")} · Cargo: ${esc(u.job_title || "—")}</div>
+         <div class="muted" style="margin-top:4px">Tipo de usuário: ${esc(ROLE_LABEL[u.role] || u.role || "—")} · Perfil de acesso: ${esc(accessProfileLabel(u))} · Cargo: ${esc(u.job_title || "—")}</div>
         <div class="muted" style="margin-top:3px">${u.status === "active" ? "Ativo" : "Inativo"} · ${u.auth_user_id ? "Login ativo" : "Sem login"}</div></div>
       <div class="entity-actions">
         <button class="rowbtn edit" data-id="${esc(u.id)}" title="Editar">✎</button>
@@ -12566,7 +12610,7 @@ function permissionsMatrixHtml() {
         const values = permissions[moduleId] || {};
         return `<div class="permissions-row" data-permission-module="${esc(moduleId)}"><strong>${esc(label)}</strong>${PERMISSION_ACTIONS.map((action) => {
           const checked = admin || values[action.id];
-          const unavailable = moduleId === "users" && !admin;
+           const unavailable = moduleId === "users" && !admin && action.id !== "view";
           return `<label class="permission-check${unavailable ? " unavailable" : ""}" title="${esc(action.label)} · ${esc(label)}"><input type="checkbox" data-permission-action="${action.id}"${checked ? " checked" : ""}${admin || unavailable ? " disabled" : ""}><span></span></label>`;
         }).join("")}</div>`;
       }).join("")}`).join("")}
@@ -12596,9 +12640,10 @@ function userFormHtml() {
       <div class="field"><label>Apelido</label><input id="u-nickname" value="${esc(umState.nickname || "")}" placeholder="Nome exibido nos responsáveis"></div>
       <div class="field"><label>E-mail de acesso</label><input id="u-email" type="email" autocomplete="off" value="${esc(umState.email)}"></div>
       <div class="field"><label>Telefone</label><input id="u-phone" value="${esc(umState.phone)}"></div>
-      <div class="field"><label>Perfil</label><select id="u-role">
+       <div class="field"><label>Tipo de usuário</label><select id="u-role">
         ${Object.entries(ROLE_LABEL).map(([v, l]) => `<option value="${v}"${umState.role === v ? " selected" : ""}>${l}</option>`).join("")}
       </select><small class="muted">${esc(ROLE_DESCRIPTION[umState.role] || "")}</small></div>
+       <div class="field"><label>Perfil de acesso</label><select id="u-access-profile"${umState.role === "collaborator" ? "" : " disabled"}>${Object.entries(umState.role === "collaborator" ? ACCESS_PROFILE_LABEL : { custom: accessProfileLabel({ role: umState.role }) }).map(([value, label]) => `<option value="${value}"${(umState.access_profile || "custom") === value ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>
       <div class="field"><label>Função</label><input id="u-function" value="${esc(umState.function_name)}" placeholder="Ex.: Gestão de projetos"></div>
       <div class="field"><label>Cargo</label><input id="u-job-title" value="${esc(umState.job_title)}" placeholder="Ex.: Analista de implantação"></div>
       <div class="field"><label>Status</label><select id="u-status">
@@ -12606,6 +12651,8 @@ function userFormHtml() {
         <option value="inactive"${umState.status === "inactive" ? " selected" : ""}>Inativo</option>
       </select></div>
       ${showCompanies ? `<div class="field full"><label>Empresa(s) vinculada(s)</label>${multiPickerHtml("u-companies", companyOptions, umState.company_ids || [], "Buscar empresa por nome ou CNPJ", true)}<small class="muted">Este perfil visualizará somente registros relacionados às empresas selecionadas.</small></div>` : ""}
+       <div class="field full"><h4>Responsabilidade automática</h4></div>
+       ${AUTO_ASSIGNMENT_FIELDS.map((field) => `<div class="field"><label>${esc(field.label)}</label>${multiPickerHtml(`u-auto-${field.task}`, userAssignmentOptions(field, umState[field.profile]), umState[field.profile] || [], "Selecionar", false, !["admin", "collaborator"].includes(umState.role))}</div>`).join("")}
       ${permissionsMatrixHtml()}
       <div class="field full"><label>${umState.hasAccess ? "Nova senha (deixe em branco para manter a atual)" : "Senha de acesso"}</label>
         <div class="input-action-row"><input id="u-password" type="text" value="${esc(umState.password)}" readonly placeholder="Gere uma senha segura">
@@ -12631,14 +12678,14 @@ function userCredentialsHtml() {
 function wireUsersModal() {
   if (umState.mode === "list") {
     document.getElementById("new-user")?.addEventListener("click", () => {
-      umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator") };
+       umState = { mode: "form", editId: null, full_name: "", nickname: "", email: "", phone: "", role: "collaborator", company_ids: [], function_name: "", job_title: "", status: "active", password: generateStrongPassword(), hasAccess: false, permissions: defaultPermissionsForRole("collaborator"), ...userAccessDraft({ access_profile: "collaborator" }) };
       renderUsersModal();
     });
     document.querySelectorAll("#um-body .rowbtn.edit").forEach((b) =>
       b.addEventListener("click", () => {
         const u = cache.users.find((x) => x.id === b.dataset.id);
         if (!u) return;
-        umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: normalizedProfileRole(u.role), company_ids: normalizeTextList(u.company_ids), function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id), permissions: normalizeUserPermissions(u.permissions) };
+         umState = { mode: "form", editId: u.id, full_name: u.full_name || u.name || "", nickname: u.nickname || "", email: u.email || "", phone: u.phone || "", role: normalizedProfileRole(u.role), company_ids: normalizeTextList(u.company_ids), function_name: u.function_name || "", job_title: u.job_title || "", status: u.status || "active", password: "", hasAccess: Boolean(u.auth_user_id), permissions: normalizeUserPermissions(u.permissions), ...userAccessDraft(u) };
         renderUsersModal();
       }));
     document.querySelectorAll("#um-body .rowbtn.del").forEach((b) =>
@@ -12660,17 +12707,30 @@ function wireUsersModal() {
     });
   } else {
     wireMultiPicker("u-companies");
-    document.getElementById("u-role")?.addEventListener("change", (event) => {
-      umState.full_name = document.getElementById("u-name")?.value || "";
-      umState.nickname = document.getElementById("u-nickname")?.value || "";
-      umState.email = document.getElementById("u-email")?.value || "";
-      umState.phone = document.getElementById("u-phone")?.value || "";
-      umState.function_name = document.getElementById("u-function")?.value || "";
-      umState.job_title = document.getElementById("u-job-title")?.value || "";
-      umState.status = document.getElementById("u-status")?.value || "active";
-      umState.password = document.getElementById("u-password")?.value || "";
+    AUTO_ASSIGNMENT_FIELDS.forEach((field) => wireMultiPicker(`u-auto-${field.task}`));
+    const captureDraft = () => {
+      umState.full_name = document.getElementById("u-name").value;
+      umState.nickname = document.getElementById("u-nickname").value;
+      umState.email = document.getElementById("u-email").value;
+      umState.phone = document.getElementById("u-phone").value;
+      umState.function_name = document.getElementById("u-function").value;
+      umState.job_title = document.getElementById("u-job-title").value;
+      umState.status = document.getElementById("u-status").value;
+      umState.password = document.getElementById("u-password").value;
       umState.company_ids = multiPickerValues("u-companies");
+      umState.access_profile = document.getElementById("u-access-profile").value;
+      AUTO_ASSIGNMENT_FIELDS.forEach((field) => { umState[field.profile] = multiPickerValues(`u-auto-${field.task}`); });
+      umState.permissions = readPermissionsMatrix();
+    };
+    document.getElementById("u-access-profile").addEventListener("change", () => {
+      captureDraft();
+      if (umState.access_profile !== "custom") umState.permissions = accessProfilePermissions(umState.access_profile, umState.role);
+      renderUsersModal();
+    });
+    document.getElementById("u-role")?.addEventListener("change", (event) => {
+       captureDraft();
       umState.role = event.target.value;
+       umState.access_profile = umState.role === "collaborator" ? "collaborator" : "custom";
       umState.permissions = defaultPermissionsForRole(umState.role);
       renderUsersModal();
     });
@@ -12701,6 +12761,8 @@ function wireUsersModal() {
         email,
         phone: document.getElementById("u-phone").value.trim() || null,
         role: document.getElementById("u-role").value,
+        access_profile: document.getElementById("u-access-profile").value,
+        ...Object.fromEntries(AUTO_ASSIGNMENT_FIELDS.map((field) => [field.profile, multiPickerValues(`u-auto-${field.task}`)])),
         company_ids: multiPickerValues("u-companies"),
         function_name: document.getElementById("u-function").value.trim() || null,
         job_title: document.getElementById("u-job-title").value.trim() || null,
@@ -13425,9 +13487,10 @@ function renderRegistrationsSection() {
   }
   if (section === "users") {
     const users = cache.users || [];
-    const rows = users.map((user) => `<tr><td><strong>${identityPersonHtml(user.id, user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } })}</td></tr>`).join("");
-    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} Usuários</span><button class="btn primary" id="registration-add">+ Usuário</button></div>
-      <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Perfil</th><th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="10" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
+    const canManageUsers = currentUserIsAdmin();
+    const rows = users.map((user) => `<tr><td><strong>${identityPersonHtml(user.id, user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(accessProfileLabel(user))}</td>${AUTO_ASSIGNMENT_FIELDS.map((field) => `<td>${stackedCell(normalizeTextList(user[field.profile]))}</td>`).join("")}<td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${canManageUsers ? tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } }) : ""}</td></tr>`).join("");
+    root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} Usuários</span>${canManageUsers ? '<button class="btn primary" id="registration-add">+ Usuário</button>' : ""}</div>
+      <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Tipo de usuário</th><th>Perfil de acesso</th>${AUTO_ASSIGNMENT_FIELDS.map((field) => `<th>${esc(field.label)}</th>`).join("")}<th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="15" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
     wireRegistrationTable();

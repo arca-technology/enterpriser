@@ -217,6 +217,24 @@ Deno.serve(async (req) => {
         existing = result.data;
       }
 
+      const accessProfile = body.access_profile ?? (role === "collaborator" ? existing?.access_profile || "custom" : "custom");
+      if (!["custom", "collaborator", "project_manager"].includes(accessProfile) || (role !== "collaborator" && accessProfile !== "custom")) {
+        return json({ error: "Perfil de acesso inválido para este tipo de usuário." }, 400);
+      }
+      const assignmentRules: Record<string, string[]> = {};
+      for (const key of ["auto_assignment_categories", "auto_assignment_channels", "auto_assignment_modules", "auto_assignment_submodules"]) {
+        const values = body[key] ?? existing?.[key] ?? [];
+        if (!Array.isArray(values) || values.length > 100 || values.some((value: unknown) => typeof value !== "string" || value.length > 160)) {
+          return json({ error: "Seleções de responsabilidade inválidas." }, 400);
+        }
+        const choices = new Map<string, string>();
+        for (const value of values) {
+          const choice = value.trim();
+          if (choice) choices.set(choice.toLocaleLowerCase("pt-BR"), choice);
+        }
+        assignmentRules[key] = [...choices.values()];
+      }
+
       let authUserId = existing?.auth_user_id || null;
       if (authUserId) {
         const attrs: Record<string, unknown> = {
@@ -245,6 +263,8 @@ Deno.serve(async (req) => {
         email,
         phone: String(body.phone || "").trim() || null,
         role,
+        access_profile: accessProfile,
+        ...assignmentRules,
         company_ids: Array.isArray(body.company_ids) ? [...new Set(body.company_ids.map((value: unknown) => String(value || "").trim()).filter(Boolean))] : [],
         status,
         function_name: String(body.function_name || "").trim() || null,

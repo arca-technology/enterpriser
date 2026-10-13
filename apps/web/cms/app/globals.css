@@ -1454,6 +1454,7 @@
   .form-tab{flex:1;height:32px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--muted);font:inherit;font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;cursor:pointer}
   .form-tab.active{border-color:var(--cyan);background:var(--cyan);color:#06202a}
   .modal.side-panel .modal-foot{position:sticky;bottom:0;background:var(--panel)}
+  #um-body .modal-foot{z-index:3}
   .company-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:8px 18px 18px}
   .company-detail-item{display:flex;min-width:0;flex-direction:column;gap:5px;padding:12px 10px;border-bottom:1px solid var(--border2)}
   .company-detail-item:nth-child(2n){border-left:1px solid var(--border2)}
