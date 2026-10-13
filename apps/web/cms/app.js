@@ -1206,11 +1206,25 @@ async function migrateLocalConversations() {
     localStorage.setItem(flag, new Date().toISOString());
   } catch (error) {}
 }
+function uniqueTaskRecords(rows) {
+  const byId = new Map();
+  for (const row of rows) byId.set(row.id || row, row);
+  return byId.size === rows.length ? rows : [...byId.values()];
+}
+function upsertTaskRecord(rows, saved) {
+  const current = rows.find((row) => row.id === saved.id);
+  if (current) { Object.assign(current, saved); return current; }
+  rows.push(saved);
+  return saved;
+}
 function loadProjectTasks() {
-  if (isLive() && cache?.activityRecords) return cache.activityRecords;
+  if (isLive() && cache?.activityRecords) {
+    cache.activityRecords = uniqueTaskRecords(cache.activityRecords);
+    return cache.activityRecords;
+  }
   try {
     const rows = JSON.parse(localStorage.getItem("crm_project_tasks") || "[]");
-    return Array.isArray(rows) ? rows : [];
+    return Array.isArray(rows) ? uniqueTaskRecords(rows) : [];
   }
   catch (e) { return []; }
 }
@@ -1406,6 +1420,9 @@ async function migrateLocalOperationalData() {
   if (!isLive()) return;
   const localTemplates = (() => { try { return JSON.parse(localStorage.getItem("crm_product_activities") || "[]"); } catch (e) { return []; } })();
   const localTasks = (() => { try { return JSON.parse(localStorage.getItem("crm_project_tasks") || "[]"); } catch (e) { return []; } })();
+  if (Array.isArray(localTasks) && localTasks.length && !localStorage.getItem("crm_project_tasks_migration_backup")) {
+    localStorage.setItem("crm_project_tasks_migration_backup", JSON.stringify(localTasks));
+  }
   const remainingTemplates = [];
   for (const template of Array.isArray(localTemplates) ? localTemplates : []) {
     if (cache.productActivities.some((row) => row.id === template.id)) continue;
@@ -1419,22 +1436,36 @@ async function migrateLocalOperationalData() {
   for (const task of Array.isArray(localTasks) ? localTasks : []) {
     const already = cache.activityRecords.some((row) => row.id === task.id ||
       (task.source_template_id && row.project_id === task.project_id && row.source_template_id === task.source_template_id
-        && Number(row.occurrence_index || 0) === Number(task.occurrence_index || 0)));
+        && Number(row.occurrence_index || 0) === Number(task.occurrence_index || 0)) ||
+      (isGenericOnboardingTask(task) && row.project_id === task.project_id && isGenericOnboardingTask(row)));
     if (already) continue;
     if (!cache.projectById[task.project_id]) { remainingTasks.push(task); continue; }
     const compatible = { ...task };
     if (compatible.source_template_id && !cache.productActivities.some((row) => row.id === compatible.source_template_id)) {
       compatible.source_template_id = null;
     }
+    if (!compatible.source_template_id && isGenericOnboardingTask(compatible)) {
+      const productId = cache.projectById[task.project_id].product_id;
+      const templates = cache.productActivities.filter((row) => row.product_id === productId && isGenericOnboardingTask(row));
+      if (templates.length === 1) compatible.source_template_id = templates[0].id;
+    }
     try {
-      const saved = await createRow("activities", activityRemoteBody(compatible));
-      cache.activityRecords.push(saved);
+      const saved = await createActivityOrLoadExisting(activityRemoteBody(compatible));
+      upsertTaskRecord(cache.activityRecords, saved);
     } catch (e) { remainingTasks.push(task); }
   }
   if (remainingTemplates.length) localStorage.setItem("crm_product_activities", JSON.stringify(remainingTemplates));
   else if (localTemplates?.length) localStorage.removeItem("crm_product_activities");
   if (remainingTasks.length) localStorage.setItem("crm_project_tasks", JSON.stringify(remainingTasks));
   else if (localTasks?.length) localStorage.removeItem("crm_project_tasks");
+}
+function isGenericOnboardingTask(task) {
+  const normalized = (value) => String(value || "").trim().toLocaleLowerCase("pt-BR");
+  return normalized(task.title || task.activity) === "onboarding"
+    && (task.recurrence || "once") === "once" && !task.parent_activity_id && !task.parent_template_id
+    && ["", "projeto"].includes(normalized(task.category))
+    && ["", "reunião", "reuniao"].includes(normalized(task.type))
+    && [task.channel, task.module, task.submodule].every((value) => !normalized(value));
 }
 async function syncProductObjectives() {
   if (!cache) return;
@@ -1609,7 +1640,17 @@ async function syncDeliveryGoalDependencies() {
     else saveDeliveryGoals(goals);
   }
 }
-async function syncProductActivities() {
+let productActivitySyncQueue = Promise.resolve();
+function syncProductActivities() {
+  const epoch = accountEpoch;
+  const pending = productActivitySyncQueue.catch(() => {}).then(() => {
+    if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
+    return syncProductActivitiesOnce();
+  });
+  productActivitySyncQueue = pending;
+  return pending;
+}
+async function syncProductActivitiesOnce() {
   if (!cache) return;
   const templates = loadProductActivities();
   const tasks = loadProjectTasks();
@@ -1707,8 +1748,8 @@ async function syncProductActivities() {
           created_at: now, updated_at: now
         };
         const saved = isLive() ? await createActivityOrLoadExisting(body) : body;
-        tasks.push(saved);
-        existing.push(saved);
+        const cached = upsertTaskRecord(tasks, saved);
+        upsertTaskRecord(existing, cached);
         changed = true;
       }
     }
@@ -11571,6 +11612,31 @@ function contactMergePlan(existing, incoming, companyIds) {
   return { body, companyIds: linkedIds, conflicts };
 }
 
+function findDeliveryDuplicate(projects, incoming) {
+  const normalized = (value) => String(value || "").trim().toLocaleLowerCase("pt-BR");
+  const company = String(incoming.company_id || "").replace(/\D/g, "");
+  if (!company || !incoming.product_id) return null;
+  return projects.find((project) => project.id !== incoming.id
+    && String(project.company_id || "").replace(/\D/g, "") === company
+    && project.product_id === incoming.product_id && normalized(project.client_name) === normalized(incoming.client_name)
+    && (project.start_date || "") === (incoming.start_date || "") && (project.end_date || "") === (incoming.end_date || "")
+    && (project.continuation_of_id || "") === (incoming.continuation_of_id || "")) || null;
+}
+function reviewDeliveryDuplicate(existing) {
+  return new Promise((resolve) => {
+    let decision = null;
+    const previousFocus = document.activeElement;
+    const close = nestedSidePanel("Entrega já cadastrada", `<div class="panel-list"><strong>${esc(existing.name)}</strong><p>${esc(dt(existing.start_date))} a ${esc(dt(existing.end_date))}</p><p>Já existe uma entrega para este cliente, produto e período.</p></div><div class="modal-foot delivery-duplicate-actions"><button class="btn" id="delivery-duplicate-cancel">Voltar</button><button class="btn" id="delivery-duplicate-create">Criar separada</button><button class="btn primary" id="delivery-duplicate-open">Abrir existente</button></div>`, {
+      onClose: () => { previousFocus?.focus(); resolve(decision); }
+    });
+    const dialog = document.getElementById("delivery-duplicate-open").closest(".modal");
+    dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true"); dialog.setAttribute("aria-label", "Entrega já cadastrada");
+    document.getElementById("delivery-duplicate-cancel").onclick = close;
+    document.getElementById("delivery-duplicate-create").onclick = () => { decision = "create"; close(); };
+    document.getElementById("delivery-duplicate-open").onclick = () => { decision = "open"; close(); };
+    document.getElementById("delivery-duplicate-open").focus();
+  });
+}
 function reviewContactMerge(existing, incoming, companyIds, fs) {
   const plan = contactMergePlan(existing, incoming, companyIds);
   const display = (key, value) => {
@@ -11730,6 +11796,17 @@ async function saveForm(tab, id, fs, opts = {}) {
   const originalSaveLabel = saveButton?.textContent || "Salvar";
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
+    if (tab === "projects" && !effectiveId) {
+      const projects = isLive() ? await fetchTable("projects") : cache.projects || [];
+      const existing = findDeliveryDuplicate(projects, body);
+      if (existing) {
+        const decision = await reviewDeliveryDuplicate(existing);
+        if (decision !== "create") {
+          if (decision === "open") { upsertCachedEntity("projects", existing); closeModal(); openProjectBoard(existing.id); }
+          return;
+        }
+      }
+    }
     if (tab === "contacts" && !effectiveId) {
       const contacts = isLive() ? await fetchTable("contacts") : cache.contacts || [];
       const existing = findContactDuplicate(contacts, body);
