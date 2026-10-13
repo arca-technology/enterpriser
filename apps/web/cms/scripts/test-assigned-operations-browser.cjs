@@ -23,11 +23,13 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin();
       currentProfile = { id: 'me', auth_user_id: 'auth-me', full_name: 'Ulisses', email: 'ulisses.ferreira@ecommerce365.com.br', role: 'collaborator', status: 'active', permissions: defaultUserPermissions() };
       cache.users.push(currentProfile); cache.userById.me = currentProfile;
+      const other = { id: 'other', full_name: 'Ana', nickname: 'Ana', role: 'collaborator', status: 'active' };
+      cache.users.push(other); cache.userById.other = other;
       cache.activityRecords = Array.from({ length: 60 }, (_, i) => ({ id: `own-${i}`, title: `My task ${i}`, owner_id: 'me', assignee_ids: ['me'], project_id: 'pj1', status: i === 0 ? 'done' : 'todo', planned_start_date: '2026-10-01', planned_end_date: '2026-10-20', recurrence: 'once', checklist: [], sort_order: i, schedule_manual: true }));
       cache.activityRecords[1].dependency_ids = ['prerequisite'];
       cache.activityRecords.push({ id: 'prerequisite', title: 'Other prerequisite', owner_id: 'other', project_id: 'pj1', status: 'todo', checklist: [{ id: 'check', text: 'Read only', checked: false }] }, { id: 'unrelated', title: 'Hidden task', owner_id: 'other', project_id: 'pj1', status: 'todo' });
-      cache.deliveryGoals = [{ id: 'own-goal', name: 'Own goal', owner_id: 'me', project_id: 'pj1', status: 'todo', current_value: 0, target_value: 10, metric: 'Orders' }, { id: 'other-goal', name: 'Other goal', owner_id: 'other', project_id: 'pj1', status: 'todo', current_value: 0, target_value: 10, metric: 'Orders' }];
-      cache.deliveryObjectives = [{ id: 'own-objective', name: 'Own objective', owner_id: 'me', project_id: 'pj1', status: 'todo' }, { id: 'other-objective', name: 'Other objective', owner_id: 'other', project_id: 'pj1', status: 'todo' }];
+      cache.deliveryGoals = [{ id: 'own-goal', name: 'Own goal', category: 'Financeiro', channel: 'Mercado Livre', due_date: '2026-10-12', owner_id: 'me', project_id: 'pj1', status: 'todo', current_value: 0, target_value: 10, metric: 'Orders' }, { id: 'other-goal', name: 'Other goal', category: 'Financeiro', channel: 'Mercado Livre', due_date: '2026-09-01', owner_id: 'other', project_id: 'pj1', status: 'todo', current_value: 0, target_value: 10, metric: 'Orders' }];
+      cache.deliveryObjectives = [{ id: 'own-objective', name: 'Own objective', category: 'Empresa', channel: 'Amazon', due_date: '2026-10-12', owner_id: 'me', project_id: 'pj1', status: 'todo' }, { id: 'other-objective', name: 'Other objective', category: 'Empresa', channel: 'Amazon', due_date: '2026-09-01', owner_id: 'other', project_id: 'pj1', status: 'todo' }];
       window.CRM_CONFIG = { url: 'https://fixture.localhost', anonKey: 'fixture-public' };
       storeAuthSession({ user: { id: 'auth-me' }, access_token: 'fixture-access', refresh_token: 'fixture-refresh' });
       workspaceIdentity.task_date_migration_enabled = true;
@@ -76,8 +78,34 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.locator(`[data-${prefix}-id]`).count(), 2);
       assert.equal(await page.locator(`[data-${prefix}-id="other-${prefix}"] select`).isEnabled(), false);
       assert.equal(await page.locator(`[data-${prefix}-id="own-${prefix}"] select`).isEnabled(), true);
+      const row = page.locator(`[data-${prefix}-id="other-${prefix}"]`);
+      assert.equal(await row.locator('.multi-picker-selection .identity-avatar[data-identity-user="other"] svg').count(), 1, 'Read-only result shows the responsible avatar');
+      assert.match(await row.innerText(), /Ana/);
+      assert.match(await row.locator('strong').first().textContent(), section === 'goals' ? /^Financeiro \| Mercado Livre \| Other goal$/ : /^Empresa \| Amazon \| Other objective$/);
+      assert.equal(await page.locator(`[data-${prefix}-id]`).first().getAttribute(`data-${prefix}-id`), `other-${prefix}`, 'Delivery results begin with the oldest overdue item');
       assert.equal(await page.evaluate((prefix) => prefix === 'goal' ? updateDeliveryGoal('other-goal', { current_value: 5 }) : updateDeliveryObjective('other-objective', { status: 'doing' }), prefix), false);
     }
+    await page.evaluate(() => { closeModal(); state.tab = 'goals'; state.sortK = null; state.pages.goals = 1; render(); });
+    assert.deepEqual(await page.locator('#main .row-select').evaluateAll((rows) => rows.map((row) => row.dataset.id)), ['other-goal', 'own-goal']);
+    assert.match(await page.locator('#main tbody .main-result-name').first().innerText(), /Financeiro \| Mercado Livre \| Other goal/);
+    await page.evaluate(() => {
+      currentProfile.role = 'admin';
+      cache.productGoals = [{ id: 'z', product_id: 'pr1', name: 'Zeta', default_assignee_ids: ['me', 'other'], default_owner_id: 'me', category: 'Financeiro', channel: 'Amazon' }, { id: 'a', product_id: 'pr1', name: 'Alfa', default_owner_id: 'other', category: 'Financeiro', channel: 'Amazon' }];
+      openMainPmCatalog('goals');
+    });
+    assert.deepEqual(await page.locator('#main table tbody td[data-registration-key="c0"] strong').allTextContents(), ['Financeiro | Amazon | Alfa', 'Financeiro | Amazon | Zeta']);
+    assert.equal(await page.locator('#main table tbody .identity-avatar svg').count(), 3, 'Catalog results use avatars too');
+    await page.evaluate(() => { document.getElementById('main').insertAdjacentHTML('beforeend', multiPickerHtml('order-test', [{value:'me', label:'Ulisses', userId:'me'}, {value:'other', label:'Ana', userId:'other'}], ['me', 'other'], 'Responsáveis')); wireMultiPicker('order-test'); });
+    assert.deepEqual(await page.locator('#order-test .multi-picker-option').evaluateAll((rows) => rows.map((row) => row.dataset.value)), ['other', 'me']);
+    assert.deepEqual(await page.evaluate(() => multiPickerValues('order-test')), ['me', 'other'], 'Alphabetical display does not reassign the primary owner');
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.evaluate(() => { document.getElementById('order-test')?.remove(); render(); });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      assert.equal(await page.locator('#main .identity-avatar').first().isVisible(), true, 'Result responsible stays visible in mobile lists');
+      await page.screenshot({ path: path.join(os.tmpdir(), `result-lists-${width}.png`) });
+    }
+    await page.evaluate(() => { currentProfile.role = 'collaborator'; state.pmScopes = {}; state.tab = 'activities'; state.pages.activities = 1; render(); });
     await page.evaluate(() => { closeModal(); render(); });
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 844 });

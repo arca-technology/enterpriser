@@ -340,7 +340,7 @@ function canonicalTaskChoice(value, choices) {
 }
 function taskSelectOptions(choices, value, emptyLabel) {
   const selected = canonicalTaskChoice(value, choices);
-  return `<option value="">${esc(emptyLabel)}</option>${choices.map((choice) => `<option value="${esc(choice)}"${choice === selected ? " selected" : ""}>${esc(choice)}</option>`).join("")}`;
+  return `<option value="">${esc(emptyLabel)}</option>${[...choices].sort(compareLabels).map((choice) => `<option value="${esc(choice)}"${choice === selected ? " selected" : ""}>${esc(choice)}</option>`).join("")}`;
 }
 function wireTaskGroupSelect(groupId, subgroupId) {
   const group = document.getElementById(groupId);
@@ -518,7 +518,7 @@ function productDrawerHost() {
 
 function mainTemplateProductField(prefix, editId, cloneSourceId) {
   if (!mainPmCatalogActive() || editId || cloneSourceId) return "";
-  return `<div class="field"><label>Produto *</label><select id="${prefix}-product">${cache.products.map((product) => `<option value="${esc(product.id)}"${product.id === productActivityState.productId ? " selected" : ""}>${esc(product.name)}</option>`).join("")}</select></div>`;
+  return `<div class="field"><label>Produto *</label><select id="${prefix}-product">${[...cache.products].sort((a, b) => compareLabels(a.name, b.name)).map((product) => `<option value="${esc(product.id)}"${product.id === productActivityState.productId ? " selected" : ""}>${esc(product.name)}</option>`).join("")}</select></div>`;
 }
 
 function mainTemplateOriginField() {
@@ -1860,8 +1860,8 @@ function projectTasks(projectId) {
   const tasks = operationalProjectTasks(projectId);
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const children = new Map();
-  const compare = (a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0)
-    || String(a.created_at || "").localeCompare(String(b.created_at || ""));
+  const today = isoDay(new Date());
+  const compare = (a, b) => compareDefaultRows("activities", a, b, today);
   tasks.forEach((task) => {
     if (!task.parent_activity_id || !byId.has(task.parent_activity_id)) return;
     if (!children.has(task.parent_activity_id)) children.set(task.parent_activity_id, []);
@@ -1875,7 +1875,9 @@ function projectTasks(projectId) {
     ordered.push(task);
     (children.get(task.id) || []).sort(compare).forEach(append);
   };
-  tasks.filter((task) => !task.parent_activity_id || !byId.has(task.parent_activity_id)).sort(compare).forEach(append);
+  const familyUrgency = (task) => [task, ...(children.get(task.id) || [])].sort(compare)[0];
+  tasks.filter((task) => !task.parent_activity_id || !byId.has(task.parent_activity_id))
+    .sort((a, b) => compare(familyUrgency(a), familyUrgency(b)) || compare(a, b)).forEach(append);
   tasks.sort(compare).forEach(append);
   return ordered;
 }
@@ -2285,13 +2287,20 @@ function decorateMobileTable(table, primaryIndex) {
   if (!table?.tHead || primaryIndex < 0) return;
   table.classList.add("mobile-adaptive-table");
   const headers = [...table.tHead.rows[0].cells];
-  const secondaryLabels = /TELEFONE|CELULAR|CLIENTE|EMPRESA|STATUS|PRAZO|CANAL|VALOR|PRODUTO|EMAIL|E-MAIL|ÚLTIMA|ORIGEM/;
-  const secondaryIndexes = headers.map((head, index) => ({ index, label: head.textContent.trim() })).filter(({ index, label }) => index !== primaryIndex && secondaryLabels.test(label.toUpperCase()) && !headers[index].classList.contains("table-actions-head")).slice(0, ["contacts", "companies"].includes(table.dataset.tab) ? 2 : 3);
+  const resultTable = /^(META|OBJETIVO)$/.test(headers[primaryIndex].textContent.replace(/[▲▼]/g, "").trim().toUpperCase());
+  const secondaryLabels = resultTable ? /RESPONS|CLIENTE|STATUS|PRAZO|VALOR|PRODUTO/ : /TELEFONE|CELULAR|CLIENTE|EMPRESA|STATUS|PRAZO|CANAL|VALOR|PRODUTO|EMAIL|E-MAIL|ÚLTIMA|ORIGEM/;
+  const candidates = headers.map((head, index) => ({ index, label: head.textContent.trim() })).filter(({ index, label }) => index !== primaryIndex && secondaryLabels.test(label.toUpperCase()) && !headers[index].classList.contains("table-actions-head"));
+  if (resultTable) {
+    const rank = (label) => ["RESPONS", "CLIENTE", "PRAZO", "STATUS", "PRODUTO", "VALOR"].findIndex((part) => label.toUpperCase().includes(part));
+    candidates.sort((a, b) => rank(a.label) - rank(b.label));
+  }
+  const secondaryIndexes = candidates.slice(0, ["contacts", "companies"].includes(table.dataset.tab) ? 2 : 3);
   table.querySelectorAll("tbody tr").forEach((row) => {
     const primary = row.cells[primaryIndex];
     if (!primary || primary.colSpan > 1) return;
     row.classList.add("mobile-record-row");
     primary.classList.add("mobile-record-title");
+    row.querySelectorAll(".mobile-record-detail").forEach((cell) => { cell.classList.remove("mobile-record-detail"); delete cell.dataset.mobileLabel; });
     secondaryIndexes.forEach(({ index, label }) => {
       const cell = row.cells[index];
       if (cell && cell.textContent.trim() && cell.textContent.trim() !== "—") { cell.classList.add("mobile-record-detail"); cell.dataset.mobileLabel = label.replace(/[▲▼]/g, "").trim(); }
@@ -2512,6 +2521,47 @@ const activityDisplayName = (item) => {
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
 };
+function resultDisplayName(item) {
+  return [item?.category, item?.channel, item?.name].map((value) => String(value || "").trim()).filter(Boolean).join(" | ") || "—";
+}
+function compareLabels(a, b) {
+  return String(a || "").localeCompare(String(b || ""), "pt-BR", { sensitivity: "base", numeric: true });
+}
+function alphabeticalOptions(options) {
+  return [...options].sort((a, b) => compareLabels(a.label, b.label));
+}
+function fieldChoiceOptions(field) {
+  const options = field.options || [];
+  return ["status", "stage", "priority", "recurrence", "deadline_window", "comparison"].includes(field.k) ? options : alphabeticalOptions(options);
+}
+function mainRowLabel(tab, row) {
+  if (tab === "activities") return activityDisplayName(row);
+  if (["goals", "objectives"].includes(tab)) return resultDisplayName(row);
+  return row.name || row.title || row.trade_name || row.legal_name || row.contact_name || row.full_name || row.email || "";
+}
+function operationalSortKey(tab, row, today) {
+  const rawDeadline = tab === "projects" ? row.end_date : tab === "activities" ? taskPlannedEnd(row) : row.due_date;
+  const deadline = dateOnly(rawDeadline);
+  const day = deadline ? isoDay(deadline) : "";
+  const terminal = ["done", "canceled", "closed"].includes(row.status) || (tab === "goals" && row.target_value != null && row.target_value !== "" && deliveryGoalReached(row));
+  return { rank: terminal ? 3 : day ? (day < today ? 0 : 1) : 2, day };
+}
+function compareDefaultRows(tab, a, b, today = isoDay(new Date())) {
+  if (["contacts", "companies", "conversations", "deals"].includes(tab)) {
+    const includedAt = (row) => {
+      const time = Date.parse(row.created_at || "");
+      const imported = homeMessageTime(row.imported_at);
+      return Number.isFinite(time) ? time : Number.isFinite(imported) ? imported : 0;
+    };
+    const latest = includedAt(b) - includedAt(a);
+    if (latest) return latest;
+  } else if (["projects", "activities", "goals", "objectives"].includes(tab)) {
+    const ak = operationalSortKey(tab, a, today), bk = operationalSortKey(tab, b, today);
+    const urgency = ak.rank - bk.rank || (ak.rank < 2 ? compareLabels(ak.day, bk.day) : 0);
+    if (urgency) return urgency;
+  }
+  return compareLabels(mainRowLabel(tab, a), mainRowLabel(tab, b)) || compareLabels(a.id || a.tax_id, b.id || b.tax_id);
+}
 const addDays = (isoDate, days) => {
   const d = new Date(`${isoDate}T00:00:00`);
   d.setDate(d.getDate() + Number(days || 0));
@@ -2785,7 +2835,7 @@ function columns(tab, c) {
       { k: "comment_count", h: "COMENTÁRIOS", fmt: (_v, row) => taskCommentsButton(row) }];
     case "goals":
     case "objectives": return [
-      { k: "name", h: tab === "goals" ? "META" : "OBJETIVO", cls: "main-result-name", thCls: "main-result-name" },
+      { k: "name", h: tab === "goals" ? "META" : "OBJETIVO", cls: "main-result-name", thCls: "main-result-name", fmt: (_v, row) => esc(resultDisplayName(row)), csv: (_v, row) => resultDisplayName(row) },
       { k: "client_name", h: "CLIENTE" },
       { k: "product_name", h: "PRODUTO" },
       { k: "status", h: "STATUS", fmt: (v) => `<span class="badge ${taskStatusClass(v || "todo")}">${esc(taskStatusLabel(v || "todo"))}</span>` },
@@ -2828,16 +2878,16 @@ function columns(tab, c) {
 }
 
 function refOptions(ref, c) {
-  return (c[ref] || []).map((r) => ({ value: r[pk(ref)], label: r.name || r.legal_name || r.full_name || r.title || "Registro sem nome" }));
+  return alphabeticalOptions((c[ref] || []).map((r) => ({ value: r[pk(ref)], label: r.name || r.legal_name || r.full_name || r.title || "Registro sem nome" })));
 }
 
 function companyRefOptions(c) {
-  return (c.companies || []).map((company) => ({
+  return alphabeticalOptions((c.companies || []).map((company) => ({
     value: company.tax_id,
     label: company.trade_name || company.legal_name || company.tax_id,
     detail: company.tax_id,
     search: [company.trade_name, company.legal_name, company.tax_id].filter(Boolean).join(" ")
-  }));
+  })));
 }
 
 function contactGroupOptions(c) {
@@ -3244,7 +3294,7 @@ function fields(tab, c) {
       { k: "product_id", label: "Produto", type: "select", options: refOptions("products", c) },
       { k: "no_product", label: "Não possui produto", type: "checkbox", embedded: true },
       { k: "title", label: "Nome do produto não cadastrado", full: true, placeholder: "Digite o nome do produto" },
-      { k: "pipeline_id", label: "Pipeline", type: "select", options: (c.pipelines || []).map((p) => ({ value: p.id, label: p.name })), createHidden: true },
+      { k: "pipeline_id", label: "Pipeline", type: "select", options: alphabeticalOptions((c.pipelines || []).map((p) => ({ value: p.id, label: p.name }))), createHidden: true },
       { k: "stage", label: "Etapa", type: "select", options: pipelineStageOptions(c, null), createHidden: true },
       { k: "status", label: "Status", type: "select", options: STATUSES.map((s) => ({ value: s, label: STATUS_LABEL[s] })), def: "open", createHidden: true },
       { k: "lead_source", label: "Origem do lead", type: "select", options: SOURCES.map((s) => ({ value: s, label: s })) },
@@ -3870,7 +3920,7 @@ function tableBulkEditProvider(scope) {
 }
 
 function bulkValueControlHtml(field) {
-  if (field.type === "select") return `<select id="bulk-edit-value"><option value="">— Limpar —</option>${(field.options || []).map((option) => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join("")}</select>`;
+  if (field.type === "select") return `<select id="bulk-edit-value"><option value="">— Limpar —</option>${fieldChoiceOptions(field).map((option) => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join("")}</select>`;
   if (field.type === "checkbox") return '<select id="bulk-edit-value"><option value="true">Sim</option><option value="false">Não</option></select>';
   if (field.type === "textarea") return '<textarea id="bulk-edit-value" rows="3" placeholder="Vazio limpa o campo"></textarea>';
   const type = field.type === "number" ? "number" : field.type === "date" ? "date" : "text";
@@ -4201,6 +4251,9 @@ function rowsFor(tab, c) {
       if (av == null) return 1; if (bv == null) return -1;
       return (av > bv ? 1 : av < bv ? -1 : 0) * state.sortDir;
     });
+  } else {
+    const today = isoDay(new Date());
+    rows = [...rows].sort((a, b) => compareDefaultRows(tab, a, b, today));
   }
   return rows;
 }
@@ -4212,7 +4265,9 @@ function renderTable(c) {
   let allRows = rowsFor(state.tab, c);
   const groupByClient = state.tab === "activities" && state.groupActivitiesByClient;
   if (groupByClient) {
-    allRows = [...allRows].sort((a, b) => String(a.client_name || "Sem cliente").localeCompare(String(b.client_name || "Sem cliente"), "pt-BR", { sensitivity: "base" }));
+    const clients = new Map();
+    allRows.forEach((row) => { const client = String(row.client_name || "Sem cliente"); if (!clients.has(client)) clients.set(client, clients.size); });
+    allRows = [...allRows].sort((a, b) => clients.get(String(a.client_name || "Sem cliente")) - clients.get(String(b.client_name || "Sem cliente")));
   }
   const clientCounts = groupByClient ? allRows.reduce((counts, row) => {
     const client = String(row.client_name || "Sem cliente");
@@ -4549,7 +4604,7 @@ function deliveryGanttProgressLabel(progress) {
 
 function timelineItem(tab, row, c) {
   if (["goals", "objectives"].includes(tab)) return {
-    id: row.id, title: row.name, detail: `${row.client_name || "Sem cliente"} · ${row.product_name || "Sem produto"}`,
+    id: row.id, title: resultDisplayName(row), detail: `${row.client_name || "Sem cliente"} · ${row.product_name || "Sem produto"}`,
     start: row.due_date, end: row.due_date, status: row.status
   };
   if (tab === "deals") return {
@@ -5104,7 +5159,7 @@ function refreshActivityCache() {
       company_id: project?.company_id || null,
       client_name: project?.client_name || company?.legal_name || company?.trade_name || "Sem cliente",
       activity_origin: task.source_template_id ? "product" : "daily",
-      objective_name: objective?.name || "—",
+      objective_name: resultDisplayName(objective),
       deadline_state: taskDeadlineState(task),
       comment_count: taskCommentCount(task)
     };
@@ -5373,7 +5428,7 @@ function renderHome(c) {
   }).join("") || '<p class="home-day-empty">Nenhuma entrega ativa nesta visão.</p>'}<div class="home-day-panel-foot">${link("Ver todas as entregas", "projects")}</div></section>` : "";
   const maxDeals = Math.max(1, ...model.funnel.map((item) => item.rows.length));
   const funnelHtml = canDeals ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Funil comercial</h2><select id="home-day-pipeline" aria-label="Pipeline comercial">${(c.pipelines || []).map((pipeline) => `<option value="${esc(pipeline.id)}"${pipeline.id === model.pipeline?.id ? " selected" : ""}>${esc(pipeline.name)}</option>`).join("")}</select></div><div class="home-day-panel-body">${model.funnel.map((item, index) => `<button class="home-day-chart-row" data-home-stage="${index}"><span><strong>${esc(item.stage)}</strong><small>${item.rows.length} negócio(s) · ${esc(brl(item.amount))}</small></span>${meter(item.rows.length / maxDeals * 100, "blue", `${item.stage}: ${item.rows.length} negócios`)}</button>`).join("") || '<p class="home-day-empty">Nenhum pipeline cadastrado.</p>'}${model.staleDeals.length ? `<div class="home-day-warning">${link(`${model.staleDeals.length} negócio(s) sem interação registrada há mais de 7 dias`, "stale")}</div>` : ""}</div></section>` : "";
-  const curvesHtml = canProjects ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Metas abaixo da curva</h2><span>Atual / referência</span></div><div class="home-day-panel-body">${model.curves.slice(0, 5).map((item) => `<button class="home-day-chart-row" data-home-goal="${esc(item.goal.id)}" title="${item.limit ? "Comparação com o limite máximo da meta" : "Referência linear entre início da entrega e prazo da meta; não é previsão"}"><span><strong>${esc(item.goal.name)}</strong><small>${esc(item.goal.client_name || item.project.client_name || item.project.name)}</small></span><span class="home-day-goal-values">${item.actual.toLocaleString("pt-BR")} / ${item.expected.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${esc(item.goal.unit || "")}${item.limit ? " · limite" : " · até hoje"}</span><div class="home-day-curve">${meter(item.actualPercent, "amber", item.goal.name)}<i style="left:${item.expectedPercent}%" aria-hidden="true"></i></div></button>`).join("") || '<p class="home-day-empty">Nenhuma meta abaixo da referência com medição e período definidos.</p>'}</div>${model.curves.length > 5 ? `<div class="home-day-panel-foot">${link("Ver todas as metas abaixo da curva", "goals")}</div>` : ""}</section>` : "";
+  const curvesHtml = canProjects ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Metas abaixo da curva</h2><span>Atual / referência</span></div><div class="home-day-panel-body">${model.curves.slice(0, 5).map((item) => `<button class="home-day-chart-row" data-home-goal="${esc(item.goal.id)}" title="${item.limit ? "Comparação com o limite máximo da meta" : "Referência linear entre início da entrega e prazo da meta; não é previsão"}"><span><strong>${esc(resultDisplayName(item.goal))}</strong><small>${esc(item.goal.client_name || item.project.client_name || item.project.name)}</small></span><span class="home-day-goal-values">${item.actual.toLocaleString("pt-BR")} / ${item.expected.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} ${esc(item.goal.unit || "")}${item.limit ? " · limite" : " · até hoje"}</span><div class="home-day-curve">${meter(item.actualPercent, "amber", item.goal.name)}<i style="left:${item.expectedPercent}%" aria-hidden="true"></i></div></button>`).join("") || '<p class="home-day-empty">Nenhuma meta abaixo da referência com medição e período definidos.</p>'}</div>${model.curves.length > 5 ? `<div class="home-day-panel-foot">${link("Ver todas as metas abaixo da curva", "goals")}</div>` : ""}</section>` : "";
   const maxLoad = Math.max(1, ...model.workload.map((item) => item.count));
   const workloadHtml = canTasks && teamAllowed ? `<section class="home-day-panel"><div class="home-day-panel-head"><h2>Carga ${mine ? "nas minhas tarefas" : "da equipe"}</h2><span class="home-day-legend"><i></i>No prazo <i class="amber"></i>Atrasadas</span></div><div class="home-day-panel-body">${model.workload.slice(0, 8).map((item) => {
     const label = item.user.nickname || item.user.full_name || item.user.name || "Usuário";
@@ -5625,7 +5680,7 @@ function renderProductObjectives() {
       .map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
     const dependencies = [...dependencyObjectives, ...dependencyActivities];
     return `<tr>
-      <td><strong>${esc(item.name)}</strong></td>
+      <td><strong>${esc(resultDisplayName(item))}</strong></td>
       <td>${esc(item.completion_criteria || "—")}</td>
       <td>${esc(item.comments || "—")}</td>
       <td class="compact-multi-cell">${stackedCell(dependencies)}</td>
@@ -5815,7 +5870,7 @@ function renderProductGoals() {
       .map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
     const dependencies = [...dependencyGoals, ...dependencyActivities];
     return `<tr>
-      <td><strong>${esc(item.name)}</strong></td>
+      <td><strong>${esc(resultDisplayName(item))}</strong></td>
       <td>${esc(item.metric)}</td>
       <td>${esc(target)}</td>
       <td>${esc(item.comments || "—")}</td>
@@ -6262,8 +6317,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(
-    loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).map((item) =>
-      `<option value="${esc(item.id)}"${item.id === current.objective_template_id ? " selected" : ""}>${esc(item.name)}</option>`)
+    loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).sort((a, b) => compareLabels(resultDisplayName(a), resultDisplayName(b))).map((item) =>
+      `<option value="${esc(item.id)}"${item.id === current.objective_template_id ? " selected" : ""}>${esc(resultDisplayName(item))}</option>`)
   ).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) =>
     `<option value="${value}"${value === (current.recurrence || "once") ? " selected" : ""}>${label}</option>`).join("");
@@ -6502,11 +6557,15 @@ function dealOwnerOptions(selected = []) {
 
 function assigneePickerOptions(selected = []) {
   const keep = new Set(selected instanceof Set ? selected : normalizeIdList(selected));
-  return [
+  const options = [
     ...(cache?.users || []).filter((user) => internalAssigneeUser(user) || keep.has(user.id))
       .map((user) => ({ value: user.id, label: userDisplayName(user.id), userId: user.id })),
     { value: CLIENT_ASSIGNEE_VALUE, label: "Cliente", detail: "Responsável da empresa" }
   ];
+  for (const id of keep) {
+    if (id !== CLIENT_ASSIGNEE_VALUE && !options.some((option) => option.value === id)) options.push({ value: id, label: userDisplayName(id), userId: id });
+  }
+  return alphabeticalOptions(options);
 }
 
 function assigneePickerSelection(ids, fallbackId = null, assignToClient = false) {
@@ -6525,7 +6584,7 @@ function assigneePickerValue(id) {
 
 function userOptions(selected = "") {
   startIdentityObserver();
-  const users = cache?.users || [];
+  const users = [...(cache?.users || [])].sort((a, b) => compareLabels(userDisplayName(a.id), userDisplayName(b.id)));
   const options = users.map((user) => {
     const id = user.id;
     return `<option data-identity-option="${esc(id)}" value="${esc(id)}"${id === selected ? " selected" : ""}>${esc(userDisplayName(id))}</option>`;
@@ -6581,19 +6640,22 @@ function dependencyNames(ids, fallbackId, rows = loadProjectTasks()) {
 function multiPickerHtml(id, options, selectedIds, placeholder, searchOnly = false, disabled = false, lockedIds = new Set(), allowCreate = false) {
   const selected = new Set(selectedIds);
   const locked = new Set(lockedIds);
-  const rows = options.map((option) => {
+  const rows = alphabeticalOptions(options).map((option) => {
     const optionLocked = locked.has(option.value);
     const person = option.userId || option.value === CLIENT_ASSIGNEE_VALUE;
     return `<button type="button" class="multi-picker-option${selected.has(option.value) ? " active" : ""}${optionLocked ? " locked" : ""}" data-value="${esc(option.value)}" data-label="${esc(option.label)}"${person ? ` data-user-id="${esc(option.userId || "")}"` : ""} data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" data-locked="${optionLocked}"${disabled || optionLocked ? " disabled" : ""}>${person ? identityPersonHtml(option.userId || "", option.label) : `<span>${esc(option.label)}</span>`}${option.detail ? `<small>${esc(option.detail)}</small>` : ""}<b>✓</b></button>`;
   }).join("");
-  return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}" data-allow-create="${allowCreate}">
+  return `<div class="multi-picker${disabled ? " is-disabled" : ""}" id="${esc(id)}" data-placeholder="${esc(placeholder)}" data-search-only="${searchOnly}" data-disabled="${disabled}" data-allow-create="${allowCreate}" data-selection-order="${esc(JSON.stringify([...selected]))}">
     <div class="multi-picker-control" role="button" tabindex="${disabled ? "-1" : "0"}" aria-expanded="false" aria-disabled="${disabled}"><div class="multi-picker-selection"></div><span class="multi-picker-chevron">▾</span></div>
     <div class="multi-picker-menu" hidden><input class="multi-picker-search" type="search" placeholder="${searchOnly ? "Digite o nome ou CNPJ..." : allowCreate ? "Buscar ou adicionar..." : "Buscar..."}"><div class="multi-picker-search-hint"${searchOnly ? "" : " hidden"}>Digite para pesquisar.</div>${allowCreate ? '<div class="multi-picker-create-hint">Pressione Enter para adicionar uma nova badge.</div>' : ""}<div class="multi-picker-options">${rows || '<div class="multi-picker-empty">Nenhuma opção disponível.</div>'}</div></div>
   </div>`;
 }
 
 function multiPickerValues(id) {
-  return [...document.querySelectorAll(`#${id} .multi-picker-option.active`)].map((option) => option.dataset.value);
+  const root = document.getElementById(id);
+  const active = [...(root?.querySelectorAll(".multi-picker-option.active") || [])].map((option) => option.dataset.value);
+  const original = normalizeIdList(root?.dataset.selectionOrder);
+  return [...original.filter((value) => active.includes(value)), ...active.filter((value) => !original.includes(value))];
 }
 
 function wireMultiPicker(id) {
@@ -6688,7 +6750,7 @@ function wireMultiPicker(id) {
 
 function singleSearchPickerHtml(id, options, value, placeholder) {
   const selected = options.find((option) => String(option.value) === String(value || ""));
-  const rows = options.map((option) => `<button type="button" class="single-search-option" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" hidden><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}</button>`).join("");
+  const rows = alphabeticalOptions(options).map((option) => `<button type="button" class="single-search-option" data-value="${esc(option.value)}" data-label="${esc(option.label)}" data-search="${esc(option.search || [option.label, option.detail, option.value].filter(Boolean).join(" "))}" hidden><span>${esc(option.label)}</span>${option.detail ? `<small>${esc(option.detail)}</small>` : ""}</button>`).join("");
   return `<div class="single-search-picker" id="${esc(id)}">
     <input class="single-search-input" type="search" value="${esc(selected?.label || "")}" placeholder="${esc(placeholder || "Buscar...")}" autocomplete="off">
     <input type="hidden" data-k="${esc(id.replace(/^form-/, ""))}" value="${esc(value || "")}">
@@ -6806,7 +6868,7 @@ function taskCardHtml(task) {
     <div>${badge(task.source_template_id ? "qualification" : "proposal", task.source_template_id ? "Produto" : "Dia a dia")} ${priorityBadge(task.priority)}</div>
     ${dependencies.length ? `<div class="task-dependency${blocked ? " blocked" : ""}">${blocked ? "Bloqueada por" : "Liberada após"}: ${esc(dependencyNames(task.dependency_ids, task.depends_on_activity_id))}</div>` : ""}
     ${task.information ? `<div class="task-information"><strong>Informação</strong><span>${esc(task.information)}</span></div>` : ""}
-    ${objective ? `<div class="task-dependency">Objetivo: ${esc(objective.name)}</div>` : ""}
+    ${objective ? `<div class="task-dependency">Objetivo: ${esc(resultDisplayName(objective))}</div>` : ""}
     ${(task.group || task.subgroup || task.sector || task.subsector || task.module || task.submodule || task.channel || task.type) ? `<div class="task-taxonomy">
       ${task.group ? `<span>${esc(task.group)}</span>` : ""}${task.subgroup ? `<span>${esc(task.subgroup)}</span>` : ""}${task.sector ? `<span>${esc(task.sector)}</span>` : ""}${task.subsector ? `<span>${esc(task.subsector)}</span>` : ""}
       ${task.module ? `<span>${esc(task.module)}</span>` : ""}${task.submodule ? `<span>${esc(task.submodule)}</span>` : ""}${task.channel ? `<span>${esc(task.channel)}</span>` : ""}${task.type ? `<span>${esc(task.type)}</span>` : ""}
@@ -7095,7 +7157,7 @@ function renderProjectTaskGantt(tasks) {
 
 function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
   const objectives = sourceRows || loadDeliveryObjectives().filter((item) => item.project_id === projectId)
-    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    .sort((a, b) => compareDefaultRows("objectives", a, b));
   const rows = objectives.map((objective) => {
     const linked = tasks.filter((task) => task.objective_id === objective.id);
     const done = linked.filter((task) => task.status === "done").length;
@@ -7103,7 +7165,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     const dependencyState = deliveryObjectiveDependencyState(objective);
     const dependencyLabel = deliveryObjectiveDependencyLabel(objective);
     return `<tr data-objective-id="${esc(objective.id)}">
-      <td><strong>${esc(objective.name)}</strong></td>
+      <td><strong>${esc(resultDisplayName(objective))}</strong></td>
       <td>${esc(objective.category || "—")}</td>
       <td>${esc(objective.channel || "—")}</td>
       <td>${esc(objective.completion_criteria || "—")}</td>
@@ -7111,7 +7173,7 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
       <td>${esc(objective.notes || "—")}</td>
       <td>${done}/${linked.length} · ${progress}%</td>
       <td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(objective.assignee_ids), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${multiPickerHtml(`delivery-objective-assignees-${objective.id}`, assigneePickerOptions(normalizeIdList(objective.assignee_ids, objective.owner_id)), assigneePickerSelection(objective.assignee_ids, objective.owner_id, objective.assign_to_client), "Selecionar responsáveis", false, !canEditOperational("deliveryObjectives", objective))}</td>
       <td><input class="objective-control delivery-objective-due" type="date" value="${esc(objective.due_date || "")}"></td>
       <td><select class="objective-control delivery-objective-status ${taskStatusClass(objective.status || "todo")}">${taskStatusOptions(objective.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
@@ -7137,7 +7199,7 @@ function deliveryObjectiveDependencyState(objective) {
 function deliveryObjectiveDependencyLabel(objective) {
   const state = deliveryObjectiveDependencyState(objective);
   return [
-    ...state.dependencyObjectives.map((item) => item.name),
+    ...state.dependencyObjectives.map(resultDisplayName),
     ...state.dependencyActivities.map(activityDisplayName)
   ].join(", ") || "—";
 }
@@ -7164,7 +7226,7 @@ function deliveryGoalDependencyState(goal) {
 function deliveryGoalDependencyLabel(goal) {
   const state = deliveryGoalDependencyState(goal);
   const names = [
-    ...state.dependencyGoals.map((item) => item.name),
+    ...state.dependencyGoals.map(resultDisplayName),
     ...state.dependencyActivities.map(activityDisplayName)
   ];
   return names.join(", ") || "—";
@@ -7172,7 +7234,7 @@ function deliveryGoalDependencyLabel(goal) {
 
 function renderDeliveryGoals(projectId, sourceRows = null) {
   const goals = sourceRows || loadDeliveryGoals().filter((item) => item.project_id === projectId)
-    .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+    .sort((a, b) => compareDefaultRows("goals", a, b));
   const rows = goals.map((goal) => {
     const current = Number(goal.current_value || 0);
     const target = Number(goal.target_value || 0);
@@ -7181,10 +7243,10 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
     return `<tr data-goal-id="${esc(goal.id)}">
-      <td><strong>${esc(goal.name)}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.metric)}</td>
+      <td><strong>${esc(resultDisplayName(goal))}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
       <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
-      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(goal.assignee_ids), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis")}</td>
+      <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(normalizeIdList(goal.assignee_ids, goal.owner_id)), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis", false, !canEditOperational("deliveryGoals", goal))}</td>
       <td><input class="objective-control delivery-goal-due" type="date" value="${esc(goal.due_date || "")}"></td>
       <td><select class="objective-control delivery-goal-status ${taskStatusClass(goal.status || "todo")}">${taskStatusOptions(goal.status || "todo")}</select></td>
       <td class="table-actions-cell">${tableActionButtons()}</td>
@@ -7224,7 +7286,7 @@ function renderDeliveryOverview(project) {
   const previousRevenue = deliveryOverviewRevenue(previousMonth);
   const variation = revenue != null && previousRevenue > 0 ? `${((revenue - previousRevenue) / previousRevenue * 100).toLocaleString("pt-BR", { maximumFractionDigits: 1, signDisplay: "always" })}%` : "Sem base";
   const metric = (label, value, tone = "", action = "") => `<div class="metric ${tone}"><div class="k">${esc(label)}</div><div class="v">${action || esc(value)}</div></div>`;
-  const next = (item, section) => item ? overviewItemButton(item, section, `${item.name}${item.due_date ? ` · ${dt(item.due_date)}` : " · Sem prazo"}`) : "—";
+  const next = (item, section) => item ? overviewItemButton(item, section, `${resultDisplayName(item)}${item.due_date ? ` · ${dt(item.due_date)}` : " · Sem prazo"}`) : "—";
   const section = (id, title, values, progress = null) => `<section class="delivery-overview-section">
     <header><strong>${esc(title)}</strong><button class="btn delivery-overview-open" type="button" data-overview-section="${id}">Abrir</button></header>
     <div class="project-dashboard">${values.join("")}</div>
@@ -7294,7 +7356,7 @@ function deliveryOverviewModel(project, allTasks, allObjectives, allGoals, today
 }
 
 function overviewItemButton(item, section, label = "") {
-  return `<button type="button" class="overview-item-link delivery-overview-open" data-overview-section="${esc(section)}" data-overview-search="${esc(section === "activities" ? activityDisplayName(item) : item.name || "")}">${esc(label || item.name || activityDisplayName(item))}</button>`;
+  return `<button type="button" class="overview-item-link delivery-overview-open" data-overview-section="${esc(section)}" data-overview-search="${esc(section === "activities" ? activityDisplayName(item) : resultDisplayName(item))}">${esc(label || (section === "activities" ? activityDisplayName(item) : resultDisplayName(item)))}</button>`;
 }
 
 function overviewExecutionChart(tasks, today) {
@@ -7339,9 +7401,9 @@ function renderDeliveryStatusMatrix(rows, kind, tasks = []) {
       if (kind === "objectives") {
         const linked = tasks.filter((task) => task.objective_id === item.id);
         const done = linked.filter((task) => task.status === "done").length;
-        return `<article class="task-card"><strong>${esc(item.name || "Objetivo")}</strong><span class="muted">${esc(item.completion_criteria || "Sem critério")}</span><span>${done}/${linked.length} tarefa(s)</span></article>`;
+        return `<article class="task-card"><strong>${esc(resultDisplayName(item))}</strong><span class="muted">${esc(item.completion_criteria || "Sem critério")}</span><span>${done}/${linked.length} tarefa(s)</span></article>`;
       }
-      return `<article class="task-card"><strong>${esc(item.name || "Meta")}</strong><span class="muted">${esc(item.metric || "Sem indicador")}</span><span>${Number(item.current_value || 0).toLocaleString("pt-BR")} / ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${esc(item.unit || "")}</span></article>`;
+      return `<article class="task-card"><strong>${esc(resultDisplayName(item))}</strong><span class="muted">${esc(item.metric || "Sem indicador")}</span><span>${Number(item.current_value || 0).toLocaleString("pt-BR")} / ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${esc(item.unit || "")}</span></article>`;
     }).join("");
     return `<section class="task-col"><h4>${status.label}<span>${items.length}</span></h4><div class="task-list">${cards || '<div class="empty" style="padding:22px 8px">Sem itens.</div>'}</div></section>`;
   }).join("")}</div>`;
@@ -7391,12 +7453,12 @@ function deliveryOkrBoardHtml(objectives, goals, tasks) {
       <div class="okr-section"><span class="okr-tag">O</span><div class="okr-list">${group.objectives.map((objective) => {
         const percent = deliveryObjectivePercent(objective, tasks);
         const late = objective.due_date && objective.status !== "done" && objective.due_date < today;
-        return `<div class="okr-item"><strong>${esc(objective.name || "Objetivo")}</strong><small>${objective.__subtitle ? esc(objective.__subtitle) : `${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+        return `<div class="okr-item"><strong>${esc(resultDisplayName(objective))}</strong><small>${objective.__subtitle ? esc(objective.__subtitle) : `${esc(mindMapStatusLabel(objective))}${objective.due_date ? ` · ${dt(objective.due_date)}` : ""}${late ? ' · <em class="okr-late">Atrasado</em>' : ""}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
       }).join("") || '<span class="muted">Sem objetivo nesta Categoria/Canal</span>'}</div></div>
       <div class="okr-section"><span class="okr-tag is-kr">KR</span><div class="okr-list">${group.goals.map((goal) => {
         const percent = deliveryGoalPercent(goal);
         const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
-        return `<div class="okr-item"><strong>${esc(goal.name || "Meta")}</strong><small>${goal.__subtitle ? `${esc(goal.__subtitle)} · alvo ${esc(target)}` : `${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+        return `<div class="okr-item"><strong>${esc(resultDisplayName(goal))}</strong><small>${goal.__subtitle ? `${esc(goal.__subtitle)} · alvo ${esc(target)}` : `${esc(goal.metric || "Sem indicador")} · ${Number(goal.current_value || 0).toLocaleString("pt-BR")} / ${esc(target)}`}</small>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
       }).join("") || '<span class="muted">Sem metas (resultados-chave) nesta Categoria/Canal</span>'}</div></div>
     </section>`;
   }).join("")}</div>`;
@@ -7434,7 +7496,7 @@ function renderDeliverySectionDashboard(rows, kind, tasks = []) {
   const kpis = kind === "goals" && rows.length ? `<section class="dashboard-block"><h4>KPIs</h4><div class="kpi-list">${rows.map((goal) => {
     const percent = deliveryGoalPercent(goal);
     const target = `${GOAL_COMPARISON_LABEL[goal.comparison] || "No mínimo"} ${Number(goal.target_value || 0).toLocaleString("pt-BR")} ${goal.unit || ""}`.trim();
-    return `<div class="kpi-row"><div><strong>${esc(goal.name || "Meta")}</strong><small>${esc(goal.metric || "Sem indicador")}</small></div><span class="kpi-values">${Number(goal.current_value || 0).toLocaleString("pt-BR")} <small>/ ${esc(target)}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
+    return `<div class="kpi-row"><div><strong>${esc(resultDisplayName(goal))}</strong><small>${esc(goal.metric || "Sem indicador")}</small></div><span class="kpi-values">${Number(goal.current_value || 0).toLocaleString("pt-BR")} <small>/ ${esc(target)}</small></span>${dashboardBarHtml(percent, percent >= 100 ? "is-done" : "")}</div>`;
   }).join("")}</div></section>` : "";
   return `<div class="delivery-dashboard"><div class="project-dashboard">${cards.join("")}</div>${kpis}<section class="dashboard-block"><h4>OKR <small>Objetivos (O) e Resultados-chave (KR) ligados pela mesma Categoria e Canal</small></h4>${deliveryOkrBoardHtml(objectives, goals, tasks)}</section></div>`;
 }
@@ -7485,7 +7547,7 @@ function projectSectionValues(item, tasks = []) {
     const done = linked.filter((task) => task.status === "done").length;
     const progress = linked.length ? Math.round(done / linked.length * 100) : 0;
     return [
-      item.name || "—", item.category || "—", item.channel || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
+      resultDisplayName(item), item.category || "—", item.channel || "—", item.completion_criteria || "—", item.comments || "—", item.notes || "—", `${done}/${linked.length} · ${progress}%`,
       deliveryObjectiveDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
       item.due_date ? dt(item.due_date) : "—",
       TASK_STATUS.find((status) => status.id === (item.status || "todo"))?.label || "A fazer"
@@ -7494,7 +7556,7 @@ function projectSectionValues(item, tasks = []) {
   const current = Number(item.current_value || 0);
   const target = Number(item.target_value || 0);
   return [
-    item.name || "—", item.category || "—", item.channel || "—", item.metric || "—", current.toLocaleString("pt-BR"),
+    resultDisplayName(item), item.category || "—", item.channel || "—", item.metric || "—", current.toLocaleString("pt-BR"),
     `${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${target.toLocaleString("pt-BR")} ${item.unit || ""}`.trim(), item.comments || "—", item.notes || "—",
     `${deliveryGoalPercent(item)}%`,
     deliveryGoalDependencyLabel(item), assigneeNames(item.assignee_ids, item.owner_id, item.assign_to_client),
@@ -7518,7 +7580,11 @@ function filterProjectSectionRows(rows, tasks = []) {
       !selected?.size || selected.has(projectRowValue(item, key, tasks))
     );
   });
-  if (!projectBoardState.sortKey) return filtered;
+  if (!projectBoardState.sortKey) {
+    if (projectBoardState.section === "activities") return filtered;
+    const today = isoDay(new Date());
+    return filtered.sort((a, b) => compareDefaultRows(projectBoardState.section, a, b, today));
+  }
   return filtered.sort((a, b) => projectRowValue(a, projectBoardState.sortKey, tasks).localeCompare(
     projectRowValue(b, projectBoardState.sortKey, tasks), "pt-BR", { numeric: true, sensitivity: "base" }
   ) * projectBoardState.sortDir);
@@ -7657,9 +7723,9 @@ function wireDeliveryObjectives(projectId) {
   document.querySelectorAll("#project-board-root tr[data-objective-id]").forEach((row) => {
     const objectiveId = row.dataset.objectiveId;
     const objective = loadDeliveryObjectives().find((item) => item.id === objectiveId);
+    wireMultiPicker(`delivery-objective-assignees-${objectiveId}`);
     if (!canEditOperational("deliveryObjectives", objective)) { row.querySelectorAll("input,select,button").forEach((control) => { control.disabled = true; }); return; }
     const assigneePickerId = `delivery-objective-assignees-${objectiveId}`;
-    wireMultiPicker(assigneePickerId);
     row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
       const assignees = assigneePickerValue(assigneePickerId);
       await updateDeliveryObjective(objectiveId, {
@@ -7710,9 +7776,9 @@ function wireDeliveryGoals(projectId) {
   document.querySelectorAll("#project-board-root tr[data-goal-id]").forEach((row) => {
     const goalId = row.dataset.goalId;
     const goal = loadDeliveryGoals().find((item) => item.id === goalId);
+    wireMultiPicker(`delivery-goal-assignees-${goalId}`);
     if (!canEditOperational("deliveryGoals", goal)) { row.querySelectorAll("input,select,button").forEach((control) => { control.disabled = true; }); return; }
     const assigneePickerId = `delivery-goal-assignees-${goalId}`;
-    wireMultiPicker(assigneePickerId);
     row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
       const assignees = assigneePickerValue(assigneePickerId);
       await updateDeliveryGoal(goalId, {
@@ -7936,7 +8002,7 @@ function openProjectDataMenu(anchor) {
 
 function openTaskDeliveryPicker() {
   if (currentUserIsAdmin()) { openMainPmTemplate("activities"); return; }
-  const deliveries = cache?.projects || [];
+  const deliveries = [...(cache?.projects || [])].sort((a, b) => compareLabels(a.name || a.client_name, b.name || b.client_name));
   if (!deliveries.length) { toast("Cadastre uma entrega antes de criar tarefas.", true); return; }
   const options = deliveries.map((project) => `<option value="${esc(project.id)}">${esc(project.name || project.client_name || "Entrega sem nome")}</option>`).join("");
   sidePanel("Nova tarefa", `<div class="form product-activity-form">
@@ -7980,8 +8046,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
-  const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(objectives.map((item) =>
-    `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(item.name)}</option>`)).join("");
+  const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat([...objectives].sort((a, b) => compareLabels(resultDisplayName(a), resultDisplayName(b))).map((item) =>
+    `<option value="${esc(item.id)}"${item.id === current.objective_id ? " selected" : ""}>${esc(resultDisplayName(item))}</option>`)).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.recurrence || "once") ? " selected" : ""}>${label}</option>`).join("");
   const priorityOptions = PRIORITY_OPTIONS.map(([value, label]) => `<option value="${value}"${value === (current.priority || "normal") ? " selected" : ""}>${label}</option>`).join("");
   const useStructure = Boolean(editId && !String(current.title || "").trim());
@@ -10751,11 +10817,11 @@ function openForm(tab, id, opts = {}) {
       const listId = `search-${f.k}-options`;
       ctrl = `<input data-search-ref="${f.searchableRef}" data-search-target="${f.k}" list="${listId}" value="${esc(selected?.label || val || "")}" placeholder="Buscar empresa...">
         <input type="hidden" data-k="${f.k}" value="${esc(val || "")}">
-        <datalist id="${listId}">${f.options.map((option) => `<option value="${esc(option.label)}"></option>`).join("")}</datalist>`;
+        <datalist id="${listId}">${alphabeticalOptions(f.options).map((option) => `<option value="${esc(option.label)}"></option>`).join("")}</datalist>`;
     } else if (f.type === "select") {
       if (f.k === "owner_id") startIdentityObserver();
       const opts = ['<option value="">—</option>']
-        .concat(f.options.map((o) => `<option${o.userId ? ` data-identity-option="${esc(o.userId)}"` : ""} value="${esc(o.value)}"${o.value === val ? " selected" : ""}>${esc(o.label)}</option>`));
+        .concat(fieldChoiceOptions(f).map((o) => `<option${o.userId ? ` data-identity-option="${esc(o.userId)}"` : ""} value="${esc(o.value)}"${o.value === val ? " selected" : ""}>${esc(o.label)}</option>`));
       ctrl = `<select data-k="${f.k}"${isLocked ? " disabled" : ""}>${opts.join("")}</select>`;
     } else if (f.type === "checkbox") {
       ctrl = `<input type="checkbox" data-k="${f.k}"${val ? " checked" : ""}${isLocked ? " disabled" : ""}>`;
@@ -12753,7 +12819,7 @@ const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }, {
 const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (item.status || "todo"))?.label || "Em aberto";
 const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
-  title: (item) => item.name || "Objetivo",
+  title: resultDisplayName,
   groupId: (item) => item.id,
   parent: () => null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
@@ -12766,14 +12832,14 @@ const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
 const REGISTRATION_MIND_MAP_GOAL_ADAPTER = {
   ...REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER,
   scope: "registration-goals", rootLabel: "Metas", countLabel: "meta(s)", addTitle: "Adicionar meta",
-  title: (item) => item.name || "Meta",
+  title: resultDisplayName,
   dependencies: (item) => normalizeIdList(item.dependency_goal_template_ids),
   subtitle: (node) => `${registrationProductName(node.item.product_id)} · ${node.item.metric || "Sem indicador"}`,
   searchText: (item) => [registrationProductName(item.product_id), item.metric, item.unit, item.comments, item.notes].join(" ")
 };
 const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "delivery-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos",
-  title: (item) => item.name || "Objetivo",
+  title: resultDisplayName,
   groupId: (item) => item.id,
   parent: () => null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_ids),
@@ -12786,7 +12852,7 @@ const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
 const DELIVERY_MIND_MAP_GOAL_ADAPTER = {
   ...DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER,
   scope: "delivery-goals", rootLabel: "Metas",
-  title: (item) => item.name || "Meta",
+  title: resultDisplayName,
   dependencies: (item) => normalizeIdList(item.dependency_goal_ids),
   extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
   subtitle: (node) => `${Number(node.item.current_value || 0).toLocaleString("pt-BR")} / ${Number(node.item.target_value || 0).toLocaleString("pt-BR")} ${node.item.unit || ""}`.trim() + ` · ${mindMapStatusLabel(node.item)}`,
@@ -13468,7 +13534,7 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(resultDisplayName(item))}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client)}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar meta" },
         clone: { className: "reg-goal-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar meta" }
       })}</td></tr>`;
@@ -13483,7 +13549,7 @@ function renderRegistrationsSection() {
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
-      return `<tr><td><strong>${esc(item.name || "—")}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${stackedCell(assigneeNameList(item.default_assignee_ids, item.default_owner_id, item.assign_to_client))}</td><td class="act table-actions-cell">${tableActionButtons({
+      return `<tr><td><strong>${esc(resultDisplayName(item))}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client)}</td><td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "edit reg-template-edit", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Editar objetivo" },
         clone: { className: "reg-objective-clone", attrs: { "data-id": item.id, "data-product": item.product_id }, title: "Clonar objetivo" }
       })}</td></tr>`;
@@ -13792,10 +13858,10 @@ function applyRegistrationTableState(table) {
       if (!selected?.size) return true;
       return selected.has(registrationCell(row, key)?.textContent.trim() || "—");
     }));
-  if (tableState.sortKey) {
-    const compare = (a, b) => (registrationCell(a, tableState.sortKey)?.textContent.trim() || "").localeCompare(
-      registrationCell(b, tableState.sortKey)?.textContent.trim() || "", "pt-BR", { numeric: true, sensitivity: "base" }
-    ) * tableState.sortDir;
+  {
+    const key = tableState.sortKey || (registrationsState.section === "activities" ? "c3" : "c0");
+    const label = (row) => registrationCell(row, key)?.querySelector("strong")?.textContent.trim() || registrationCell(row, key)?.textContent.trim() || "";
+    const compare = (a, b) => compareLabels(label(a), label(b)) * (tableState.sortKey ? tableState.sortDir : 1);
     rows.sort(compare).forEach((row) => table.tBodies[0].appendChild(row));
     filteredRows.sort(compare);
   }
