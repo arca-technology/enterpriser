@@ -835,8 +835,11 @@ async function deleteRow(table, id) {
 
 async function emailAccountsRequest(method = "GET", body = null) {
   if (APP_VARIANT !== "web" || !isLive()) throw new Error("A criação automática de e-mail está disponível na versão web conectada.");
-  const permissionAction = method === "GET" ? "view" : method === "DELETE" ? "delete" : body?.action === "update-metadata" ? "edit" : "create";
-  if (!requireCurrentUserPermission("emails", permissionAction, "Emails")) throw new Error("Operação não permitida para este usuário.");
+  const permissionAction = method === "GET" ? "view" : method === "DELETE" ? "delete" : method === "PATCH" || body?.action === "update-metadata" ? "edit" : "create";
+  const deliveryProvision = method === "POST" && typeof body?.deliveryId === "string" && body.deliveryId.trim() && !body.companyId && !body.action;
+  if (deliveryProvision) {
+    if (!["admin", "collaborator"].includes(currentProfile?.role) || !requireCurrentUserPermission("projects", "create", "Entregas")) throw new Error("Operação não permitida para este usuário.");
+  } else if (!requireCurrentUserPermission("emails", permissionAction, "Emails")) throw new Error("Operação não permitida para este usuário.");
   const c = getCfg();
   const token = await getAccessToken();
   if (!token) throw new Error("Sua sessão expirou. Entre novamente.");

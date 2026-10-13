@@ -123,14 +123,14 @@ function securePassword() {
   return chars.join("");
 }
 
-async function publicAccount(row: EmailAccountRow) {
+async function publicAccount(row: EmailAccountRow, includePassword = true) {
   return {
     id: row.id,
     cnpj: row.company_id,
     deliveryId: row.delivery_id,
     client: row.client_name,
     email: row.email,
-    password: row.password_ciphertext ? await decryptPassword(row.password_ciphertext) : null,
+    password: includePassword && row.password_ciphertext ? await decryptPassword(row.password_ciphertext) : null,
     tags: Array.isArray(row.tags) ? row.tags : [],
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -171,17 +171,25 @@ Deno.serve(async (req) => {
     const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
     if (!token) throw new HttpError("Sessão obrigatória.", 401);
 
-    const authClient = createClient(supabaseUrl, anonKey, { auth: { persistSession: false, autoRefreshToken: false } });
+    const authClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
     const { data: authData, error: authError } = await authClient.auth.getUser(token);
     if (authError || !authData.user) throw new HttpError("Sessão inválida ou expirada.", 401);
 
     const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const { data: actor, error: actorError } = await admin.from("profiles")
-      .select("id, status").eq("auth_user_id", authData.user.id).maybeSingle();
+      .select("id, status, role, permissions").eq("auth_user_id", authData.user.id).maybeSingle();
     if (actorError) throw actorError;
     if (!actor || actor.status !== "active") throw new HttpError("Usuário sem acesso ativo ao CRM.", 403);
+    const canEmail = (action: string) => actor.role === "admin" || (
+      actor.permissions?.emails?.[action] === true && (action === "view" || !["client", "developer"].includes(actor.role))
+    );
+    const canViewPassword = canEmail("view");
 
     if (req.method === "PATCH") {
+      if (!canEmail("edit")) throw new HttpError("Sem permissão para editar e-mails.", 403);
       const input = await req.json().catch(() => ({})) as { email?: string; password?: string; tags?: string[] };
       const email = String(input.email || "").trim().toLowerCase();
       const domain = (Deno.env.get("CPANEL_EMAIL_DOMAIN") || "ecommerce365.com.br").trim().toLowerCase();
@@ -221,10 +229,11 @@ Deno.serve(async (req) => {
         }).select("*").single();
       }
       if (saved.error) throw saved.error;
-      return json({ status: "updated", account: await publicAccount(saved.data as EmailAccountRow) });
+      return json({ status: "updated", account: await publicAccount(saved.data as EmailAccountRow, canViewPassword) });
     }
 
     if (req.method === "GET") {
+      if (!canEmail("view")) throw new HttpError("Sem permissão para consultar e-mails.", 403);
       const domain = (Deno.env.get("CPANEL_EMAIL_DOMAIN") || "ecommerce365.com.br").trim().toLowerCase();
       const [cpanelResult, savedResult, companiesResult] = await Promise.all([
         cpanelCall<CpanelMailbox[]>(admin, "list_pops", { domain }),
@@ -270,15 +279,20 @@ Deno.serve(async (req) => {
     }
 
     const input = await req.json().catch(() => ({})) as { deliveryId?: string; companyId?: string };
+    const deliveryId = typeof input.deliveryId === "string" ? input.deliveryId.trim() : "";
+    const canProvisionDelivery = actor.role === "admin" || (actor.role === "collaborator" && actor.permissions?.projects?.create === true);
+    if (!canEmail("create") && !(deliveryId && !input.companyId && canProvisionDelivery)) {
+      throw new HttpError("Sem permissão para criar e-mail ou provisionar uma entrega.", 403);
+    }
     let delivery: { id: string; company_id: string | null; client_name: string | null } | null = null;
-    if (input.deliveryId) {
-      const result = await admin.from("deliveries").select("id, company_id, client_name").eq("id", input.deliveryId).maybeSingle();
+    if (deliveryId) {
+      const result = await authClient.from("deliveries").select("id, company_id, client_name").eq("id", deliveryId).maybeSingle();
       if (result.error) throw result.error;
       delivery = result.data;
       if (!delivery) throw new HttpError("Entrega não encontrada.", 404);
     }
 
-    const companyId = String(delivery?.company_id || input.companyId || "").trim();
+    const companyId = String(delivery ? delivery.company_id || "" : input.companyId || "").trim();
     const cnpj = companyId.replace(/\D/g, "");
     if (cnpj.length !== 14) throw new HttpError("A empresa da entrega precisa ter um CNPJ válido com 14 dígitos.");
 
@@ -292,7 +306,7 @@ Deno.serve(async (req) => {
     const email = `${localPart}@${domain}`;
     const existingResult = await admin.from("client_email_accounts").select("*").eq("email", email).maybeSingle();
     if (existingResult.error) throw existingResult.error;
-    if (existingResult.data) return json({ status: "existing", account: await publicAccount(existingResult.data as EmailAccountRow) });
+    if (existingResult.data) return json({ status: "existing", account: await publicAccount(existingResult.data as EmailAccountRow, canViewPassword) });
 
     if (await cpanelMailboxExists(admin, localPart, domain)) {
       return json({
@@ -330,7 +344,7 @@ Deno.serve(async (req) => {
       await cpanelCall(admin, "delete_pop", { domain, email: localPart }).catch(() => undefined);
       throw saved.error;
     }
-    return json({ status: "created", account: await publicAccount(saved.data as EmailAccountRow) }, 201);
+    return json({ status: "created", account: await publicAccount(saved.data as EmailAccountRow, canViewPassword) }, 201);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500;
     return json({ error: error instanceof Error ? error.message : "Erro interno." }, status);
