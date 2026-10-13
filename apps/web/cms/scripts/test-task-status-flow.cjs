@@ -20,7 +20,7 @@ assert(context.taskStatusOptions('todo', true, true).includes('value="doing" dis
 assert(!context.taskStatusOptions('todo', true, true).includes('value="canceled" disabled'));
 assert.equal([...context.taskStatusOptions('done').matchAll(/<option/g)].length, 4, 'Objectives and goals keep their existing status options');
 vm.runInContext(source.match(/function inlineTaskStatus\([^]*?^}/m)[0], context);
-Object.assign(context, { currentUserCan: () => true, taskStatusClass: (s) => s, esc: String, taskIsBlocked: () => false });
+Object.assign(context, { currentUserCan: () => true, canEditOperational: () => true, taskStatusClass: (s) => s, esc: String, taskIsBlocked: () => false });
 assert(context.inlineTaskStatus({ id: 'finished', status: 'done' }).includes(' disabled'));
 assert(!context.inlineTaskStatus({ id: 'open', status: 'todo' }).includes(' disabled'));
 vm.runInContext(source.match(/async function updateProjectTask\([^]*?^}/m)[0], context);

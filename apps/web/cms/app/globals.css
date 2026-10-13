@@ -216,6 +216,15 @@
   .module-help-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
   .sb-right>.module-help-btn{order:-1}
   .module-help-btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .account-switcher{padding:16px;display:flex;flex-direction:column;gap:20px;overflow:auto}
+  .account-switch-row{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:8px 0}
+  .account-switch-use{display:flex;align-items:center;gap:10px;flex:1;min-width:0;min-height:44px;border:0;background:none;color:var(--text);text-align:left;font:inherit;cursor:pointer}
+  .account-switch-use>span:last-child{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+  .account-switch-use small{color:var(--muted);font-size:11px}
+  .account-switch-use[aria-current]{color:var(--blue)}
+  .account-switcher .btn{min-height:44px}
+  .settings-migration-toggle{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.5}
+  .settings-migration-toggle input{width:18px;height:18px;flex-shrink:0;accent-color:var(--blue)}
   .delivery-overview-heading>.module-help-btn{flex-shrink:0}
   .project-data-header{gap:8px}
   .project-data-header>div:first-child{min-width:0;flex:1;overflow-wrap:anywhere}

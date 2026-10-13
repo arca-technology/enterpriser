@@ -18,6 +18,10 @@ const isLive = () => {
 
 // ---------- Autenticação Supabase ----------
 const AUTH_SESSION_KEY = "crm_auth_session";
+const QUICK_ACCOUNT_EMAILS = new Set(["upgferreira@gmail.com", "ulisses.ferreira@ecommerce365.com.br", "dev@enterpriser.com.br"]);
+const quickAccountSessions = new Map();
+let accountEpoch = 0;
+let accountWritesInFlight = 0;
 const PRIVACY_CONSENT_KEY = "erc_privacy_consent_v1";
 const PRIVACY_VERSION = "2026-09-19";
 let currentProfile = null;
@@ -75,7 +79,95 @@ function storeAuthSession(session) {
     expires_at: Number(session.expires_at || Math.floor(Date.now() / 1000) + Number(session.expires_in || 3600))
   };
   localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(normalized));
+  const remembered = quickAccountSessions.get(normalized.user?.id);
+  if (remembered) remembered.session = normalized;
   return normalized;
+}
+function quickAccountSwitchAllowed(profile = currentProfile) {
+  return Boolean(isLive() && profile?.status === "active" && QUICK_ACCOUNT_EMAILS.has(String(profile.email || "").toLowerCase()));
+}
+function rememberAccountSession(profile, session = readAuthSession()) {
+  if (quickAccountSwitchAllowed(profile) && session?.refresh_token && session.user?.id === profile.auth_user_id) quickAccountSessions.set(profile.auth_user_id, { profile: { ...profile }, session });
+}
+async function accountProfileForSession(session) {
+  if (!session?.access_token || !session.user?.id) throw new Error("Não foi possível autenticar esta conta.");
+  const c = getCfg();
+  const response = await fetch(`${c.url}/rest/v1/profiles?auth_user_id=eq.${encodeURIComponent(session.user.id)}&select=*&limit=1`, {
+    headers: { apikey: c.anonKey, Authorization: `Bearer ${session.access_token}` }
+  });
+  const rows = await response.json().catch(() => []);
+  const profile = Array.isArray(rows) ? rows[0] : null;
+  if (!response.ok || profile?.auth_user_id !== session.user.id || !quickAccountSwitchAllowed(profile)) throw new Error("Esta conta não está habilitada para a troca rápida.");
+  return profile;
+}
+async function commitAccountSwitch(profile, session) {
+  if (accountWritesInFlight) throw new Error("Aguarde o salvamento em andamento antes de alternar a conta.");
+  rememberAccountSession(currentProfile);
+  rememberAccountSession(profile, session);
+  accountEpoch++;
+  stopLiveUpdates(); stopInternalChatPolling();
+  clearTimeout(columnPreferenceSaveTimer);
+  closeHelpPanel(); closeFloaters(); closeModal();
+  storeAuthSession(session);
+  currentProfile = profile;
+  cache = null;
+  identityUrls.clear();
+  workspaceIdentityReady = false;
+  remoteToolEmails = []; remoteToolEmailsLoaded = false; remoteToolEmailsLoadedAt = 0;
+  remoteToolFiles = []; remoteToolFilesLoaded = false; remoteToolFilesLoadedAt = 0;
+  remoteToolProcesses = []; remoteToolProcessesLoaded = false; remoteToolProcessesLoadedAt = 0;
+  remoteToolDocuments = []; remoteToolDocumentsLoaded = false; remoteToolDocumentsLoadedAt = 0;
+  remoteToolTables = []; remoteToolTablesLoaded = false; remoteToolTablesLoadedAt = 0;
+  state.tab = "home"; state.q = ""; state.view = "table"; state.page = 1;
+  state.filters = {}; state.selectedConversations.clear();
+  state.pmScopes = {}; state.expandedActivityClients.clear();
+  Object.values(state.bulkSelections).forEach((selection) => selection.clear());
+  Object.keys(state.pages).forEach((tab) => { state.pages[tab] = 1; });
+  secondaryTableSelections.clear();
+  homeDayState.selected.clear(); homeDayState.scope = "mine";
+  document.getElementById("search").value = "";
+  document.getElementById("main").replaceChildren();
+  document.getElementById("boot-gate")?.removeAttribute("hidden");
+  await init();
+}
+async function useSavedAccount(id) {
+  if (!quickAccountSwitchAllowed()) throw new Error("Troca rápida não habilitada para esta conta.");
+  const account = quickAccountSessions.get(id);
+  if (!account?.session?.refresh_token) throw new Error("Adicione novamente esta conta.");
+  const session = await authRequest("token?grant_type=refresh_token", { refresh_token: account.session.refresh_token });
+  if (session.user?.id !== id) throw new Error("A sessão não corresponde à conta selecionada.");
+  const profile = await accountProfileForSession(session);
+  await commitAccountSwitch(profile, session);
+}
+function openAccountSwitcher() {
+  if (!quickAccountSwitchAllowed() || !confirmUiDiscard(activeUiDialog())) return;
+  rememberAccountSession(currentProfile);
+  const currentId = readAuthSession()?.user?.id;
+  const accounts = [...quickAccountSessions.values()].filter((account) => quickAccountSwitchAllowed(account.profile));
+  sidePanel("Alternar conta", `<div class="account-switcher"><div>${accounts.map(({ profile }) => `<div class="account-switch-row"><button class="account-switch-use" type="button" data-account-use="${esc(profile.auth_user_id)}"${profile.auth_user_id === currentId ? ' disabled aria-current="true"' : ""}>${identityAvatarHtml(profile.id)}<span><strong>${esc(profile.nickname || profile.full_name || profile.email)}</strong><small>${esc(profile.email)} · ${esc(({ admin: "Administrador", collaborator: "Colaborador", developer: "Desenvolvedor" })[profile.role] || profile.role)}</small></span></button>${profile.auth_user_id === currentId ? '<span class="muted">Atual</span>' : `<button class="btn" type="button" data-account-forget="${esc(profile.auth_user_id)}" title="Remover conta desta sessão" aria-label="Remover conta desta sessão">${window.CRM_NAV_ICONS?.x || "×"}</button>`}</div>`).join("")}</div>
+    <form id="account-add-form" class="form"><div class="field full"><label for="account-email">Adicionar conta nesta sessão</label><input id="account-email" type="email" autocomplete="username" required></div><div class="field full"><label for="account-password">Senha</label><input id="account-password" type="password" autocomplete="current-password" required></div><button class="btn primary" type="submit" id="account-add">Adicionar e alternar</button></form><p id="account-error" role="alert" hidden></p></div>`);
+  let busy = false;
+  const run = async (fn) => {
+    if (busy) return;
+    busy = true;
+    document.querySelectorAll(".account-switcher button").forEach((button) => { button.disabled = true; });
+    try { await fn(); }
+    catch (error) { const box = document.getElementById("account-error"); if (box) { box.hidden = false; box.textContent = error.message || String(error); } }
+    finally { busy = false; document.querySelectorAll(".account-switcher button:not([aria-current])").forEach((button) => { button.disabled = false; }); }
+  };
+  document.querySelectorAll("[data-account-use]").forEach((button) => button.addEventListener("click", () => run(() => useSavedAccount(button.dataset.accountUse))));
+  document.querySelectorAll("[data-account-forget]").forEach((button) => button.addEventListener("click", () => { quickAccountSessions.delete(button.dataset.accountForget); openAccountSwitcher(); }));
+  document.getElementById("account-add-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    run(async () => {
+      const email = document.getElementById("account-email").value.trim().toLowerCase();
+      if (!QUICK_ACCOUNT_EMAILS.has(email)) throw new Error("Por enquanto, a troca rápida está liberada somente para suas contas Ulisses.");
+      const session = await authRequest("token?grant_type=password", { email, password: document.getElementById("account-password").value });
+      const profile = await accountProfileForSession(session);
+      document.getElementById("account-password").value = "";
+      await commitAccountSwitch(profile, session);
+    });
+  });
 }
 async function authRequest(path, body, accessToken = null) {
   const c = getCfg();
@@ -93,12 +185,16 @@ async function authRequest(path, body, accessToken = null) {
 async function getAccessToken() {
   if (!isLive()) return null;
   let session = readAuthSession();
+  const epoch = accountEpoch;
   if (!session?.access_token || !session?.refresh_token) return null;
   if (Number(session.expires_at || 0) > Math.floor(Date.now() / 1000) + 60) return session.access_token;
   try {
-    session = storeAuthSession(await authRequest("token?grant_type=refresh_token", { refresh_token: session.refresh_token }));
+    const refreshed = await authRequest("token?grant_type=refresh_token", { refresh_token: session.refresh_token });
+    if (epoch !== accountEpoch) return null;
+    session = storeAuthSession(refreshed);
     return session.access_token;
   } catch (e) {
+    if (epoch !== accountEpoch) return null;
     storeAuthSession(null);
     return null;
   }
@@ -118,15 +214,22 @@ function hideLogin() {
   if (gate) gate.hidden = true;
 }
 async function callUserAdmin(action, payload = {}) {
+  const epoch = accountEpoch;
   const c = getCfg();
   const token = await getAccessToken();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!token) throw new Error("Sua sessão expirou. Entre novamente.");
-  const res = await fetch(`${c.url}/functions/v1/manage-crm-user`, {
+  accountWritesInFlight++;
+  let res, data;
+  try {
+    res = await fetch(`${c.url}/functions/v1/manage-crm-user`, {
     method: "POST",
     headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...payload })
   });
-  const data = await res.json().catch(() => ({}));
+    data = await res.json().catch(() => ({}));
+  } finally { accountWritesInFlight--; }
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!res.ok) {
     const message = data.error || data.message || `Falha ao gerenciar acesso (${res.status})`;
     if (res.status === 403) throw new Error(`${message} Sessão atual: ${currentSessionLabel()}. Saia e entre com o acesso administrador.`);
@@ -136,6 +239,8 @@ async function callUserAdmin(action, payload = {}) {
 }
 async function signOut() {
   const session = readAuthSession();
+  quickAccountSessions.clear();
+  accountEpoch++;
   try { if (session?.access_token) await authRequest("logout", null, session.access_token); } catch (e) {}
   stopLiveUpdates();
   storeAuthSession(null);
@@ -651,8 +756,10 @@ const DEMO = {
 
 // ---------- REST Supabase ----------
 async function api(path, opts = {}) {
+  const epoch = accountEpoch;
   const c = getCfg();
   const token = await getAccessToken();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (isLive() && !token) {
     showLogin("Sua sessão expirou. Entre novamente.");
     throw new Error("Sessão expirada");
@@ -668,18 +775,25 @@ async function api(path, opts = {}) {
   noteOwnWrite(resource, query, method);
   const entry = { at: new Date().toISOString(), method, resource, query: query.slice(0, 300), status: 0, ms: 0, error: "" };
   let res;
+  const writing = !["GET", "HEAD"].includes(method);
   try {
+    if (writing) accountWritesInFlight++;
     res = await fetch(`${c.url}/rest/v1/${path}`, { ...opts, headers });
   } catch (networkError) {
+    if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
     entry.ms = Math.round(performance.now() - startedAt);
     entry.error = networkError?.message || "Falha de rede";
     recordApiRequest(entry);
     throw networkError;
+  } finally {
+    if (writing) accountWritesInFlight--;
   }
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   entry.status = res.status;
   entry.ms = Math.round(performance.now() - startedAt);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
+    if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
     entry.error = `${res.statusText}${txt ? " · " + txt.slice(0, 500) : ""}`.trim();
     recordApiRequest(entry);
     if (res.status === 401) {
@@ -691,6 +805,7 @@ async function api(path, opts = {}) {
   recordApiRequest(entry);
   if (res.status === 204) return null;
   const text = await res.text();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   return text.trim() ? JSON.parse(text) : null;
 }
 
@@ -786,6 +901,7 @@ async function fetchTable(name) {
 }
 async function createRow(table, body) {
   if (!requireDataPermission(table, "create")) throw new Error("Operação não permitida para este usuário.");
+  if (isLive() && currentProfile?.role === "collaborator" && table === "activities" && !currentUserOwnsOperational(body)) throw new Error("Uma nova tarefa deve incluir você como responsável.");
   if (table === "pipelines") validatePipelineStages(null, body.stages, []);
   if (!isLive()) {
     const row = PK_COLUMN[table] ? { ...body } : { id: crypto.randomUUID(), ...body };
@@ -812,6 +928,7 @@ async function createActivityOrLoadExisting(body) {
 }
 async function updateRow(table, id, body) {
   if (!requireDataPermission(table, "edit")) throw new Error("Operação não permitida para este usuário.");
+  requireOperationalOwnership(table, id, body);
   if (table === "pipelines" && Object.hasOwn(body, "stages")) await assertPipelineChangeAllowed(id, body.stages);
   const k = pk(table);
   if (!isLive()) { const r = DEMO[table].find((x) => x[k] === id); Object.assign(r, body); return r; }
@@ -824,6 +941,7 @@ async function updateRow(table, id, body) {
 }
 async function deleteRow(table, id) {
   if (!requireDataPermission(table, "delete")) throw new Error("Operação não permitida para este usuário.");
+  requireOperationalOwnership(table, id);
   if (table === "pipelines") await assertPipelineChangeAllowed(id);
   const k = pk(table);
   if (!isLive()) { DEMO[table] = DEMO[table].filter((x) => x[k] !== id); return; }
@@ -834,6 +952,7 @@ async function deleteRow(table, id) {
 }
 
 async function emailAccountsRequest(method = "GET", body = null) {
+  const epoch = accountEpoch;
   if (APP_VARIANT !== "web" || !isLive()) throw new Error("A criação automática de e-mail está disponível na versão web conectada.");
   const permissionAction = method === "GET" ? "view" : method === "DELETE" ? "delete" : method === "PATCH" || body?.action === "update-metadata" ? "edit" : "create";
   const deliveryProvision = method === "POST" && typeof body?.deliveryId === "string" && body.deliveryId.trim() && !body.companyId && !body.action;
@@ -842,13 +961,20 @@ async function emailAccountsRequest(method = "GET", body = null) {
   } else if (!requireCurrentUserPermission("emails", permissionAction, "Emails")) throw new Error("Operação não permitida para este usuário.");
   const c = getCfg();
   const token = await getAccessToken();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!token) throw new Error("Sua sessão expirou. Entre novamente.");
-  const response = await fetch(`${c.url}/functions/v1/provision-client-email`, {
+  const writing = method !== "GET";
+  let response, data;
+  try {
+    if (writing) accountWritesInFlight++;
+    response = await fetch(`${c.url}/functions/v1/provision-client-email`, {
     method,
     headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined
   });
-  const data = await response.json().catch(() => ({}));
+    data = await response.json().catch(() => ({}));
+  } finally { if (writing) accountWritesInFlight--; }
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!response.ok) throw new Error(data.error || `Falha ao acessar os e-mails (${response.status})`);
   return data;
 }
@@ -1051,11 +1177,47 @@ function saveProjectTasks(rows) {
 }
 function operationalProjectTasks(projectId = null) {
   const templates = new Map((cache?.productActivities || []).map((item) => [item.id, item]));
-  return loadProjectTasks().filter((task) => {
+  return visibleOperationalTasks(loadProjectTasks()).filter((task) => {
     if (projectId && task.project_id !== projectId) return false;
     const template = templates.get(task.source_template_id);
     return projectTaskEnabled(cache?.projectById?.[task.project_id], template || task);
   });
+}
+function currentUserOwnsOperational(row) {
+  if (!row || !currentProfile?.id) return false;
+  if (row.owner_id === currentProfile.id || normalizeIdList(row.assignee_ids).includes(currentProfile.id)) return true;
+  const title = String(currentProfile.job_title || "").trim().toLocaleLowerCase("pt-BR");
+  return Boolean(title && normalizeTextList(row.assignee_job_titles).some((item) => item.toLocaleLowerCase("pt-BR") === title));
+}
+function visibleOperationalTasks(rows) {
+  if (!isLive() || currentProfile?.role !== "collaborator") return rows;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const visible = new Set();
+  const pending = rows.filter(currentUserOwnsOperational);
+  while (pending.length) {
+    const row = pending.pop();
+    if (visible.has(row.id)) continue;
+    visible.add(row.id);
+    for (const id of normalizeIdList(row.dependency_ids).concat(row.depends_on_activity_id || [], row.parent_activity_id || [])) {
+      const dependency = byId.get(id);
+      if (dependency && dependency.project_id === row.project_id && !visible.has(id)) pending.push(dependency);
+    }
+  }
+  return rows.filter((row) => visible.has(row.id));
+}
+function canEditOperational(table, row, action = "edit") {
+  const module = table === "activities" ? "activities" : "projects";
+  return currentUserCan(module, action) && (!isLive() || currentProfile?.role !== "collaborator" || currentUserOwnsOperational(row));
+}
+function requireOperationalOwnership(table, id, patch = null) {
+  if (!isLive() || currentProfile?.role !== "collaborator" || !["activities", "deliveryGoals", "deliveryObjectives"].includes(table)) return;
+  const rows = table === "activities" ? cache?.activityRecords : cache?.[table];
+  const row = rows?.find((row) => row.id === id);
+  if (!currentUserOwnsOperational(row)) throw new Error("Este registro está disponível somente para consulta: você não é responsável.");
+  if (patch && !currentUserOwnsOperational({ ...row, ...patch })) throw new Error("Mantenha você ou seu cargo entre os responsáveis deste registro.");
+}
+function canCorrectTaskDates(task) {
+  return canEditOperational("activities", task) && (currentUserIsAdmin() || workspaceIdentity.task_date_migration_enabled === true);
 }
 function loadProductActivities() {
   if (isLive() && cache?.productActivities) return cache.productActivities;
@@ -1564,6 +1726,7 @@ async function recalculateDependencySchedules(projectId = null) {
   for (let pass = 0; pass <= candidates.length; pass += 1) {
     let changedThisPass = false;
     for (const task of candidates) {
+      if (!canEditOperational("activities", task)) continue;
       const dependencies = normalizeIdList(task.dependency_ids, task.depends_on_activity_id).map((id) => byId.get(id)).filter(Boolean);
       if (!dependencies.length) continue;
       const ends = dependencies.map((dependency) => dependency.status === "done" && dependency.actual_end_date ? dependency.actual_end_date : taskPlannedEnd(dependency));
@@ -1940,6 +2103,7 @@ function syncWhatsAppQueue() {
 }
 
 async function loadAll() {
+  const epoch = accountEpoch;
   // Cada tabela é buscada de forma independente: se uma ainda não existir ou
   // tiver nome diferente no banco, o módulo dela fica vazio em vez de
   // derrubar o carregamento inteiro (ex.: "companies" continua funcionando
@@ -1982,8 +2146,10 @@ async function loadAll() {
   const conversations = isLive()
     ? (await fetchTable("conversations").catch(() => [])).map(conversationFromRemote)
     : loadConversations();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (isLive()) rememberConversationSnapshot(conversations);
   const projectById = byId(projects);
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   cache = { users, companies, contacts, products, deals, projects, pipelines, conversations,
     activities: [], activityRecords, productActivities, productObjectives, productGoals, deliveryObjectives, deliveryGoals, contactCompanies: contactCompanies || [], activityComments,
     companyById: byId(companies, pk("companies")), contactById: byId(contacts), productById: byId(products),
@@ -2383,7 +2549,7 @@ const taskStatusLabel = (status) => TASK_STATUS.find((item) => item.id === statu
 const taskStatusTone = (status) => status === "done" ? "won" : status === "canceled" ? "lost" : status === "doing" ? "negotiation" : "lead";
 const taskStatusClass = (status) => `task-status-${["todo", "doing", "done", "canceled"].includes(status) ? status : "todo"}`;
 function inlineTaskStatus(task, className = "inline-task-status") {
-  const disabled = !currentUserCan("activities", "operate") || taskStatusLocked(task);
+  const disabled = !canEditOperational("activities", task, "operate") || taskStatusLocked(task);
   return `<select class="${className} ${taskStatusClass(task.status || "todo")}" data-id="${esc(task.id)}" title="${task.status === "done" ? "Atendido: status definitivo" : taskStatusLocked(task) ? "Somente administradores reabrem tarefas canceladas" : "Alterar status"}"${disabled ? " disabled" : ""}>${taskStatusOptions(task.status || "todo", taskIsBlocked(task), true)}</select>`;
 }
 function taskDeadlineState(task) {
@@ -2481,6 +2647,7 @@ async function createProjectFromDeal(deal) {
 }
 
 function toast(msg, isErr) {
+  if (String(msg).includes("Conta alterada durante a operação.")) return;
   if (isErr && activeUiDialog()) { showUiError(activeUiDialog(), msg); return; }
   const el = document.createElement("div");
   el.className = "toast" + (isErr ? " err" : "");
@@ -2808,7 +2975,7 @@ function userDisplayName(id, c = cache, missing = "Responsável não encontrado"
 
 // Identity metadata stays separate from permissions and customer access scopes.
 const IDENTITY_BUCKET = "crm-identity-assets";
-let workspaceIdentity = { company_name: "ECOMMERCE365", logo_path: null };
+let workspaceIdentity = { company_name: "ECOMMERCE365", logo_path: null, task_date_migration_enabled: true };
 let workspaceIdentityReady = false;
 const identityUrls = new Map();
 const identityDemoFiles = new Map();
@@ -2818,14 +2985,22 @@ function identityPathValid(path) {
   return /^(users\/[0-9a-f-]{36}|workspace)\/[0-9a-f-]{36}\.webp$/.test(String(path || ""));
 }
 async function identityRequest(path, options = {}, storage = false) {
+  const epoch = accountEpoch;
   const c = getCfg();
   const token = await getAccessToken();
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!token) throw new Error("Sua sessão expirou. Entre novamente.");
-  const response = await fetch(`${c.url}/${storage ? "storage" : "rest"}/v1/${path}`, {
+  const writing = !["GET", "HEAD"].includes(String(options.method || "GET").toUpperCase());
+  let response, data;
+  try {
+    if (writing) accountWritesInFlight++;
+    response = await fetch(`${c.url}/${storage ? "storage" : "rest"}/v1/${path}`, {
     ...options,
     headers: { apikey: c.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...options.headers }
   });
-  const data = await response.json().catch(() => null);
+    data = await response.json().catch(() => null);
+  } finally { if (writing) accountWritesInFlight--; }
+  if (epoch !== accountEpoch) throw new Error("Conta alterada durante a operação.");
   if (!response.ok) throw new Error(data?.message || data?.error || "Não foi possível salvar. Tente novamente.");
   return data;
 }
@@ -2833,7 +3008,7 @@ async function loadWorkspaceIdentity() {
   workspaceIdentityReady = false;
   if (!isLive()) { workspaceIdentityReady = true; return; }
   try {
-    const rows = await api("crm_workspace_settings?id=eq.true&select=company_name,logo_path");
+    const rows = await api("crm_workspace_settings?id=eq.true&select=company_name,logo_path,task_date_migration_enabled");
     if (rows?.[0]) { workspaceIdentity = rows[0]; workspaceIdentityReady = true; }
   } catch (_) { /* Profile remains usable if workspace branding is unavailable. */ }
 }
@@ -3536,7 +3711,7 @@ function bulkSuggestions(rows, key) {
 function taskBulkProvider(rows, rerender, keys = null) {
   return {
     canEdit: currentUserCan("activities", "edit"),
-    fields: () => TASK_BULK_FIELDS().filter((field) => !keys || keys.includes(field.k)).map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
+    fields: () => TASK_BULK_FIELDS().filter((field) => (!keys || keys.includes(field.k)) && (field.type !== "date" || rows().some(canCorrectTaskDates))).map((field) => field.type === "text" ? { ...field, suggestions: bulkSuggestions(rows(), field.k) } : field),
     apply: async (ids, patch) => {
       const dates = "planned_start_date" in patch || "planned_end_date" in patch;
       const changes = { ...patch };
@@ -3548,10 +3723,11 @@ function taskBulkProvider(rows, rerender, keys = null) {
       for (const id of ids) {
         const task = loadProjectTasks().find((item) => item.id === id);
         if (!task) continue;
+        if (!canEditOperational("activities", task) || (dates && !canCorrectTaskDates(task))) { refused += 1; continue; }
         if (changes.status && taskStatusTransitionError(task.status || "todo", changes.status)) { refused += 1; continue; }
         if (await updateProjectTask(id, changes)) { updated += 1; projects.add(task.project_id); }
       }
-      if (refused) toast(`${refused} tarefa(s) mantida(s) pelo fluxo de status: inicie antes de atender; Atendido é definitivo e Em andamento não volta para Em aberto.`, true);
+      if (refused) toast(`${refused} tarefa(s) mantida(s) pelas permissões ou pelo fluxo de status.`, true);
       if (dates) for (const projectId of projects) await recalculateDependencySchedules(projectId);
       return updated;
     },
@@ -4008,6 +4184,7 @@ function rowsFor(tab, c) {
   if (tab === "contacts") annotateContactLinks(c);
   if (tab === "conversations") annotateConversationLinks(c);
   let rows = c[tab] || [];
+  if (tab === "activities") rows = visibleOperationalTasks(rows);
   if (state.q) {
     const q = state.q.toLowerCase();
     const cols = columns(tab, c);
@@ -4112,7 +4289,7 @@ function renderTable(c) {
       const checklist = normalizeChecklist(r.checklist);
       return groupHeader + `<tr${taskRowAttrs}>${selectTd}<td class="expand-cell"></td>${tds}<td class="act action-col table-actions-cell">${tableActionButtons({
         open: checklist.length ? { className: "checklist-open", attrs: { "data-id": rid }, title: "Abrir checklist", enabled: currentUserCan("activities", "view") || currentUserCan("activities", "operate") } : null,
-        edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: currentUserCan("activities", "edit") } : null
+        edit: r.project_id ? { className: "main-task-edit", attrs: { "data-id": rid, "data-project-id": r.project_id }, title: "Editar tarefa", enabled: canEditOperational("activities", r) } : null
       })}</td></tr>`;
     }
     if (["goals", "objectives"].includes(state.tab)) {
@@ -7451,6 +7628,7 @@ async function updateDeliveryObjective(objectiveId, patch) {
   const rows = loadDeliveryObjectives();
   const objective = rows.find((item) => item.id === objectiveId);
   if (!objective) return;
+  if (!canEditOperational("deliveryObjectives", objective)) { toast("Você pode editar somente os objetivos pelos quais é responsável.", true); return false; }
   if (patch.status && patch.status !== "todo") {
     const dependencyState = deliveryObjectiveDependencyState(objective);
     if (dependencyState.blocked) {
@@ -7478,6 +7656,8 @@ async function updateDeliveryObjective(objectiveId, patch) {
 function wireDeliveryObjectives(projectId) {
   document.querySelectorAll("#project-board-root tr[data-objective-id]").forEach((row) => {
     const objectiveId = row.dataset.objectiveId;
+    const objective = loadDeliveryObjectives().find((item) => item.id === objectiveId);
+    if (!canEditOperational("deliveryObjectives", objective)) { row.querySelectorAll("input,select,button").forEach((control) => { control.disabled = true; }); return; }
     const assigneePickerId = `delivery-objective-assignees-${objectiveId}`;
     wireMultiPicker(assigneePickerId);
     row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
@@ -7502,6 +7682,7 @@ async function updateDeliveryGoal(goalId, patch) {
   const rows = loadDeliveryGoals();
   const goal = rows.find((item) => item.id === goalId);
   if (!goal) return;
+  if (!canEditOperational("deliveryGoals", goal)) { toast("Você pode editar somente as metas pelas quais é responsável.", true); return false; }
   if (patch.status && patch.status !== "todo") {
     const dependencyState = deliveryGoalDependencyState(goal);
     if (dependencyState.blocked) {
@@ -7528,6 +7709,8 @@ async function updateDeliveryGoal(goalId, patch) {
 function wireDeliveryGoals(projectId) {
   document.querySelectorAll("#project-board-root tr[data-goal-id]").forEach((row) => {
     const goalId = row.dataset.goalId;
+    const goal = loadDeliveryGoals().find((item) => item.id === goalId);
+    if (!canEditOperational("deliveryGoals", goal)) { row.querySelectorAll("input,select,button").forEach((control) => { control.disabled = true; }); return; }
     const assigneePickerId = `delivery-goal-assignees-${goalId}`;
     wireMultiPicker(assigneePickerId);
     row.querySelector(`#${CSS.escape(assigneePickerId)}`)?.addEventListener("multi-picker-change", async () => {
@@ -7560,6 +7743,7 @@ async function updateProjectTask(taskId, patch) {
   const tasks = loadProjectTasks();
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
+  if (!canEditOperational("activities", task, "operate")) { toast("Esta tarefa está disponível somente para consulta.", true); return false; }
   const transitionError = patch.status ? taskStatusTransitionError(task.status || "todo", patch.status) : "";
   if (transitionError) {
     toast(transitionError, true);
@@ -7608,7 +7792,7 @@ function renderActivityChecklistPanel(taskId) {
   }
   const items = normalizeChecklist(task.checklist);
   const progress = checklistProgress(items);
-  const canOperate = currentUserCan("activities", "operate");
+  const canOperate = canEditOperational("activities", task, "operate");
   body.innerHTML = `<div class="checklist-panel-summary"><span>${progress.done} de ${progress.total} concluído(s)</span><strong>${progress.total ? Math.round(progress.done / progress.total * 100) : 0}%</strong></div>
     <div>${items.map((item) => `<div class="checklist-item${item.checked ? " done" : ""}" data-id="${esc(item.id)}">
       <input class="activity-check-toggle" type="checkbox"${item.checked ? " checked" : ""}${canOperate ? "" : " disabled"} title="Marcar como concluído">
@@ -7774,6 +7958,13 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   document.getElementById("project-task-drawer-overlay")?.remove();
   const tasks = projectTasks(projectId);
   const current = tasks.find((task) => task.id === editId) || {};
+  if (editId && !canEditOperational("activities", current)) { openActivityChecklist(editId); return; }
+  if (!document.querySelector("#ov .modal.full")) {
+    openProjectBoard(projectId);
+    projectBoardState.section = "activities";
+    projectBoardState.view = "table";
+    renderProjectBoard(projectId);
+  }
   const parentId = current.parent_activity_id || parentTaskId || null;
   const parentTask = parentId ? tasks.find((task) => task.id === parentId) : null;
   if (parentTask?.parent_activity_id) {
@@ -7785,6 +7976,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const selectedDependencies = new Set(normalizeIdList(current.dependency_ids, current.depends_on_activity_id));
   const dependencyOptions = tasks.filter((task) => task.id !== editId).map((task) => ({ value: task.id, label: activityDisplayName(task) }));
   const selectedAssignees = assigneePickerSelection(current.assignee_ids, current.owner_id, current.assign_to_client);
+  if (!editId && isLive() && currentProfile?.role === "collaborator") selectedAssignees.add(currentProfile.id);
   const selectedJobTitles = new Set(normalizeTextList(current.assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
@@ -7841,6 +8033,9 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   const close = () => overlay.remove();
   document.getElementById("project-task-close").addEventListener("click", close);
   document.getElementById("project-task-cancel").addEventListener("click", close);
+  if (editId && !canCorrectTaskDates(current)) {
+    ["planned-start", "planned-end", "actual-start", "actual-end"].forEach((key) => { document.getElementById(`project-task-${key}`).disabled = true; });
+  }
   wireMonthlyDeadline("project-task");
   wireMultiPicker("project-task-required-setup");
   wireTaskGroupSelect("project-task-group", "project-task-subgroup");
@@ -7866,8 +8061,9 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     const assigneeJobTitles = multiPickerValues("project-task-assignee-job-titles");
     const deadlineWindow = document.getElementById("project-task-recurrence").value === "monthly" ? document.getElementById("project-task-deadline-window").value : "date";
     const range = monthlyDeadlineRange(document.getElementById("project-task-planned-start").value || cache.projects.find((item) => item.id === projectId)?.start_date || isoDay(new Date()), deadlineWindow);
-    const plannedStart = range?.start || document.getElementById("project-task-planned-start").value || null;
-    const plannedEnd = range?.end || document.getElementById("project-task-planned-end").value || null;
+    const correctDates = !editId || canCorrectTaskDates(current);
+    const plannedStart = correctDates ? range?.start || document.getElementById("project-task-planned-start").value || null : current.planned_start_date || null;
+    const plannedEnd = correctDates ? range?.end || document.getElementById("project-task-planned-end").value || null : taskPlannedEnd(current) || null;
     const actualStart = document.getElementById("project-task-actual-start").value || null;
     const actualEnd = document.getElementById("project-task-actual-end").value || null;
     if (plannedStart && plannedEnd && plannedEnd < plannedStart) { toast("O término previsto não pode ser anterior ao início previsto.", true); return; }
@@ -7910,7 +8106,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       actual_end_date: actualEnd,
       due_date: plannedEnd,
       start_after_days: document.getElementById("project-task-start-after").value === "" ? null : Number(document.getElementById("project-task-start-after").value),
-      schedule_manual: editId && (plannedStart || null) === (current.planned_start_date || null) ? Boolean(current.schedule_manual) : Boolean(plannedStart),
+      schedule_manual: editId && (plannedStart || null) === (current.planned_start_date || null) && (plannedEnd || null) === (taskPlannedEnd(current) || null) ? Boolean(current.schedule_manual) : Boolean(plannedStart || plannedEnd),
       notes: current.notes || null,
       sort_order: editId ? Number(current.sort_order || 0) : Math.max(-1, ...tasks.filter((task) => (task.parent_activity_id || null) === parentId).map((task) => Number(task.sort_order || 0))) + 1,
       checklist: parentId ? (editId ? normalizeChecklist(current.checklist) : inheritedChecklist) : (subtasks.length ? [] : normalizeChecklist(current.checklist)),
@@ -7937,7 +8133,6 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       else saveProjectTasks(allTasks);
       refreshActivityCache();
       await recalculateDependencySchedules(projectId);
-      projectBoardState.page = Math.max(1, Math.ceil(projectTasks(projectId).length / projectBoardState.pageSize));
       close();
       renderProjectBoard(projectId);
       toast(editId ? (parentId ? "Subtarefa atualizada." : "Tarefa atualizada.") : (parentId ? "Subtarefa criada." : "Tarefa criada."));
@@ -10078,6 +10273,8 @@ async function createDealFromSelectedConversations() {
 
 function render() {
   if (!cache) return;
+  const accountButton = document.querySelector('[data-action="accounts"]');
+  if (accountButton) { accountButton.hidden = !quickAccountSwitchAllowed(); accountButton.innerHTML = window.CRM_NAV_ICONS?.users || ""; }
   if (state.tab !== "home" && !mainModuleCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
@@ -11554,10 +11751,13 @@ function openSettings() {
       <div class="field full"><label for="settings-reddit">Usuário no Reddit</label><input id="settings-reddit" data-k="myRedditUsername" value="${esc(c.myRedditUsername || "")}" placeholder="sem o u/" maxlength="80"></div>
     </div></section>
     ${admin ? `<section id="settings-workspace"><h4>Empresa da conta</h4>${workspaceIdentityReady ? `${photoControl("logo", "Alterar logo")}<div class="form"><div class="field full"><label for="settings-company-name">Nome da empresa</label><input id="settings-company-name" data-k="company_name" value="${esc(workspaceIdentity.company_name)}" maxlength="160" required></div></div>` : '<p>Não foi possível carregar os dados da empresa. Feche e abra as configurações para tentar novamente.</p>'}</section>` : ""}
+    ${admin && workspaceIdentityReady ? `<section><h4>Migração de dados</h4><label class="settings-migration-toggle"><input id="settings-task-dates" type="checkbox"${workspaceIdentity.task_date_migration_enabled ? " checked" : ""}>Permitir correção de datas nas tarefas dos colaboradores</label></section>` : ""}
+    ${quickAccountSwitchAllowed(profile) ? '<section><h4>Contas</h4><button class="btn" type="button" id="settings-switch-account">Alternar conta</button></section>' : ""}
     ${privacySettings}
     <p id="settings-error" class="profile-settings-error" role="alert" hidden></p></div>
     <div class="modal-foot">${privacyButton}<button class="btn" id="settings-cancel" type="button">Cancelar</button><button class="btn primary" id="save" type="button">Salvar</button></div>`, { onClose: exit });
   document.getElementById("settings-cancel").addEventListener("click", exit);
+  document.getElementById("settings-switch-account")?.addEventListener("click", () => { if (confirmUiDiscard(document.querySelector("#modal-root .modal"))) { exit(); openAccountSwitcher(); } });
   const errorBox = document.getElementById("settings-error");
   const showError = (message) => { errorBox.textContent = message; errorBox.hidden = !message; };
   const saveButton = document.getElementById("save");
@@ -11640,11 +11840,11 @@ function openSettings() {
       Object.assign(profile, saved);
       Object.assign(drafts.photo, { path: photoPath, blob: null, changed: false });
       if (oldPhoto && oldPhoto !== photoPath) await deleteIdentityImage(oldPhoto).catch(() => {});
-      if (admin && workspaceIdentityReady && (drafts.logo.changed || companyName !== workspaceIdentity.company_name)) {
+      if (admin && workspaceIdentityReady && (drafts.logo.changed || companyName !== workspaceIdentity.company_name || document.getElementById("settings-task-dates")?.checked !== workspaceIdentity.task_date_migration_enabled)) {
         const oldLogo = workspaceIdentity.logo_path;
         const logoPath = drafts.logo.blob ? await uploadIdentityImage(drafts.logo.blob, true) : drafts.logo.path;
         if (drafts.logo.blob) uploaded.add(logoPath);
-        const branding = { company_name: companyName, logo_path: logoPath };
+        const branding = { company_name: companyName, logo_path: logoPath, task_date_migration_enabled: document.getElementById("settings-task-dates")?.checked === true };
         if (isLive()) {
           const rows = await identityRequest("crm_workspace_settings?id=eq.true&select=*", { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(branding) });
           if (!rows?.[0]) throw new Error("Não foi possível atualizar a empresa.");
@@ -18564,6 +18764,7 @@ function handleAction(action) {
     if (window.confirm("Deseja sair do ENTERPRISER CMS?")) signOut();
     return;
   }
+  if (action === "accounts") { openAccountSwitcher(); return; }
 }
 
 // ---------- Tempo real ----------
@@ -18950,9 +19151,11 @@ async function importSharedFiles() {
 }
 
 async function init() {
+  const epoch = accountEpoch;
   setConn();
   try {
     await loadAll();
+    if (epoch !== accountEpoch) return;
     if (isLive()) {
       const session = readAuthSession();
       currentProfile = cache.users.find((user) => user.auth_user_id === session?.user?.id)
@@ -18962,8 +19165,10 @@ async function init() {
         showLogin("Este usuário não possui um perfil ativo no CMS.");
         return;
       }
+      rememberAccountSession(currentProfile, session);
       loadNavigationPreference();
       await loadRemoteColumnPreferences();
+      if (epoch !== accountEpoch) return;
       if (currentUserIsAdmin()) {
         await migrateLocalOperationalData();
         await syncProductObjectives();
@@ -18974,6 +19179,7 @@ async function init() {
     }
     if (!isLive()) loadNavigationPreference();
     await migrateLocalConversations();
+    if (epoch !== accountEpoch) return;
     syncRedditQueue();
     syncWhatsAppQueue();
     hideLogin();
@@ -18983,6 +19189,7 @@ async function init() {
     await importSharedFiles();
     if (isLive()) setTimeout(runCompanyRegistryQueue, 3000);
   } catch (err) {
+    if (epoch !== accountEpoch) return;
     document.getElementById("main").innerHTML =
       `<div class="empty">Falha ao carregar do Supabase.<br><span class="muted">${esc(err.message)}</span><br><br>` +
       `Confira URL / anon key em Configurações e as políticas de RLS.</div>`;
