@@ -1090,6 +1090,14 @@
   .registration-mind-task.is-done{opacity:.6}
   .registration-mind-task-main.is-static{cursor:default}
   .registration-mind-task-main.is-static:hover{background:transparent}
+  .registration-mindmap-shell.registration-users-map .registration-mind-task.collaborator-mind-card{width:280px;min-width:280px;max-width:280px}
+  .registration-users-map .registration-mind-task-main{grid-template-columns:minmax(0,1fr)}
+  .registration-users-map .registration-mindmap-root{width:136px}
+  .registration-users-map .identity-person{font-weight:700;white-space:normal;overflow-wrap:anywhere}
+  .registration-users-map .registration-mind-task-copy{min-width:0}
+  .registration-users-map .registration-mind-task-copy small{overflow-wrap:anywhere;white-space:normal}
+  .registration-users-map .collaborator-inactive{color:var(--red)}
+  .registration-users-map.is-vertical .registration-mind-children{flex-direction:column;align-items:center}
   /* Ligações de dependência entre tarefas do mapa mental. */
   .registration-mindmap-canvas{position:relative;z-index:0;padding-right:96px}
   .registration-mind-links{position:absolute;top:0;left:0;z-index:-1;overflow:visible;pointer-events:none}
@@ -1249,7 +1257,7 @@
   .registration-activities-table tbody tr:nth-child(even) .select-cell,.registration-activities-table tbody tr:nth-child(even) td.registration-task-sticky,.registration-activities-table tbody tr:nth-child(even) td:last-child{background:var(--row-alt)}
   .registration-activities-table tbody tr:hover .select-cell,.registration-activities-table tbody tr:hover td.registration-task-sticky,.registration-activities-table tbody tr:hover td:last-child{background:var(--row-hover)}
   body.light .registration-activities-table .select-head,body.light .registration-activities-table thead th.registration-task-sticky,body.light .registration-activities-table thead th:last-child{background:#e5ebf3}
-  @media(max-width:900px){.modal-toolbar.registration-toolbar{grid-template-columns:1fr}.registration-toolbar-center{order:-1}.registration-toolbar-right{justify-content:flex-start;padding-left:0}}
+  @media(max-width:900px){.modal-toolbar.registration-toolbar{grid-template-columns:1fr;height:auto;min-height:40px;flex:0 0 auto;gap:6px}.registration-toolbar-center{order:-1}.registration-toolbar-right{justify-content:flex-start;flex-wrap:wrap;padding-left:0}}
   .modal.full .modal-foot{flex:0 0 auto}
   .home{padding:18px;display:flex;flex-direction:column;gap:18px;overflow:auto}
   .home-metrics{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}

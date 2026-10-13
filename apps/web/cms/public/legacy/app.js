@@ -567,7 +567,12 @@ const REGISTRATION_PERMISSION_MODULE = {
   products: "products", pipelines: "pipelines", users: "users", emails: "emails",
   activities: "activityTemplates", goals: "goalTemplates", objectives: "objectiveTemplates"
 };
-const ACCESS_PROFILE_LABEL = { custom: "Personalizado", collaborator: "Colaborador", project_manager: "Gerente de Projetos" };
+const ACCESS_PROFILE_LABEL = { custom: "Personalizado", collaborator: "Colaborador", project_manager: "Gerente" };
+const OPERATIONS_JOB_HIERARCHY = ["Diretor de operações", "Gerente de operações", "Analista de operações", "Assistente de operações", "Auxiliar de operações"];
+function operationsJobRank(title) {
+  const normalize = (value) => String(value || "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR").replace(/\s+/g, " ");
+  return OPERATIONS_JOB_HIERARCHY.findIndex((job) => normalize(job) === normalize(title));
+}
 const AUTO_ASSIGNMENT_FIELDS = [
   { task: "category", profile: "auto_assignment_categories", label: "Categoria" },
   { task: "channel", profile: "auto_assignment_channels", label: "Canal" },
@@ -12722,7 +12727,7 @@ function userFormHtml() {
       </select><small class="muted">${esc(ROLE_DESCRIPTION[umState.role] || "")}</small></div>
        <div class="field"><label>Perfil de acesso</label><select id="u-access-profile"${umState.role === "collaborator" ? "" : " disabled"}>${Object.entries(umState.role === "collaborator" ? ACCESS_PROFILE_LABEL : { custom: accessProfileLabel({ role: umState.role }) }).map(([value, label]) => `<option value="${value}"${(umState.access_profile || "custom") === value ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>
       <div class="field"><label>Função</label><input id="u-function" value="${esc(umState.function_name)}" placeholder="Ex.: Gestão de projetos"></div>
-      <div class="field"><label>Cargo</label><input id="u-job-title" value="${esc(umState.job_title)}" placeholder="Ex.: Analista de implantação"></div>
+      <div class="field"><label>Cargo</label><input id="u-job-title" value="${esc(umState.job_title)}" list="user-job-titles" placeholder="Ex.: Analista de operações"><datalist id="user-job-titles">${normalizeTextList([...OPERATIONS_JOB_HIERARCHY, ...(cache?.users || []).map((user) => user.job_title)]).map((title) => `<option value="${esc(title)}"></option>`).join("")}</datalist></div>
       <div class="field"><label>Status</label><select id="u-status">
         <option value="active"${umState.status === "active" ? " selected" : ""}>Ativo</option>
         <option value="inactive"${umState.status === "inactive" ? " selected" : ""}>Inativo</option>
@@ -13087,6 +13092,37 @@ function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orde
   </section>`;
 }
 
+function collaboratorMindMapCardHtml(user) {
+  const name = user.nickname || user.full_name || user.email || "Sem nome";
+  const content = `<span class="registration-mind-task-copy">${identityPersonHtml(user.id, name)}${user.full_name && user.full_name !== name ? `<small>${esc(user.full_name)}</small>` : ""}${user.job_title ? `<small>${esc(user.job_title)}</small>` : ""}<small>${esc(user.email || "—")}</small>${user.status === "inactive" ? '<small class="collaborator-inactive">Inativo</small>' : ""}</span>`;
+  return `<article class="registration-mind-task collaborator-mind-card" data-user-id="${esc(user.id)}">${currentUserIsAdmin()
+    ? `<button type="button" class="registration-mind-task-main collaborator-user-edit" data-id="${esc(user.id)}" title="Editar usuário">${content}</button>`
+    : `<div class="registration-mind-task-main is-static">${content}</div>`}</article>`;
+}
+function collaboratorMindMapBranchesHtml(nodes, scopeKey) {
+  if (!nodes.length) return "";
+  const users = nodes.map((node) => node.item).sort((a, b) => compareLabels(a.nickname || a.full_name || a.email, b.nickname || b.full_name || b.email));
+  const branch = (key, label, entries, level, child = "") => {
+    const branchKey = `${scopeKey}::${key}`;
+    const collapsed = registrationMindMapCollapsedBranches.has(branchKey);
+    return `<section class="registration-mind-branch level-${level}${collapsed ? " is-collapsed" : ""}" data-job-level="${esc(key)}"><button class="registration-mind-toggle" type="button" data-branch-key="${esc(branchKey)}" aria-expanded="${!collapsed}"><span>${collapsed ? "▸" : "▾"}</span><strong>${esc(label)}</strong><small>${entries.length}</small></button><div class="registration-mind-children"${collapsed ? " hidden" : ""}>${entries.length ? `<div class="registration-mind-tasks">${entries.map(collaboratorMindMapCardHtml).join("")}</div>` : ""}${child}</div></section>`;
+  };
+  let hierarchy = "";
+  for (let rank = OPERATIONS_JOB_HIERARCHY.length - 1; rank >= 0; rank -= 1) {
+    hierarchy = branch(`operations-${rank}`, OPERATIONS_JOB_HIERARCHY[rank], users.filter((user) => operationsJobRank(user.job_title) === rank), rank, hierarchy);
+  }
+  const other = users.filter((user) => operationsJobRank(user.job_title) < 0 && String(user.job_title || "").trim());
+  const unassigned = users.filter((user) => !String(user.job_title || "").trim());
+  return hierarchy + (other.length ? branch("other", "Outros cargos", other, 0) : "") + (unassigned.length ? branch("unassigned", "Sem cargo", unassigned, 0) : "");
+}
+const REGISTRATION_MIND_MAP_USER_ADAPTER = {
+  scope: "registration-users", rootLabel: "Colaboradores", countLabel: "Colaboradores", addTitle: "Adicionar usuário", canAdd: currentUserIsAdmin,
+  title: (item) => item.nickname || item.full_name || item.email || "Sem nome",
+  groupId: (item) => item.id, parent: () => null, dependencies: () => [],
+  searchText: (item) => [item.full_name, item.nickname, item.email, item.job_title, accessProfileLabel(item), item.status === "active" ? "Ativo" : "Inativo"].join(" "),
+  branchesHtml: collaboratorMindMapBranchesHtml
+};
+
 const mindMapPendingScroll = new Map();
 function mindMapExpandAllButtonHtml(allExpanded) {
   const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
@@ -13126,6 +13162,7 @@ function setMindMapBranchCollapsed(button, collapsed) {
   children.hidden = collapsed;
   branch.classList.toggle("is-collapsed", collapsed);
   button.querySelector("span").textContent = collapsed ? "▸" : "▾";
+  button.setAttribute("aria-expanded", String(!collapsed));
   if (collapsed) registrationMindMapCollapsedBranches.add(button.dataset.branchKey);
   else registrationMindMapCollapsedBranches.delete(button.dataset.branchKey);
 }
@@ -13142,7 +13179,9 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
     ]).join(" ").toLocaleLowerCase("pt-BR");
     return text.includes(query);
   });
-  const branches = registrationMindMapBuckets(nodes, orderById, 0, adapter.levels || REGISTRATION_MIND_MAP_LEVELS).map((bucket) => registrationMindMapBranchHtml(bucket, scopeKey, 0, hierarchy, orderById, adapter)).join("");
+  const branches = adapter.branchesHtml
+    ? adapter.branchesHtml(nodes, scopeKey)
+    : registrationMindMapBuckets(nodes, orderById, 0, adapter.levels || REGISTRATION_MIND_MAP_LEVELS).map((bucket) => registrationMindMapBranchHtml(bucket, scopeKey, 0, hierarchy, orderById, adapter)).join("");
   const map = branches || `<div class="empty">${query ? "Nenhum item corresponde à busca." : "Nenhum item para exibir."}</div>`;
   const vertical = registrationMindMapOrientation === "vertical";
   const fullscreen = registrationMindMapFullscreen;
@@ -13154,7 +13193,7 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   } : null);
   const anyCollapsed = branches.includes(" is-collapsed\"");
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
-  return { count: nodes.length, html: `<div class="registration-mindmap-shell${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
+  return { count: nodes.length, html: `<div class="registration-mindmap-shell${adapter.scope === "registration-users" ? " registration-users-map" : ""}${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
     <div class="registration-mind-controls" role="group" aria-label="Controles do mapa">${mindMapExpandAllButtonHtml(!anyCollapsed)}<button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
     <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
     <div class="registration-mindmap-root"><strong>${esc(adapter.rootLabel || "Tarefas")}</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
@@ -13185,6 +13224,10 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
       return Boolean(parent && groups.has(parent.template_group_id || parent.id));
     }), adapter, filters];
   }
+  if (kind === "users") {
+    const ids = new Set(passing.map((row) => row.dataset.userId));
+    return [items.filter((item) => ids.has(item.id)), adapter, filters];
+  }
   const ids = new Set(passing.map((row) => row.querySelector("[data-id]")?.dataset.id).filter(Boolean));
   return [items.filter((item) => ids.has(item.id)), adapter, filters];
 }
@@ -13200,7 +13243,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
-    <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}"><button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button></div>
+    <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}">${!adapter.canAdd || adapter.canAdd() ? `<button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button>` : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
@@ -13565,9 +13608,17 @@ function renderRegistrationsSection() {
   if (section === "users") {
     const users = cache.users || [];
     const canManageUsers = currentUserIsAdmin();
-    const rows = users.map((user) => `<tr><td><strong>${identityPersonHtml(user.id, user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(accessProfileLabel(user))}</td>${AUTO_ASSIGNMENT_FIELDS.map((field) => `<td>${stackedCell(normalizeTextList(user[field.profile]))}</td>`).join("")}<td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${canManageUsers ? tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } }) : ""}</td></tr>`).join("");
+    const rows = users.map((user) => `<tr data-user-id="${esc(user.id)}"><td><strong>${identityPersonHtml(user.id, user.full_name || user.name || "—")}</strong></td><td>${esc(user.nickname || "—")}</td><td>${esc(user.email || "—")}</td><td>${esc(user.phone || "—")}</td><td>${esc(ROLE_LABEL[user.role] || user.role || "—")}</td><td>${esc(accessProfileLabel(user))}</td>${AUTO_ASSIGNMENT_FIELDS.map((field) => `<td>${stackedCell(normalizeTextList(user[field.profile]))}</td>`).join("")}<td>${esc(user.function_name || "—")}</td><td>${esc(user.job_title || "—")}</td><td>${user.status === "active" ? "Ativo" : "Inativo"}</td><td>${user.auth_user_id ? "Login ativo" : "Sem login"}</td><td class="act table-actions-cell">${canManageUsers ? tableActionButtons({ edit: { className: "edit reg-user-edit", attrs: { "data-id": user.id }, title: "Editar usuário" } }) : ""}</td></tr>`).join("");
     root.innerHTML = `<div class="modal-toolbar"><span class="muted">${users.length} Usuários</span>${canManageUsers ? '<button class="btn primary" id="registration-add">+ Usuário</button>' : ""}</div>
       <div class="product-activity-list"><table><thead><tr><th>Usuário</th><th>Apelido</th><th>E-mail</th><th>Telefone</th><th>Tipo de usuário</th><th>Perfil de acesso</th>${AUTO_ASSIGNMENT_FIELDS.map((field) => `<th>${esc(field.label)}</th>`).join("")}<th>Função</th><th>Cargo</th><th>Status</th><th>Acesso</th>${tableActionsHead()}</tr></thead><tbody>${rows || '<tr><td colspan="15" class="empty">Nenhum usuário cadastrado.</td></tr>'}</tbody></table></div>`;
+    if (registrationTableState().view === "mindmap") {
+      const collaborators = users.filter((user) => normalizedProfileRole(user.role) === "collaborator");
+      root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, collaborators, "users", REGISTRATION_MIND_MAP_USER_ADAPTER));
+      document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
+      root.querySelectorAll(".collaborator-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
+      wireRegistrationMindMap(root);
+      return;
+    }
     document.getElementById("registration-add")?.addEventListener("click", () => openUsersModal("new", true));
     root.querySelectorAll(".reg-user-edit").forEach((button) => button.addEventListener("click", () => openUsersModal(button.dataset.id, true)));
     wireRegistrationTable();
@@ -13852,7 +13903,7 @@ function setupRegistrationToolbar(root, table) {
     addButton.title = originalLabel ? `Adicionar ${originalLabel.toLocaleLowerCase("pt-BR")}` : "Adicionar";
     center.appendChild(addButton);
   }
-  const viewControl = ["activities", "goals", "objectives"].includes(registrationsState.section)
+  const viewControl = ["activities", "goals", "objectives", "users"].includes(registrationsState.section)
     ? `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`
     : `<button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`;
   right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
