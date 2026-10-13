@@ -130,7 +130,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.deepEqual(await page.evaluate(() => sidebarSubmodules('registrations').map((item) => item.id)), ['products', 'pipelines', 'users', 'emails']);
         assert.deepEqual(await page.evaluate(() => sidebarSubmodules('tools').map((item) => item.label)), ['Arquivos', 'Processos', 'Documentos', 'Planilhas']);
         assert.equal(await page.locator('.sidebar-system').innerText(), 'CMS');
-        assert.equal(await page.locator('.sidebar-system-icon svg').count(), 1);
+        assert.equal(await page.locator('.sidebar-system svg').count(), 0);
         await page.locator('#new:visible,#registration-add:visible').click();
         assert.equal(await page.locator('.activity-form-drawer').evaluate((el) => el.getBoundingClientRect().left), 64);
         await page.keyboard.press('Escape');

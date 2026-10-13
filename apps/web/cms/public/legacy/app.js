@@ -139,25 +139,30 @@ async function useSavedAccount(id) {
   const profile = await accountProfileForSession(session);
   await commitAccountSwitch(profile, session);
 }
-function openAccountSwitcher() {
-  if (!quickAccountSwitchAllowed() || !confirmUiDiscard(activeUiDialog())) return;
+function renderAccountSwitcher(root, canSwitch = () => true, onLeave = () => {}) {
+  if (!root || !quickAccountSwitchAllowed()) return;
   rememberAccountSession(currentProfile);
   const currentId = readAuthSession()?.user?.id;
   const accounts = [...quickAccountSessions.values()].filter((account) => quickAccountSwitchAllowed(account.profile));
-  sidePanel("Alternar conta", `<div class="account-switcher"><div>${accounts.map(({ profile }) => `<div class="account-switch-row"><button class="account-switch-use" type="button" data-account-use="${esc(profile.auth_user_id)}"${profile.auth_user_id === currentId ? ' disabled aria-current="true"' : ""}>${identityAvatarHtml(profile.id)}<span><strong>${esc(profile.nickname || profile.full_name || profile.email)}</strong><small>${esc(profile.email)} · ${esc(({ admin: "Administrador", collaborator: "Colaborador", developer: "Desenvolvedor" })[profile.role] || profile.role)}</small></span></button>${profile.auth_user_id === currentId ? '<span class="muted">Atual</span>' : `<button class="btn" type="button" data-account-forget="${esc(profile.auth_user_id)}" title="Remover conta desta sessão" aria-label="Remover conta desta sessão">${window.CRM_NAV_ICONS?.x || "×"}</button>`}</div>`).join("")}</div>
-    <form id="account-add-form" class="form"><div class="field full"><label for="account-email">Adicionar conta nesta sessão</label><input id="account-email" type="email" autocomplete="username" required></div><div class="field full"><label for="account-password">Senha</label><input id="account-password" type="password" autocomplete="current-password" required></div><button class="btn primary" type="submit" id="account-add">Adicionar e alternar</button></form><p id="account-error" role="alert" hidden></p></div>`);
+  root.innerHTML = `<div class="account-switcher"><div>${accounts.map(({ profile }) => `<div class="account-switch-row"><button class="account-switch-use" type="button" data-account-use="${esc(profile.auth_user_id)}"${profile.auth_user_id === currentId ? ' disabled aria-current="true"' : ""}>${identityAvatarHtml(profile.id)}<span><strong>${esc(profile.nickname || profile.full_name || profile.email)}</strong><small>${esc(profile.email)} · ${esc(({ admin: "Administrador", collaborator: "Colaborador", developer: "Desenvolvedor" })[profile.role] || profile.role)}</small></span></button>${profile.auth_user_id === currentId ? '<span class="muted">Atual</span>' : `<button class="btn" type="button" data-account-forget="${esc(profile.auth_user_id)}" title="Remover conta desta sessão" aria-label="Remover conta desta sessão">${window.CRM_NAV_ICONS?.x || "×"}</button>`}</div>`).join("")}</div>
+    <form id="account-add-form" class="form"><div class="field full"><label for="account-email">Adicionar conta nesta sessão</label><input id="account-email" type="email" autocomplete="username" required></div><div class="field full"><label for="account-password">Senha</label><input id="account-password" type="password" autocomplete="current-password" required></div><button class="btn primary" type="submit" id="account-add">Adicionar e alternar</button></form><p id="account-error" role="alert" hidden></p></div>`;
   let busy = false;
   const run = async (fn) => {
-    if (busy) return;
+    if (busy || !canSwitch()) return;
     busy = true;
-    document.querySelectorAll(".account-switcher button").forEach((button) => { button.disabled = true; });
+    const controls = [...(root.closest(".modal") || root).querySelectorAll("input,button")].map((element) => [element, element.disabled]);
+    controls.forEach(([element]) => { element.disabled = true; });
     try { await fn(); }
-    catch (error) { const box = document.getElementById("account-error"); if (box) { box.hidden = false; box.textContent = error.message || String(error); } }
-    finally { busy = false; document.querySelectorAll(".account-switcher button:not([aria-current])").forEach((button) => { button.disabled = false; }); }
+    catch (error) { const box = root.querySelector("#account-error"); if (box) { box.hidden = false; box.textContent = error.message || String(error); } }
+    finally {
+      busy = false;
+      controls.forEach(([element, disabled]) => { element.disabled = disabled; });
+      if (!root.isConnected) onLeave();
+    }
   };
-  document.querySelectorAll("[data-account-use]").forEach((button) => button.addEventListener("click", () => run(() => useSavedAccount(button.dataset.accountUse))));
-  document.querySelectorAll("[data-account-forget]").forEach((button) => button.addEventListener("click", () => { quickAccountSessions.delete(button.dataset.accountForget); openAccountSwitcher(); }));
-  document.getElementById("account-add-form").addEventListener("submit", (event) => {
+  root.querySelectorAll("[data-account-use]").forEach((button) => button.addEventListener("click", () => run(() => useSavedAccount(button.dataset.accountUse))));
+  root.querySelectorAll("[data-account-forget]").forEach((button) => button.addEventListener("click", () => { if (busy) return; quickAccountSessions.delete(button.dataset.accountForget); renderAccountSwitcher(root, canSwitch, onLeave); }));
+  root.querySelector("#account-add-form").addEventListener("submit", (event) => {
     event.preventDefault();
     run(async () => {
       const email = document.getElementById("account-email").value.trim().toLowerCase();
@@ -3469,7 +3474,6 @@ function applyNavigationPreference() {
   const header = document.getElementById("app-header");
   if (!sidebar || !tabs || !header) return;
   const lateral = navigationPreference.mode === "sidebar";
-  sidebar.querySelector(".sidebar-system-icon").innerHTML = window.CRM_NAV_ICONS?.cms || "";
   document.body.classList.toggle("navigation-sidebar", lateral);
   document.body.classList.toggle("navigation-collapsed", lateral && navigationPreference.collapsed);
   closeMobileNavigation();
@@ -3624,7 +3628,7 @@ function alignSidebarSlots(sidebar) {
   const sizes = {
     "--sidebar-brand-height": Math.max(40, toolbarBottom - top),
     "--sidebar-system-height": headerTop != null ? Math.max(0, headerTop - toolbarBottom) : (strip?.getBoundingClientRect().height || 20),
-    "--sidebar-company-height": header?.getBoundingClientRect().height || 32
+    "--sidebar-company-height": header?.getBoundingClientRect().height || 40
   };
   for (const [property, height] of Object.entries(sizes)) {
     const value = `${height}px`;
@@ -10474,8 +10478,6 @@ async function createDealFromSelectedConversations() {
 
 function render() {
   if (!cache) return;
-  const accountButton = document.querySelector('[data-action="accounts"]');
-  if (accountButton) { accountButton.hidden = !quickAccountSwitchAllowed(); accountButton.innerHTML = window.CRM_NAV_ICONS?.users || ""; }
   if (state.tab !== "home" && !mainModuleCan(state.tab, "view")) state.tab = "home";
   refreshActivityCache();
   document.querySelector('[data-action="log"]')?.toggleAttribute("hidden", !currentUserIsAdmin());
@@ -11969,7 +11971,11 @@ function openSettings() {
       <p><a href="privacy-policy.html" target="_blank" rel="noopener">Ler a Política de Privacidade</a> ou revogar o consentimento da extensão.</p>
     </div>` : "";
   const privacyButton = IS_EXTENSION_CONTEXT ? '<button class="btn danger" id="privacy-revoke" type="button">Revogar consentimento</button>' : "";
-  sidePanel("Configurações", `<div class="profile-settings"><section><h4>Meu perfil</h4>
+  const canUseAccounts = quickAccountSwitchAllowed(profile);
+  sidePanel("Configurações", `${canUseAccounts ? `<div class="settings-tabs" role="tablist" aria-label="Configurações">
+    <button id="settings-profile-tab" class="settings-tab" type="button" role="tab" aria-selected="true" aria-controls="settings-profile-panel" data-settings-tab="profile">Perfil</button>
+    <button id="settings-accounts-tab" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="settings-accounts-panel" tabindex="-1" data-settings-tab="accounts">Contas</button></div>` : ""}
+    <div id="settings-profile-panel"${canUseAccounts ? ' role="tabpanel" aria-labelledby="settings-profile-tab"' : ""} data-ui-draft="true"><div class="profile-settings"><section><h4>Meu perfil</h4>
     ${photoControl("photo", "Alterar foto", profile.id)}
     <div class="form">
       <div class="field full"><label for="settings-full-name">Nome completo</label><input id="settings-full-name" data-k="full_name" value="${esc(profile.full_name || profile.name || "")}" maxlength="160" autocomplete="name" required></div>
@@ -11985,18 +11991,37 @@ function openSettings() {
       <label><input type="radio" name="navigation-mode" value="top"${navigationPreference.mode === "top" ? " checked" : ""}>Superior</label>
       <label><input type="radio" name="navigation-mode" value="sidebar"${navigationPreference.mode === "sidebar" ? " checked" : ""}>Lateral</label>
     </div></div></section>
-    <section><h4>Identificação nas interações</h4><div class="form">
-      <div class="field full"><label for="settings-conversation-name">Nome nas conversas importadas</label><input id="settings-conversation-name" data-k="myName" value="${esc(c.myName || "")}" maxlength="160"></div>
-      <div class="field full"><label for="settings-reddit">Usuário no Reddit</label><input id="settings-reddit" data-k="myRedditUsername" value="${esc(c.myRedditUsername || "")}" placeholder="sem o u/" maxlength="80"></div>
-    </div></section>
     ${admin ? `<section id="settings-workspace"><h4>Empresa da conta</h4>${workspaceIdentityReady ? `${photoControl("logo", "Alterar logo")}<div class="form"><div class="field full"><label for="settings-company-name">Nome da empresa</label><input id="settings-company-name" data-k="company_name" value="${esc(workspaceIdentity.company_name)}" maxlength="160" required></div></div>` : '<p>Não foi possível carregar os dados da empresa. Feche e abra as configurações para tentar novamente.</p>'}</section>` : ""}
     ${admin && workspaceIdentityReady ? `<section><h4>Migração de dados</h4><label class="settings-migration-toggle"><input id="settings-task-dates" type="checkbox"${workspaceIdentity.task_date_migration_enabled ? " checked" : ""}>Permitir correção de datas nas tarefas dos colaboradores</label></section>` : ""}
-    ${quickAccountSwitchAllowed(profile) ? '<section><h4>Contas</h4><button class="btn" type="button" id="settings-switch-account">Alternar conta</button></section>' : ""}
     ${privacySettings}
-    <p id="settings-error" class="profile-settings-error" role="alert" hidden></p></div>
+    <p id="settings-error" class="profile-settings-error" role="alert" hidden></p></div></div>
+    ${canUseAccounts ? '<div id="settings-accounts-panel" role="tabpanel" aria-labelledby="settings-accounts-tab" hidden></div>' : ""}
     <div class="modal-foot">${privacyButton}<button class="btn" id="settings-cancel" type="button">Cancelar</button><button class="btn primary" id="save" type="button">Salvar</button></div>`, { onClose: exit });
   document.getElementById("settings-cancel").addEventListener("click", exit);
-  document.getElementById("settings-switch-account")?.addEventListener("click", () => { if (confirmUiDiscard(document.querySelector("#modal-root .modal"))) { exit(); openAccountSwitcher(); } });
+  const settingsTabs = [...document.querySelectorAll("[data-settings-tab]")];
+  const selectSettingsTab = (tab) => {
+    if (saving || processing) return;
+    settingsTabs.forEach((button) => {
+      const selected = button === tab;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      document.getElementById(button.getAttribute("aria-controls")).hidden = !selected;
+    });
+    const accounts = tab.dataset.settingsTab === "accounts";
+    document.getElementById("save").hidden = accounts;
+    document.getElementById("settings-cancel").textContent = accounts ? "Fechar" : "Cancelar";
+    const panel = document.getElementById("settings-accounts-panel");
+    if (accounts && !panel.firstElementChild) renderAccountSwitcher(panel, () => !saving && !processing && confirmUiDiscard(document.getElementById("settings-profile-panel")), cleanup);
+  };
+  settingsTabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => selectSettingsTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? settingsTabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : settingsTabs.length - 1)) % settingsTabs.length;
+      selectSettingsTab(settingsTabs[next]); settingsTabs[next].focus();
+    });
+  });
   const errorBox = document.getElementById("settings-error");
   const showError = (message) => { errorBox.textContent = message; errorBox.hidden = !message; };
   const saveButton = document.getElementById("save");
@@ -12062,7 +12087,7 @@ function openSettings() {
     showError("");
     const values = { full_name: val("full_name"), nickname: val("nickname"), phone: val("phone") };
     const companyName = val("company_name");
-    const cfg = { ...c, myName: val("myName"), myRedditUsername: val("myRedditUsername") };
+    const cfg = { ...c };
     const navigationMode = document.querySelector('input[name="navigation-mode"]:checked')?.value || "top";
     const uploaded = new Set();
     let profileSaved = false;
@@ -19068,7 +19093,6 @@ function handleAction(action) {
     if (window.confirm("Deseja sair do ENTERPRISER CMS?")) signOut();
     return;
   }
-  if (action === "accounts") { openAccountSwitcher(); return; }
 }
 
 // ---------- Tempo real ----------
