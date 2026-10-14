@@ -1478,16 +1478,13 @@
   .setup-product-types .multi-picker-chip{max-width:100%;white-space:normal;text-align:left}
   .setup-product-types .multi-picker-chip span{white-space:normal;text-overflow:clip;overflow-wrap:anywhere}
   .setup-financial-row{grid-template-columns:minmax(80px,1fr) minmax(0,1.5fr)}
-  .setup-erp-line{display:grid;grid-template-columns:minmax(90px,.7fr) minmax(0,2fr);gap:8px;align-items:end}
-  .setup-erp-line .setup-configuration{grid-column:auto}
-  .setup-erp-line .setup-channel-row{grid-template-columns:repeat(2,minmax(0,1fr));padding:0;border:0}
-  .setup-erp-line .setup-channel-row>strong{display:none}
+  .form .setup-channel-row>.setup-boleto-field{grid-column:2 / -1}
   .task-form-drawer>.form-tabs{flex:0 0 auto}
   .task-form-grid>.form-tab-panel{grid-template-columns:inherit;gap:inherit}
   .task-form-grid>.form-tab-panel>.field{min-width:0}
   .task-form-grid .task-form-wide{grid-column:1 / -1}
   @media(max-width:600px){
-    .setup-erp-line{grid-template-columns:1fr}
+    .form .setup-channel-row>.setup-boleto-field{grid-column:1 / -1}
     .setup-channel-row{grid-template-columns:repeat(2,minmax(0,1fr))}
     .setup-channel-row>strong{grid-column:1 / -1}
     .setup-financial-row{grid-template-columns:minmax(70px,1fr) minmax(0,1.6fr)}

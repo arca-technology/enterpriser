@@ -268,10 +268,10 @@ const DELIVERY_CHANNEL_OPTIONS = {
   erp: ["BLING", "OLIST"],
   marketplaces: ["AMAZON", "MAGAZINE LUIZA", "MERCADO LIVRE", "SHEIN", "SHOPEE", "TIKTOKSHOP"],
   stores: ["LOJA FÍSICA", "BAGY", "NUVEM SHOP", "SHOPIFY", "TRAY", "VTEX", "WAKE", "WOOCOMMERCE"],
-  freight: ["CORREIOS", "FRENET", "JADLOG", "LOGI", "MELHOR ENVIO", "MERCADO ENVIOS", "NUVEM ENVIO", "TOTAL EXPRESS"],
+  freight: ["CORREIOS", "DBA", "FBA", "FBM", "FRENET", "JADLOG", "LOGI", "LOGÍSTICA SHOPEE", "MAGALU ENTREGAS", "MELHOR ENVIO", "MERCADO ENVIOS", "MERCADO ENVIOS COLETAS", "MERCADO ENVIOS FLEX", "MERCADO ENVIOS FULL", "MERCADO ENVIOS PLACES", "NUVEM ENVIO", "SHOPEE EXPRESS", "TOTAL EXPRESS"],
   financial: [
     "BANCO DO BRASIL", "BRADESCO", "BTG PACTUAL", "C6 BANK", "CAIXA", "INTER", "ITAÚ", "NUBANK", "SANTANDER", "SICOOB", "SICREDI",
-    "APPMAX", "ASAAS", "CIELO", "EFÍ", "GETNET", "MERCADO PAGO", "NUVEM PAGO", "PAGAR.ME", "PAGBANK", "PAYPAL", "REDE", "STONE", "STRIPE", "VINDI"
+    "AMAZON", "APPMAX", "ASAAS", "CIELO", "EFÍ", "GETNET", "MAGAZINE LUIZA", "MERCADO PAGO", "NUVEM PAGO", "PAGAR.ME", "PAGBANK", "PAYPAL", "REDE", "SHOPEE", "STONE", "STRIPE", "TIKTOK SHOP", "VINDI"
   ]
 };
 const DELIVERY_COMPANY_SETUP_OPTIONS = ["ABERTA"];
@@ -307,22 +307,65 @@ function mergeSetupConfigurations(...values) {
   }
   return normalizeSetupConfiguration(result);
 }
-// Canais que trazem contas financeiras e fretes automaticamente.
+const DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS = [
+  ["LOGÍSTICA SHOPEE", "SHOPEE EXPRESS"],
+  ["MERCADO ENVIOS", "MERCADO ENVIOS PLACES", "MERCADO ENVIOS COLETAS"]
+];
+function deliveryLogisticsError(values) {
+  const selected = normalizeTextList(values);
+  const group = DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.find((options) => options.filter((value) => selected.includes(value)).length > 1);
+  return group ? `Selecione somente uma modalidade entre ${group.join(", ")}.` : "";
+}
+function reconcileDeliveryLogistics(values, preferred = null) {
+  let selected = normalizeTextList(values);
+  for (const group of DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS) {
+    const winner = group.includes(preferred) && selected.includes(preferred) ? preferred : selected.find((value) => group.includes(value));
+    if (winner) selected = selected.filter((value) => !group.includes(value) || value === winner);
+  }
+  return selected;
+}
+function mergeDeliveryLogistics(previous, current) {
+  const selected = normalizeTextList(current);
+  const superseded = DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.filter((group) => selected.some((value) => group.includes(value))).flat();
+  return normalizeTextList([...normalizeTextList(previous).filter((value) => !superseded.includes(value)), ...selected]);
+}
+function deliveryLogisticsCanReplace(value, selected) {
+  return DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.some((group) => group.includes(value) && group.filter((item) => selected.includes(item)).length === 1);
+}
+function deliveryLogisticsLocked(values) {
+  return normalizeTextList(values).filter((value) => !DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.some((group) => group.includes(value)));
+}
+function deliveryLogisticsOptions(marketplaces, selected = []) {
+  const active = new Set(normalizeTextList(marketplaces).map(normalizeDeliveryChannel));
+  const scoped = { AMAZON: ["DBA", "FBA", "FBM"], SHOPEE: DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS[0],
+    MERCADOLIVRE: [...DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS[1], "MERCADO ENVIOS FULL", "MERCADO ENVIOS FLEX"], MAGAZINELUIZA: ["MAGALU ENTREGAS"] };
+  return deliveryChannelOptions("freight").filter((option) => {
+    const parent = Object.entries(scoped).find(([, values]) => values.includes(option.value));
+    return !parent || active.has(parent[0]) || selected.includes(option.value);
+  });
+}
+// Canais que trazem contas financeiras e logística automaticamente.
 const DELIVERY_AUTO_SETUPS = [
+  { channel: "AMAZON", financial: ["AMAZON"], freight: [] },
+  { channel: "SHOPEE", financial: ["SHOPEE"], freight: ["LOGÍSTICA SHOPEE"] },
+  { channel: "TIKTOK SHOP", financial: ["TIKTOK SHOP"], freight: [] },
+  { channel: "MAGAZINE LUIZA", financial: ["MAGAZINE LUIZA"], freight: ["MAGALU ENTREGAS"] },
   { channel: "MERCADO LIVRE", financial: ["MERCADO PAGO"], freight: ["MERCADO ENVIOS"] },
   { channel: "NUVEM SHOP", financial: ["NUVEM PAGO"], freight: ["NUVEM ENVIO"] },
   { channel: "TRAY", financial: ["VINDI"], freight: [] }
 ];
-function deliveryAutoSetups(marketplaces = [], stores = []) {
+function deliveryAutoSetups(marketplaces = [], stores = [], logistics = []) {
   const active = new Set([...normalizeTextList(marketplaces), ...normalizeTextList(stores)].map(normalizeDeliveryChannel));
   const rules = DELIVERY_AUTO_SETUPS.filter((rule) => active.has(normalizeDeliveryChannel(rule.channel)));
-  return { financial: normalizeTextList(rules.flatMap((rule) => rule.financial)), freight: normalizeTextList(rules.flatMap((rule) => rule.freight)) };
+  const defaults = normalizeTextList(rules.flatMap((rule) => rule.freight));
+  return { financial: normalizeTextList(rules.flatMap((rule) => rule.financial)), freight: mergeDeliveryLogistics(defaults,
+    normalizeTextList(logistics).filter((value) => DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.some((group) => group.includes(value) && group.some((item) => defaults.includes(item))))) };
 }
 function projectStoreList(project) {
   return normalizeTextList(project?.store_platforms).length ? normalizeTextList(project.store_platforms) : normalizeTextList(project?.store_platform ? [project.store_platform] : []);
 }
 const MANAGED_DELIVERY_CHANNELS = new Set(Object.values(DELIVERY_CHANNEL_OPTIONS).flat().map(normalizeDeliveryChannel));
-const deliveryChannelOptions = (group) => DELIVERY_CHANNEL_OPTIONS[group].map((value) => ({ value, label: value }));
+const deliveryChannelOptions = (group) => DELIVERY_CHANNEL_OPTIONS[group].map((value) => ({ value, label: value === "TIKTOKSHOP" ? "TIKTOK SHOP" : value }));
 function normalizeDeliveryChannel(value) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
 }
@@ -334,7 +377,7 @@ function activatedDeliveryChannels(project) {
     project?.store_platform,
     ...normalizeTextList(project?.freight_channels),
     ...normalizeTextList(project?.financial_accounts),
-    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project))).flat(),
+    ...Object.values(deliveryAutoSetups(project?.marketplace_channels, projectStoreList(project), project?.freight_channels)).flat(),
     project?.company_setup
   ].filter(Boolean).map(normalizeDeliveryChannel));
 }
@@ -374,7 +417,9 @@ function deliveryRetroactiveStart(project) {
 }
 function taskSetupOptions(selected = []) {
   const values = normalizeTextList([...Object.values(DELIVERY_CHANNEL_OPTIONS).flat(), ...DELIVERY_COMPANY_SETUP_OPTIONS, ...selected]);
-  return values.map((value) => ({ value, label: value }));
+  const choices = new Map();
+  values.forEach((value) => { const key = normalizeDeliveryChannel(value); if (!choices.has(key) || selected.includes(value)) choices.set(key, value); });
+  return [...choices.values()].map((value) => ({ value, label: value === "TIKTOKSHOP" ? "TIKTOK SHOP" : value }));
 }
 function setupChannelCatalog(channel, current = {}, editing = null) {
   const key = normalizeDeliveryChannel(channel);
@@ -393,13 +438,15 @@ function setupConfigurationEditor(prefix, getChannels, initial = {}, { locked = 
   const fixedConfiguration = normalizeSetupConfiguration(fixed);
   const read = () => {
     root.querySelectorAll("[data-setup-channel]").forEach((row) => {
-      const modules = multiPickerValues(`${row.id}-modules`);
-      const submodules = multiPickerValues(`${row.id}-submodules`).flatMap((value) => {
+      const previous = draft[row.dataset.setupChannel] || {};
+      const modules = document.getElementById(`${row.id}-modules`) ? multiPickerValues(`${row.id}-modules`) : previous.modules || [];
+      const submodules = document.getElementById(`${row.id}-submodules`) ? multiPickerValues(`${row.id}-submodules`).flatMap((value) => {
         try { const item = JSON.parse(value); return item && modules.includes(item.module) ? [item] : []; } catch { return []; }
-      });
+      }) : previous.submodules || [];
       const boleto = row.querySelector("[data-setup-boleto]");
       draft[row.dataset.setupChannel] = { modules, submodules,
-        ...(boleto && boleto.value !== "" ? { emits_boleto: boleto.value === "yes" } : {}) };
+        ...(boleto ? (boleto.value !== "" ? { emits_boleto: boleto.value === "yes" } : {})
+          : typeof previous.emits_boleto === "boolean" ? { emits_boleto: previous.emits_boleto } : {}) };
     });
   };
   const refresh = () => {
@@ -409,8 +456,9 @@ function setupConfigurationEditor(prefix, getChannels, initial = {}, { locked = 
       const key = normalizeDeliveryChannel(channel);
       const entry = draft[key] || { modules: [], submodules: [] };
       const rowId = `${prefix}-channel-${index}`;
-      const financial = DELIVERY_CHANNEL_OPTIONS.financial.some((value) => normalizeDeliveryChannel(value) === key);
-      const structured = [...DELIVERY_CHANNEL_OPTIONS.erp, ...DELIVERY_CHANNEL_OPTIONS.marketplaces, ...DELIVERY_CHANNEL_OPTIONS.stores]
+      const financial = (!prefix.startsWith("delivery-") || prefix === "delivery-financial")
+        && DELIVERY_CHANNEL_OPTIONS.financial.some((value) => normalizeDeliveryChannel(value) === key);
+      const structured = prefix !== "delivery-financial" && [...DELIVERY_CHANNEL_OPTIONS.erp, ...DELIVERY_CHANNEL_OPTIONS.marketplaces, ...DELIVERY_CHANNEL_OPTIONS.stores]
         .some((value) => normalizeDeliveryChannel(value) === key);
       if (!financial && !structured) return "";
       const catalog = setupChannelCatalog(channel, entry, { channel: document.getElementById(`${prefix}-channel`)?.value,
@@ -418,11 +466,10 @@ function setupConfigurationEditor(prefix, getChannels, initial = {}, { locked = 
       const fixedEntry = fixedConfiguration[key] || {};
       const subOptions = catalog.submodules.filter((item) => entry.modules.includes(item.module))
         .map((item) => ({ value: JSON.stringify(item), label: `${item.module} | ${item.name}` }));
-      return `<div class="setup-channel-row${financial ? " setup-financial-row" : ""}" id="${rowId}" data-setup-channel="${esc(key)}">
-        <strong>${esc(channel)}</strong>${financial
-          ? `<div class="field"><label for="${rowId}-boleto">Boleto</label><select id="${rowId}-boleto" data-setup-boleto${locked ? " disabled" : ""}><option value="">${prefix.startsWith("delivery-") ? "Não informado" : "Sem requisito"}</option><option value="yes"${entry.emits_boleto === true ? " selected" : ""}>Emite boleto</option><option value="no"${entry.emits_boleto === false ? " selected" : ""}>Não emite boleto</option></select></div>`
-          : `<div class="field"><label>Módulos</label>${multiPickerHtml(`${rowId}-modules`, catalog.modules.map((value) => ({ value, label: value })), new Set(entry.modules), "Selecionar", false, locked, new Set(fixedEntry.modules || []), true)}</div>
-          <div class="field"><label>Submódulos</label>${multiPickerHtml(`${rowId}-submodules`, subOptions, new Set(entry.submodules.map((item) => JSON.stringify(item))), "Selecionar", false, locked, new Set((fixedEntry.submodules || []).map((item) => JSON.stringify(item))))}</div>`}</div>`;
+      return `<div class="setup-channel-row${financial && !structured ? " setup-financial-row" : ""}" id="${rowId}" data-setup-channel="${esc(key)}">
+        <strong>${esc(channel === "TIKTOKSHOP" ? "TIKTOK SHOP" : channel)}</strong>${structured ? `<div class="field"><label>Módulos</label>${multiPickerHtml(`${rowId}-modules`, catalog.modules.map((value) => ({ value, label: value })), new Set(entry.modules), "Selecionar", false, locked, new Set(fixedEntry.modules || []), true)}</div>
+          <div class="field"><label>Submódulos</label>${multiPickerHtml(`${rowId}-submodules`, subOptions, new Set(entry.submodules.map((item) => JSON.stringify(item))), "Selecionar", false, locked, new Set((fixedEntry.submodules || []).map((item) => JSON.stringify(item))))}</div>` : ""}${financial
+          ? `<div class="field${structured ? " setup-boleto-field" : ""}"><label for="${rowId}-boleto">Boleto</label><select id="${rowId}-boleto" data-setup-boleto${locked ? " disabled" : ""}><option value="">${prefix.startsWith("delivery-") ? "Não informado" : "Sem requisito"}</option><option value="yes"${entry.emits_boleto === true ? " selected" : ""}>Emite boleto</option><option value="no"${entry.emits_boleto === false ? " selected" : ""}>Não emite boleto</option></select></div>` : ""}</div>`;
     }).join("");
     root.querySelectorAll(".multi-picker").forEach((picker) => wireMultiPicker(picker.id));
   };
@@ -434,7 +481,9 @@ function setupConfigurationEditor(prefix, getChannels, initial = {}, { locked = 
   root.setupEditor = {
     refresh,
     value: () => { read(); const active = new Set(getChannels().map(normalizeDeliveryChannel));
-      return normalizeSetupConfiguration(Object.fromEntries(Object.entries(draft).filter(([key]) => active.has(key)))); },
+      return normalizeSetupConfiguration(Object.fromEntries(Object.entries(draft).filter(([key]) => active.has(key)).map(([key, entry]) =>
+        [key, prefix === "delivery-financial" ? { ...entry, modules: [], submodules: [] }
+          : prefix.startsWith("delivery-") ? { modules: entry.modules, submodules: entry.submodules } : entry]))); },
     inherit: (value) => { read(); draft = mergeSetupConfigurations(value, draft); refresh(); }
   };
   refresh();
@@ -3662,9 +3711,9 @@ function fields(tab, c) {
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
       { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
-      { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" },
+      { k: "freight_channels", label: "Logística", type: "multi", options: deliveryChannelOptions("freight"), lockedValues: (record) => deliveryLogisticsLocked(record?.freight_channels), full: true, placeholder: "Selecionar logística" },
       { k: "company_setup", label: "Situação da empresa", type: "select", options: DELIVERY_COMPANY_SETUP_OPTIONS.map((value) => ({ value, label: value })), full: true },
-      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar bancos e gateways", help: "Mercado Livre inclui Mercado Pago e Mercado Envios; Nuvem Shop inclui Nuvem Pago e Nuvem Envio; Tray inclui Vindi." },
+      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar contas financeiras" },
       { k: "setup_product_types", label: "Tipo de produto", type: "multi", textValues: true, options: SETUP_PRODUCT_TYPES, full: true, placeholder: "Selecionar tipos de produto" }];
   }
 }
@@ -9729,7 +9778,7 @@ function importSpec(tab, c = cache) {
       { key: "erp_platform", header: "ERP", type: "select", options: () => deliveryChannelOptions("erp") },
       { key: "marketplace_channels", header: "Marketplaces", type: "multi", options: () => deliveryChannelOptions("marketplaces") },
       { key: "store_platforms", header: "Lojas", type: "multi", options: () => deliveryChannelOptions("stores") },
-      { key: "freight_channels", header: "Frete", type: "multi", options: () => deliveryChannelOptions("freight") },
+      { key: "freight_channels", header: "Logística", type: "multi", options: () => deliveryChannelOptions("freight") },
       { key: "company_setup", header: "Situação da empresa", type: "select", options: () => opts(DELIVERY_COMPANY_SETUP_OPTIONS) },
       { key: "financial_accounts", header: "Contas financeiras", type: "multi", options: () => deliveryChannelOptions("financial") }
     ],
@@ -9743,8 +9792,10 @@ function importSpec(tab, c = cache) {
       const product = c.productById?.[body.product_id];
       if (!body.end_date && product?.duration_days) body.end_date = addDaysRoundedToMonthEnd(body.start_date, product.duration_days);
       ["marketplace_channels", "store_platforms", "freight_channels", "financial_accounts"].forEach((key) => { body[key] = normalizeTextList(body[key]); });
-      const auto = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
-      body.freight_channels = normalizeTextList([...body.freight_channels, ...auto.freight]);
+      const logisticsError = deliveryLogisticsError(body.freight_channels);
+      if (logisticsError) return logisticsError;
+      const auto = deliveryAutoSetups(body.marketplace_channels, body.store_platforms, body.freight_channels);
+      body.freight_channels = mergeDeliveryLogistics(body.freight_channels, auto.freight);
       body.financial_accounts = normalizeTextList([...body.financial_accounts, ...auto.financial]);
       body.name = deliveryGeneratedName(body.client_name, body.product_id);
       return "";
@@ -11201,8 +11252,8 @@ function openForm(tab, id, opts = {}) {
     if (tab === "projects" && f.k === "name") val = deliveryGeneratedName(record?.client_name, record?.product_id);
     if (tab === "projects" && f.k === "store_platforms" && record?.store_platform && !normalizeTextList(val).length) val = [record.store_platform];
     if (tab === "projects" && record && ["financial_accounts", "freight_channels"].includes(f.k)) {
-      const auto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
-      val = normalizeTextList([...normalizeTextList(val), ...(f.k === "financial_accounts" ? auto.financial : auto.freight)]);
+      const auto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record), record.freight_channels);
+      val = f.k === "freight_channels" ? mergeDeliveryLogistics(val, auto.freight) : normalizeTextList([...normalizeTextList(val), ...auto.financial]);
     }
     const isLocked = Boolean(f.generated || (record && f.lockWhenSet && val) || f.receita);
     let ctrl;
@@ -11248,7 +11299,7 @@ function openForm(tab, id, opts = {}) {
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
     if (tab === "projects" && f.k === "setup_product_types") return `<div class="${cls} setup-product-types"><label>${esc(f.label)}</label>${ctrl}</div>`;
-    if (tab === "projects" && f.k === "erp_platform") return `<div class="field full setup-erp-line"><div class="field"><label>${esc(f.label)}</label>${ctrl}</div><div class="setup-configuration" id="delivery-erp-configuration"></div></div>`;
+    if (tab === "projects" && f.k === "erp_platform") return `<div class="field full"><label>${esc(f.label)}</label>${ctrl}<div class="setup-configuration" id="delivery-erp-configuration"></div></div>`;
     if (tab === "projects" && ["marketplace_channels", "store_platforms", "financial_accounts"].includes(f.k)) {
       const group = { marketplace_channels: "marketplaces", store_platforms: "stores", financial_accounts: "financial" }[f.k];
       return `<div class="${cls}"><label>${esc(f.label)}</label>${ctrl}<div class="setup-configuration" id="delivery-${group}-configuration"></div>${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
@@ -11258,7 +11309,7 @@ function openForm(tab, id, opts = {}) {
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
     return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
   };
-  // Entrega: ERP, canais, frete, empresa e contas financeiras ficam na aba Setup.
+  // Entrega: ERP, canais, logística, empresa e contas financeiras ficam na aba Setup.
   const setupKeys = new Set(["erp_platform", "marketplace_channels", "store_platforms", "freight_channels", "company_setup", "financial_accounts", "setup_product_types"]);
   const inputs = tab === "projects"
     ? `<div class="form-tab-panel" data-form-tab="general">${fs.filter((f) => !setupKeys.has(f.k)).map(fieldHtml).join("")}</div><div class="form-tab-panel" data-form-tab="setup" hidden><div class="panel-list form-tab-note">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</div>${fs.filter((f) => setupKeys.has(f.k)).map(fieldHtml).join("")}</div>`
@@ -11418,8 +11469,8 @@ function openForm(tab, id, opts = {}) {
       financial: normalizeTextList(record?.financial_accounts)
     };
     if (record) {
-      const persistedAuto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record));
-      persistedChannels.freight = normalizeTextList([...persistedChannels.freight, ...persistedAuto.freight]);
+      const persistedAuto = deliveryAutoSetups(record.marketplace_channels, projectStoreList(record), record.freight_channels);
+      persistedChannels.freight = mergeDeliveryLogistics(persistedChannels.freight, persistedAuto.freight);
       persistedChannels.financial = normalizeTextList([...persistedChannels.financial, ...persistedAuto.financial]);
     }
     let inheritedChannels = { marketplaces: [], stores: [], freight: [], financial: [] };
@@ -11428,7 +11479,8 @@ function openForm(tab, id, opts = {}) {
     const replaceChannelPicker = (key, group, selected, locked) => {
       const picker = document.getElementById(`form-${key}`);
       if (!picker) return;
-      picker.outerHTML = multiPickerHtml(`form-${key}`, deliveryChannelOptions(group), new Set(selected), picker.dataset.placeholder || "Selecionar", false, false, new Set(locked));
+      const options = group === "freight" ? deliveryLogisticsOptions(multiPickerValues("form-marketplace_channels"), selected) : deliveryChannelOptions(group);
+      picker.outerHTML = multiPickerHtml(`form-${key}`, options, new Set(selected), picker.dataset.placeholder || "Selecionar", false, false, new Set(group === "freight" ? deliveryLogisticsLocked(locked) : locked));
       wireMultiPicker(`form-${key}`);
     };
     const syncContinuationChannels = () => {
@@ -11449,7 +11501,7 @@ function openForm(tab, id, opts = {}) {
       inheritedErp = previous?.erp_platform || "";
       replaceChannelPicker("marketplace_channels", "marketplaces", normalizeTextList([...currentSelections.marketplaces, ...inheritedChannels.marketplaces]), normalizeTextList([...persistedChannels.marketplaces, ...inheritedChannels.marketplaces]));
       replaceChannelPicker("store_platforms", "stores", normalizeTextList([...currentSelections.stores, ...inheritedChannels.stores]), normalizeTextList([...persistedChannels.stores, ...inheritedChannels.stores]));
-      replaceChannelPicker("freight_channels", "freight", normalizeTextList([...currentSelections.freight, ...inheritedChannels.freight]), normalizeTextList([...persistedChannels.freight, ...inheritedChannels.freight]));
+      replaceChannelPicker("freight_channels", "freight", mergeDeliveryLogistics(inheritedChannels.freight, currentSelections.freight), normalizeTextList([...persistedChannels.freight, ...inheritedChannels.freight]));
       replaceChannelPicker("financial_accounts", "financial", normalizeTextList([...currentSelections.financial, ...inheritedChannels.financial]), normalizeTextList([...persistedChannels.financial, ...inheritedChannels.financial]));
       currentAuto = { financial: [], freight: [] };
       applyAutoSetups();
@@ -11458,26 +11510,34 @@ function openForm(tab, id, opts = {}) {
         const userErp = erpEl.value === previousInheritedErp && !persistedErp ? "" : erpEl.value;
         erpEl.value = persistedErp || inheritedErp || userErp;
         erpEl.disabled = Boolean(persistedErp || inheritedErp);
-        erpEl.closest(".field")?.classList.toggle("field-disabled", Boolean(persistedErp || inheritedErp));
       }
       Object.keys(setupGroups).forEach((group) => document.getElementById(`delivery-${group}-configuration`)?.setupEditor?.inherit(previous?.setup_configuration));
       refreshSetup();
     };
-    // Mercado Livre, Nuvem Shop e Tray trazem contas financeiras e fretes automáticos.
+    let previousLogistics = multiPickerValues("form-freight_channels");
     function applyAutoSetups() {
-      const auto = deliveryAutoSetups(multiPickerValues("form-marketplace_channels"), multiPickerValues("form-store_platforms"));
+      const auto = deliveryAutoSetups(multiPickerValues("form-marketplace_channels"), multiPickerValues("form-store_platforms"), multiPickerValues("form-freight_channels"));
       [["financial_accounts", "financial"], ["freight_channels", "freight"]].forEach(([key, group]) => {
         const fixed = new Set([...persistedChannels[group], ...inheritedChannels[group]]);
         const dropped = currentAuto[group].filter((value) => !auto[group].includes(value) && !fixed.has(value));
         const current = multiPickerValues(`form-${key}`);
-        const selected = normalizeTextList([...current.filter((value) => !dropped.includes(value)), ...auto[group]]);
+        const remaining = current.filter((value) => !dropped.includes(value));
+        const selected = group === "freight" ? mergeDeliveryLogistics(remaining, auto.freight) : normalizeTextList([...remaining, ...auto[group]]);
         const locked = normalizeTextList([...fixed, ...auto[group]]);
         const same = selected.length === current.length && selected.every((value) => current.includes(value));
-        if (!same || dropped.length || auto[group].length !== currentAuto[group].length) replaceChannelPicker(key, group, selected, locked);
+        if (group === "freight" || !same || dropped.length || auto[group].length !== currentAuto[group].length) replaceChannelPicker(key, group, selected, locked);
       });
       currentAuto = auto;
+      previousLogistics = multiPickerValues("form-freight_channels");
     }
     form?.addEventListener("multi-picker-change", (event) => {
+      if (event.target?.id === "form-freight_channels") {
+        const values = multiPickerValues("form-freight_channels");
+        const added = values.find((value) => !previousLogistics.includes(value));
+        const reconciled = reconcileDeliveryLogistics(values, added);
+        replaceChannelPicker("freight_channels", "freight", reconciled, [...persistedChannels.freight, ...inheritedChannels.freight]);
+        applyAutoSetups();
+      }
       if (["form-marketplace_channels", "form-store_platforms"].includes(event.target?.id)) applyAutoSetups();
       if (["form-marketplace_channels", "form-store_platforms", "form-financial_accounts"].includes(event.target?.id)) refreshSetup();
     }, true);
@@ -12124,7 +12184,7 @@ async function saveForm(tab, id, fs, opts = {}) {
       body.marketplace_channels = normalizeTextList([...normalizeTextList(previousDelivery.marketplace_channels), ...normalizeTextList(body.marketplace_channels)]);
       const previousStores = normalizeTextList(previousDelivery.store_platforms).length ? normalizeTextList(previousDelivery.store_platforms) : normalizeTextList(previousDelivery.store_platform ? [previousDelivery.store_platform] : []);
       body.store_platforms = normalizeTextList([...previousStores, ...normalizeTextList(body.store_platforms)]);
-      body.freight_channels = normalizeTextList([...normalizeTextList(previousDelivery.freight_channels), ...normalizeTextList(body.freight_channels)]);
+      body.freight_channels = mergeDeliveryLogistics(previousDelivery.freight_channels, body.freight_channels);
       body.financial_accounts = normalizeTextList([...normalizeTextList(previousDelivery.financial_accounts), ...normalizeTextList(body.financial_accounts)]);
       body.setup_configuration = mergeSetupConfigurations(previousDelivery.setup_configuration, body.setup_configuration);
       body.setup_product_types = setupProductTypes([...setupProductTypes(previousDelivery.setup_product_types), ...body.setup_product_types]);
@@ -12135,13 +12195,15 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (removedStore) { toast(`A loja ${removedStore} já está ativada e não pode ser removida.`, true); return; }
     const removedMarketplace = normalizeTextList(current?.marketplace_channels).find((channel) => !normalizeTextList(body.marketplace_channels).includes(channel));
     if (removedMarketplace) { toast(`O marketplace ${removedMarketplace} já está ativado e não pode ser removido.`, true); return; }
-    const autoSetups = deliveryAutoSetups(body.marketplace_channels, body.store_platforms);
-    body.freight_channels = normalizeTextList([...normalizeTextList(body.freight_channels), ...autoSetups.freight]);
+    const logisticsError = deliveryLogisticsError(body.freight_channels);
+    if (logisticsError) { toast(logisticsError, true); return; }
+    const autoSetups = deliveryAutoSetups(body.marketplace_channels, body.store_platforms, body.freight_channels);
+    body.freight_channels = mergeDeliveryLogistics(body.freight_channels, autoSetups.freight);
     body.financial_accounts = normalizeTextList([...normalizeTextList(body.financial_accounts), ...autoSetups.financial]);
     const removedFinancial = normalizeTextList(current?.financial_accounts).find((channel) => !body.financial_accounts.includes(channel));
     if (removedFinancial) { toast(`A conta financeira ${removedFinancial} já está ativada e não pode ser removida.`, true); return; }
-    const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !normalizeTextList(body.freight_channels).includes(channel));
-    if (removedFreight) { toast(`O canal de frete ${removedFreight} já está ativado e não pode ser removido.`, true); return; }
+    const removedFreight = normalizeTextList(current?.freight_channels).find((channel) => !body.freight_channels.includes(channel) && !deliveryLogisticsCanReplace(channel, body.freight_channels));
+    if (removedFreight) { toast(`A logística ${removedFreight} já está ativada e não pode ser removida.`, true); return; }
   }
   const req = fs.find((f) => f.req && (body[f.k] == null || body[f.k] === ""));
   if (req) { showUiError(form.closest('.modal'), `Preencha: ${req.label}`, form.querySelector(`[data-k="${req.k}"]`)); return; }
@@ -12537,7 +12599,7 @@ const HELP_PAGES = {
       HELP_SCHEDULE_SECTION,
       { title: "Visão geral · acompanhamento do cliente", lead: "Separe execução, resultados e dados do negócio. Atendidas / previstas até hoje considera apenas tarefas com término previsto até a data atual; tarefas futuras e canceladas não reduzem esse percentual. Sem tarefas previstas, não há percentual de execução.", cards: [["Atenção primeiro", "Atrasos, dependências pendentes e objetivos ou metas com prazo nos próximos sete dias. Clique no item para abrir a aba correspondente com seu nome na busca."], ["Objetivos em risco", "Objetivos ainda não concluídos com prazo vencido ou dependências pendentes. É um sinal operacional, não uma previsão automática do resultado."], ["Execução semanal", "Compara o término previsto com conclusões pela data real de término nas últimas oito semanas. Atendidas sem data real ficam fora do gráfico e são informadas separadamente."], ["Dados do mês", "Faturamento, SKUs e fornecedores registrados no mês atual da entrega. A variação exige faturamento do mês anterior maior que zero. Dado ausente não significa zero; Dados não tem barra de conclusão."], ["Metas por indicador", "Cada meta mantém seu valor atual, alvo e atingimento. Não há média de indicadores de unidades diferentes."], ["Resumo por canal", "Expanda um canal para consultar tarefas, objetivos e metas. O gráfico de faturamento permite escolher um canal e mostra até os últimos doze meses registrados."]] },
       { title: "Formulário · aba Dados", steps: ["Clique no <b>+</b> ou no lápis.", "Escolha tipo, empresa (CNPJ), cliente, grupo e produto.", "Em renovações, aponte a entrega anterior do mesmo CNPJ em <b>Continuidade</b>.", "Defina o início; o fim é sugerido pela duração do produto. Inativa pede substatus Suporte ou Encerrado."] },
-      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Frete, Situação da empresa e Contas financeiras (bancos e gateways). Os itens ativos são comparados com Requer no Setup das tarefas. Todos os requisitos devem estar ativos; o campo Canal não controla mais a liberação. Canais ativados não podem ser desativados depois de salvo.",
+      { title: "Formulário · aba Setup", lead: "ERP, Marketplaces, Lojas, Logística, Situação da empresa e Contas financeiras. Cada canal aceita seus módulos e submódulos; cada conta financeira informa a emissão de boleto. Shopee permite trocar entre Logística Shopee e Shopee Express. Mercado Envios, PLACES e COLETAS são exclusivos entre si; FULL e FLEX podem coexistir. Amazon aceita DBA, FBA e FBM. As contas financeiras nativas são ativadas junto dos marketplaces. Os requisitos da tarefa são comparados com este Setup; o campo Canal apenas organiza o cadastro.",
         cards: [["Mercado Livre", "Traz Mercado Pago e Mercado Envios."], ["Nuvem Shop", "Traz Nuvem Pago e Nuvem Envio."], ["Tray", "Traz Vindi."], ["Situação da empresa", "Aberta ou em branco. Só informativo."]] },
       { title: "Aba Tarefas", lead: "Tarefas do produto e do dia a dia com subtarefas, checklist, responsáveis (colaboradores e Cliente), dependências, referências a documentos e tabelas, comentários e status.",
         cards: [["Visualizações", "Use Tabela para comparar campos, Quadro para acompanhar a execução, Calendário para ver datas e Gantt para acompanhar o período e o progresso. Matriz e Dashboard da barra ficam desativados por enquanto; a entrega abre com seu resumo geral."], ["Prazos", "Data específica usa duração e <b>Iniciar após dependência (dias)</b>. Dependentes são recalculadas pela data real ou prevista. Nas janelas mensais, o limite continua sendo o fim da semana ou do mês escolhido."]],

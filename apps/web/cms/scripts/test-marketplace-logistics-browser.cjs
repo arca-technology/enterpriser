@@ -1,0 +1,100 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { chromium } = require('playwright');
+const root = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
+const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^startApp\(\);/m, '');
+(async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+    const errors = [], writes = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => { if (request.method() !== 'GET') writes.push(request.url()); });
+    await page.route('**/*', (route) => route.request().url() === 'http://logistics-test.localhost/'
+      ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
+    await page.goto('http://logistics-test.localhost/');
+    await page.evaluate(() => { window.CRM_CONFIG = {}; });
+    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
+    await page.addScriptTag({ content: source });
+    await page.evaluate(async () => {
+      await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin();
+      currentProfile = { ...cache.users[0], role: 'admin', status: 'active' };
+      Object.assign(cache.projectById.pj1, { erp_platform: 'BLING', marketplace_channels: [], freight_channels: ['CORREIOS'], financial_accounts: [] });
+      const rows = loadProductActivities();
+      rows.push({ id: 'amazon-catalog', product_id: 'pr1', activity: 'Financeiro Amazon', channel: 'AMAZON', module: 'Financeiro', submodule: 'Caixas', recurrence: 'once', required_setup: ['AMAZON'] });
+      rows.push({ id: 'bling-catalog', product_id: 'pr1', activity: 'Financeiro Bling', channel: 'BLING', module: 'Financeiro', submodule: 'Caixas', recurrence: 'once', required_setup: ['BLING'] });
+      saveProductActivities(rows); cache.productActivities = rows;
+      init = async () => { await syncProductActivities(); refreshActivityCache(); render(); };
+    });
+    const open = async () => {
+      await page.evaluate(() => { closeModal(); state.tab = 'projects'; render(); openForm('projects', 'pj1'); });
+      await page.locator('[data-form-tab-btn="setup"]').click();
+    };
+    const choose = async (id, value) => {
+      await page.locator(`#${id} .multi-picker-chevron`).click();
+      await page.locator(`#${id} .multi-picker-option[data-value="${value}"]`).click();
+      if (await page.locator(`#${id} .multi-picker-menu`).isVisible()) await page.locator(`#${id} .multi-picker-chevron`).click();
+    };
+    const logistics = () => page.evaluate(() => multiPickerValues('form-freight_channels'));
+    await open();
+    assert.equal(await page.locator('#form-freight_channels').locator('..').locator('label').first().innerText(), 'Logística');
+    assert.equal(await page.locator('#form-freight_channels [data-value="FBA"]').count(), 0);
+    for (const channel of ['AMAZON', 'SHOPEE', 'TIKTOKSHOP', 'MAGAZINE LUIZA', 'MERCADO LIVRE']) await choose('form-marketplace_channels', channel);
+    const accounts = await page.evaluate(() => multiPickerValues('form-financial_accounts'));
+    for (const value of ['AMAZON', 'SHOPEE', 'TIKTOK SHOP', 'MAGAZINE LUIZA', 'MERCADO PAGO']) assert(accounts.includes(value));
+    for (const value of ['LOGÍSTICA SHOPEE', 'MAGALU ENTREGAS', 'MERCADO ENVIOS']) assert((await logistics()).includes(value));
+    await choose('form-freight_channels', 'SHOPEE EXPRESS');
+    assert(!(await logistics()).includes('LOGÍSTICA SHOPEE'));
+    await choose('form-freight_channels', 'MERCADO ENVIOS PLACES');
+    assert(!(await logistics()).includes('MERCADO ENVIOS'));
+    await choose('form-freight_channels', 'MERCADO ENVIOS COLETAS');
+    assert(!(await logistics()).includes('MERCADO ENVIOS PLACES'));
+    await choose('form-freight_channels', 'MERCADO ENVIOS FULL');
+    await choose('form-freight_channels', 'MERCADO ENVIOS FLEX');
+    for (const value of ['MERCADO ENVIOS COLETAS', 'MERCADO ENVIOS FULL', 'MERCADO ENVIOS FLEX']) assert((await logistics()).includes(value));
+    for (const value of ['DBA', 'FBA', 'FBM']) await choose('form-freight_channels', value);
+    const amazonRow = page.locator('#delivery-marketplaces-configuration [data-setup-channel="AMAZON"]');
+    const moduleId = await amazonRow.locator('[id$="-modules"]').getAttribute('id');
+    await choose(moduleId, 'Financeiro');
+    const subId = await amazonRow.locator('[id$="-submodules"]').getAttribute('id');
+    await page.locator(`#${subId} .multi-picker-control`).click();
+    await page.locator(`#${subId} .multi-picker-option`).filter({ hasText: 'Caixas' }).click();
+    await page.locator('#delivery-financial-configuration [data-setup-channel="AMAZON"] [data-setup-boleto]').selectOption('yes');
+    await page.locator('#save').click(); await page.waitForFunction(() => !document.getElementById('save'));
+    await open();
+    const persisted = await page.evaluate(() => cache.projectById.pj1);
+    assert.equal(persisted.setup_configuration.AMAZON.emits_boleto, true);
+    assert.deepEqual(persisted.setup_configuration.AMAZON.modules, ['Financeiro']);
+    assert.deepEqual(persisted.setup_configuration.AMAZON.submodules, [{ module: 'Financeiro', name: 'Caixas' }]);
+    assert((await logistics()).includes('SHOPEE EXPRESS'));
+    assert(!(await logistics()).includes('LOGÍSTICA SHOPEE'));
+    assert(!(await logistics()).includes('MERCADO ENVIOS'));
+    await choose('form-freight_channels', 'LOGÍSTICA SHOPEE');
+    await choose('form-freight_channels', 'MERCADO ENVIOS');
+    assert(!(await logistics()).includes('SHOPEE EXPRESS'));
+    assert(!(await logistics()).includes('MERCADO ENVIOS COLETAS'));
+    assert((await logistics()).includes('MERCADO ENVIOS FULL') && (await logistics()).includes('MERCADO ENVIOS FLEX'));
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.locator('[data-k="erp_platform"]').scrollIntoViewIfNeeded();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      const erp = await page.locator('[data-k="erp_platform"]').boundingBox();
+      const market = await page.locator('#form-marketplace_channels').boundingBox();
+      assert.ok(Math.abs(erp.width - market.width) < 4, 'ERP selector uses the same full width as other channel selectors');
+      const modules = await page.locator('#delivery-erp-channel-0-modules').boundingBox();
+      const subs = await page.locator('#delivery-erp-channel-0-submodules').boundingBox();
+      assert.ok(Math.abs(modules.y - subs.y) < 5, 'ERP module and submodule selectors stay on the same row');
+      await page.screenshot({ path: path.join(os.tmpdir(), `cms-marketplace-logistics-${width}.png`) });
+    }
+    const removeId = await page.locator('#delivery-marketplaces-configuration [data-setup-channel="AMAZON"] [id$="-modules"]').getAttribute('id');
+    await choose(removeId, 'Financeiro');
+    await page.locator('#save').click(); await page.waitForFunction(() => !document.getElementById('save'));
+    assert.deepEqual(await page.evaluate(() => cache.projectById.pj1.setup_configuration.AMAZON.modules), []);
+    assert.equal(await page.evaluate(() => cache.projectById.pj1.setup_configuration.AMAZON.emits_boleto), true);
+    assert.deepEqual(errors, []); assert.deepEqual(writes, []);
+    console.log('Marketplace logistics browser passed: ERP alignment, native accounts, conditional Amazon options, exclusive replacements before/after save, Full/Flex, channel/account shared-name isolation and responsive layout.');
+  } finally { await browser.close(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });
