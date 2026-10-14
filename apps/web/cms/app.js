@@ -275,6 +275,38 @@ const DELIVERY_CHANNEL_OPTIONS = {
   ]
 };
 const DELIVERY_COMPANY_SETUP_OPTIONS = ["ABERTA"];
+const SETUP_PRODUCT_TYPES = [
+  { value: "own_national", label: "Produto próprio · Nacional" },
+  { value: "own_international", label: "Produto próprio · Internacional" },
+  { value: "third_party_national", label: "Produto de terceiros · Nacional" },
+  { value: "third_party_international", label: "Produto de terceiros · Internacional" }
+];
+function setupProductTypes(values) {
+  return normalizeTextList(values).filter((value) => SETUP_PRODUCT_TYPES.some((option) => option.value === value));
+}
+function normalizeSetupConfiguration(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([channel, entry]) => {
+    const key = normalizeDeliveryChannel(channel);
+    if (!key || !entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const modules = normalizeTextList(entry.modules).sort(compareLabels);
+    const submodules = Array.isArray(entry.submodules) ? entry.submodules.filter((item) => item
+      && typeof item.module === "string" && typeof item.name === "string" && item.name.trim()
+      && modules.includes(item.module)).map((item) => ({ module: item.module, name: item.name.trim() })) : [];
+    const unique = [...new Map(submodules.map((item) => [JSON.stringify(item), item])).values()]
+      .sort((a, b) => compareLabels(`${a.module} | ${a.name}`, `${b.module} | ${b.name}`));
+    return [[key, { modules, submodules: unique, ...(typeof entry.emits_boleto === "boolean" ? { emits_boleto: entry.emits_boleto } : {}) }]];
+  }).sort(([a], [b]) => a.localeCompare(b)));
+}
+function mergeSetupConfigurations(...values) {
+  const result = {};
+  for (const value of values) for (const [channel, entry] of Object.entries(normalizeSetupConfiguration(value))) {
+    const previous = result[channel] || {};
+    result[channel] = { ...previous, ...entry, modules: normalizeTextList([...(previous.modules || []), ...entry.modules]),
+      submodules: [...(previous.submodules || []), ...entry.submodules] };
+  }
+  return normalizeSetupConfiguration(result);
+}
 // Canais que trazem contas financeiras e fretes automaticamente.
 const DELIVERY_AUTO_SETUPS = [
   { channel: "MERCADO LIVRE", financial: ["MERCADO PAGO"], freight: ["MERCADO ENVIOS"] },
@@ -316,8 +348,21 @@ function taskSetupRequirements(task) {
 }
 function projectTaskEnabled(project, task) {
   const active = activatedDeliveryChannels(project);
+  const configuration = normalizeSetupConfiguration(project?.setup_configuration);
+  const required = normalizeSetupConfiguration(task?.required_setup_configuration);
+  const products = new Set(setupProductTypes(project?.setup_product_types));
   return (!task?.requires_retroactive || Boolean(deliveryRetroactiveStart(project)))
-    && taskSetupRequirements(task).every((value) => active.has(normalizeDeliveryChannel(value)));
+    && taskSetupRequirements(task).every((value) => active.has(normalizeDeliveryChannel(value)))
+    && Object.entries(required).every(([channel, entry]) => {
+      if (!active.has(channel)) return false;
+      const enabled = configuration[channel] || {};
+      return entry.modules.every((module) => (enabled.modules || []).some((value) => normalizeDeliveryChannel(value) === normalizeDeliveryChannel(module)))
+        && entry.submodules.every((submodule) => (enabled.submodules || []).some((value) =>
+          normalizeDeliveryChannel(value.module) === normalizeDeliveryChannel(submodule.module)
+          && normalizeDeliveryChannel(value.name) === normalizeDeliveryChannel(submodule.name)))
+        && (typeof entry.emits_boleto !== "boolean" || enabled.emits_boleto === entry.emits_boleto);
+    })
+    && setupProductTypes(task?.required_product_types).every((value) => products.has(value));
 }
 function deliveryRetroactiveStart(project) {
   if (!project?.retroactive_enabled) return null;
@@ -330,6 +375,125 @@ function deliveryRetroactiveStart(project) {
 function taskSetupOptions(selected = []) {
   const values = normalizeTextList([...Object.values(DELIVERY_CHANNEL_OPTIONS).flat(), ...DELIVERY_COMPANY_SETUP_OPTIONS, ...selected]);
   return values.map((value) => ({ value, label: value }));
+}
+function setupChannelCatalog(channel, current = {}, editing = null) {
+  const key = normalizeDeliveryChannel(channel);
+  const tasks = [...(cache.productActivities || []), ...(editing ? [editing] : [])].filter((task) => normalizeDeliveryChannel(task.channel) === key
+    || taskSetupRequirements(task).some((value) => normalizeDeliveryChannel(value) === key));
+  const modules = normalizeTextList([...tasks.map((task) => task.module), ...(current.modules || [])]).filter(normalizeDeliveryChannel).sort(compareLabels);
+  const submodules = [...new Map([...tasks.filter((task) => normalizeDeliveryChannel(task.module) && normalizeDeliveryChannel(task.submodule))
+    .map((task) => ({ module: task.module, name: task.submodule })), ...(current.submodules || [])]
+    .map((item) => [JSON.stringify(item), item])).values()];
+  return { modules, submodules };
+}
+function setupConfigurationEditor(prefix, getChannels, initial = {}, { locked = false, fixed = {} } = {}) {
+  const root = document.getElementById(`${prefix}-configuration`);
+  if (!root) return;
+  let draft = normalizeSetupConfiguration(initial);
+  const fixedConfiguration = normalizeSetupConfiguration(fixed);
+  const read = () => {
+    root.querySelectorAll("[data-setup-channel]").forEach((row) => {
+      const modules = multiPickerValues(`${row.id}-modules`);
+      const submodules = multiPickerValues(`${row.id}-submodules`).flatMap((value) => {
+        try { const item = JSON.parse(value); return item && modules.includes(item.module) ? [item] : []; } catch { return []; }
+      });
+      const boleto = row.querySelector("[data-setup-boleto]");
+      draft[row.dataset.setupChannel] = { modules, submodules,
+        ...(boleto && boleto.value !== "" ? { emits_boleto: boleto.value === "yes" } : {}) };
+    });
+  };
+  const refresh = () => {
+    read();
+    const channels = normalizeTextList(getChannels());
+    root.innerHTML = channels.map((channel, index) => {
+      const key = normalizeDeliveryChannel(channel);
+      const entry = draft[key] || { modules: [], submodules: [] };
+      const rowId = `${prefix}-channel-${index}`;
+      const financial = DELIVERY_CHANNEL_OPTIONS.financial.some((value) => normalizeDeliveryChannel(value) === key);
+      const structured = [...DELIVERY_CHANNEL_OPTIONS.erp, ...DELIVERY_CHANNEL_OPTIONS.marketplaces, ...DELIVERY_CHANNEL_OPTIONS.stores]
+        .some((value) => normalizeDeliveryChannel(value) === key);
+      if (!financial && !structured) return "";
+      const catalog = setupChannelCatalog(channel, entry, { channel: document.getElementById(`${prefix}-channel`)?.value,
+        module: document.getElementById(`${prefix}-module`)?.value, submodule: document.getElementById(`${prefix}-submodule`)?.value });
+      const fixedEntry = fixedConfiguration[key] || {};
+      const subOptions = catalog.submodules.filter((item) => entry.modules.includes(item.module))
+        .map((item) => ({ value: JSON.stringify(item), label: `${item.module} | ${item.name}` }));
+      return `<div class="setup-channel-row${financial ? " setup-financial-row" : ""}" id="${rowId}" data-setup-channel="${esc(key)}">
+        <strong>${esc(channel)}</strong>${financial
+          ? `<div class="field"><label for="${rowId}-boleto">Boleto</label><select id="${rowId}-boleto" data-setup-boleto${locked ? " disabled" : ""}><option value="">${prefix.startsWith("delivery-") ? "Não informado" : "Sem requisito"}</option><option value="yes"${entry.emits_boleto === true ? " selected" : ""}>Emite boleto</option><option value="no"${entry.emits_boleto === false ? " selected" : ""}>Não emite boleto</option></select></div>`
+          : `<div class="field"><label>Módulos</label>${multiPickerHtml(`${rowId}-modules`, catalog.modules.map((value) => ({ value, label: value })), new Set(entry.modules), "Selecionar", false, locked, new Set(fixedEntry.modules || []), true)}</div>
+          <div class="field"><label>Submódulos</label>${multiPickerHtml(`${rowId}-submodules`, subOptions, new Set(entry.submodules.map((item) => JSON.stringify(item))), "Selecionar", false, locked, new Set((fixedEntry.submodules || []).map((item) => JSON.stringify(item))))}</div>`}</div>`;
+    }).join("");
+    root.querySelectorAll(".multi-picker").forEach((picker) => wireMultiPicker(picker.id));
+  };
+  root.addEventListener("multi-picker-change", (event) => {
+    if (event.target.id.endsWith("-modules")) refresh();
+    else read();
+  }, true);
+  root.addEventListener("change", read);
+  root.setupEditor = {
+    refresh,
+    value: () => { read(); const active = new Set(getChannels().map(normalizeDeliveryChannel));
+      return normalizeSetupConfiguration(Object.fromEntries(Object.entries(draft).filter(([key]) => active.has(key)))); },
+    inherit: (value) => { read(); draft = mergeSetupConfigurations(value, draft); refresh(); }
+  };
+  refresh();
+}
+function setupEditorValue(prefix) {
+  return document.getElementById(`${prefix}-configuration`)?.setupEditor?.value() || {};
+}
+function wireTaskSetupTab(overlay, prefix, current) {
+  const form = overlay.querySelector(".task-form-grid");
+  const general = document.createElement("div");
+  general.className = "form-tab-panel"; general.dataset.formTab = "general";
+  const setup = document.createElement("div");
+  setup.className = "form-tab-panel"; setup.dataset.formTab = "setup"; setup.hidden = true;
+  const requirements = document.getElementById(`${prefix}-required-setup`)?.closest(".field");
+  const retroactive = document.getElementById(`${prefix}-retroactive`)?.closest(".field");
+  [...form.children].forEach((child) => general.appendChild(child));
+  if (requirements) setup.appendChild(requirements);
+  setup.insertAdjacentHTML("beforeend", `<div class="setup-configuration task-form-wide" id="${prefix}-configuration"></div>
+    <div class="field task-form-wide setup-product-types"><label>Tipo de produto</label>${multiPickerHtml(`${prefix}-product-types`, SETUP_PRODUCT_TYPES, new Set(setupProductTypes(current.required_product_types)), "Sem requisito", false, Boolean(current.source_template_id))}</div>`);
+  if (retroactive) setup.appendChild(retroactive);
+  form.append(general, setup);
+  form.insertAdjacentHTML("beforebegin", '<div class="form-tabs" role="tablist" aria-label="Tarefa"><button type="button" class="form-tab active" role="tab" data-form-tab-btn="general">Dados</button><button type="button" class="form-tab" role="tab" data-form-tab-btn="setup">Setup</button></div>');
+  wireFormTabs(overlay);
+  const getChannels = () => multiPickerValues(`${prefix}-required-setup`);
+  setupConfigurationEditor(prefix, getChannels, current.required_setup_configuration, { locked: Boolean(current.source_template_id) });
+  overlay.querySelector('[data-form-tab-btn="setup"]').addEventListener("click", () => document.getElementById(`${prefix}-configuration`)?.setupEditor?.refresh());
+  wireMultiPicker(`${prefix}-product-types`);
+  form.addEventListener("multi-picker-change", (event) => {
+    if (event.target.id === `${prefix}-required-setup`) document.getElementById(`${prefix}-configuration`)?.setupEditor?.refresh();
+  }, true);
+}
+function wireFormTabs(root) {
+  const buttons = [...root.querySelectorAll("[data-form-tab-btn]")];
+  const prefix = root.id || `form-tabs-${crypto.randomUUID()}`;
+  buttons.forEach((button) => {
+    button.id = `${prefix}-tab-${button.dataset.formTabBtn}`;
+    const panel = root.querySelector(`[data-form-tab="${button.dataset.formTabBtn}"]`);
+    if (!panel) return;
+    panel.id = `${prefix}-panel-${button.dataset.formTabBtn}`;
+    panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", button.id);
+    button.setAttribute("aria-controls", panel.id);
+  });
+  const select = (button) => {
+    buttons.forEach((item) => { const selected = item === button; item.classList.toggle("active", selected);
+      item.setAttribute("aria-selected", String(selected)); item.tabIndex = selected ? 0 : -1; });
+    root.querySelectorAll("[data-form-tab]").forEach((panel) => { panel.hidden = panel.dataset.formTab !== button.dataset.formTabBtn; });
+    root.querySelectorAll("[data-form-tab-note]").forEach((note) => { note.hidden = note.dataset.formTabNote !== button.dataset.formTabBtn; });
+  };
+  buttons.forEach((button, index) => {
+    button.addEventListener("click", () => select(button));
+    button.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) % buttons.length;
+      select(buttons[next]); buttons[next].focus();
+    });
+  });
+  if (buttons.length) select(buttons.find((button) => button.classList.contains("active")) || buttons[0]);
 }
 function productErpChannel(productIds, c = cache) {
   const channels = new Set(normalizeIdList(productIds).flatMap((id) => {
@@ -363,6 +527,7 @@ function wireProductErpDefaults(prefix, productControl, selectedProducts, initia
     if (JSON.stringify(current) === JSON.stringify(selected)) return;
     setup.outerHTML = multiPickerHtml(setup.id, taskSetupOptions(selected), new Set(selected), "Selecionar requisitos");
     wireMultiPicker(`${prefix}-required-setup`);
+    document.getElementById(`${prefix}-configuration`)?.setupEditor?.refresh();
   };
   productControl.addEventListener(productControl.matches("select") ? "change" : "multi-picker-change", () => apply());
   if (initialize) apply(false);
@@ -1416,6 +1581,8 @@ function activityRemoteBody(task) {
     category: task.category || null,
     channel: task.channel || null,
     required_setup: taskSetupRequirements(task),
+    required_setup_configuration: normalizeSetupConfiguration(task.required_setup_configuration),
+    required_product_types: setupProductTypes(task.required_product_types),
     requires_retroactive: Boolean(task.requires_retroactive),
     retroactive_reference_date: task.retroactive_reference_date || null,
     type: task.type || null,
@@ -1458,6 +1625,8 @@ function productActivityRemoteBody(template) {
     category: template.category || null,
     channel: template.channel || null,
     required_setup: taskSetupRequirements(template),
+    required_setup_configuration: normalizeSetupConfiguration(template.required_setup_configuration),
+    required_product_types: setupProductTypes(template.required_product_types),
     requires_retroactive: Boolean(template.requires_retroactive),
     type: template.type || null,
     activity: template.activity,
@@ -1753,6 +1922,8 @@ async function syncProductActivitiesOnce() {
           category: template.category || "",
           channel: template.channel || "",
           required_setup: taskSetupRequirements(template),
+          required_setup_configuration: normalizeSetupConfiguration(template.required_setup_configuration),
+          required_product_types: setupProductTypes(template.required_product_types),
           requires_retroactive: Boolean(template.requires_retroactive),
           retroactive_reference_date: template.requires_retroactive ? occurrenceDate : null,
           type: template.type || "",
@@ -1794,7 +1965,9 @@ async function syncProductActivitiesOnce() {
           }
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
-            : ["document_ids", "custom_table_ids", "required_setup"].includes(key)
+            : key === "required_setup_configuration"
+              ? JSON.stringify(normalizeSetupConfiguration(current[key])) !== JSON.stringify(value)
+            : ["document_ids", "custom_table_ids", "required_setup", "required_product_types"].includes(key)
               ? JSON.stringify(normalizeIdList(current[key])) !== JSON.stringify(normalizeIdList(value))
             : current[key] !== value)) {
             Object.assign(current, updates, { updated_at: new Date().toISOString() });
@@ -3491,7 +3664,8 @@ function fields(tab, c) {
       { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
       { k: "freight_channels", label: "Frete", type: "multi", options: deliveryChannelOptions("freight"), addOnly: true, full: true, placeholder: "Selecionar canais de frete" },
       { k: "company_setup", label: "Situação da empresa", type: "select", options: DELIVERY_COMPANY_SETUP_OPTIONS.map((value) => ({ value, label: value })), full: true },
-      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar bancos e gateways", help: "Mercado Livre inclui Mercado Pago e Mercado Envios; Nuvem Shop inclui Nuvem Pago e Nuvem Envio; Tray inclui Vindi." }];
+      { k: "financial_accounts", label: "Contas financeiras", type: "multi", options: deliveryChannelOptions("financial"), addOnly: true, full: true, placeholder: "Selecionar bancos e gateways", help: "Mercado Livre inclui Mercado Pago e Mercado Envios; Nuvem Shop inclui Nuvem Pago e Nuvem Envio; Tray inclui Vindi." },
+      { k: "setup_product_types", label: "Tipo de produto", type: "multi", textValues: true, options: SETUP_PRODUCT_TYPES, full: true, placeholder: "Selecionar tipos de produto" }];
   }
 }
 
@@ -6499,6 +6673,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       category: requestedParent.category || "",
       channel: requestedParent.channel || "",
       required_setup: taskSetupRequirements(requestedParent),
+      required_setup_configuration: normalizeSetupConfiguration(requestedParent.required_setup_configuration),
+      required_product_types: setupProductTypes(requestedParent.required_product_types),
       requires_retroactive: Boolean(requestedParent.requires_retroactive),
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
@@ -6604,6 +6780,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireMultiPicker("pa-dependencies");
   wireMultiPicker("pa-documents");
   wireMultiPicker("pa-tables");
+  wireTaskSetupTab(overlay, "pa", current);
   wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
   wireProductErpDefaults("pa", document.getElementById("pa-products"), () => multiPickerValues("pa-products"), !editId && !cloneSourceId && !requestedParent);
   renderProductActivityChecklistEditor();
@@ -6660,6 +6837,8 @@ async function saveProductActivity() {
     category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
     required_setup: multiPickerValues("pa-required-setup"),
+    required_setup_configuration: setupEditorValue("pa"),
+    required_product_types: setupProductTypes(multiPickerValues("pa-product-types")),
     requires_retroactive: document.getElementById("pa-retroactive").checked,
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
@@ -7046,12 +7225,13 @@ function taskStatusTransitionError(from = "todo", to = "todo") {
   if (!to || to === from) return "";
   if (!TASK_STATUS.some((status) => status.id === to)) return "Status de tarefa inválido.";
   if (from === "done") return "Tarefa Atendida não pode ter o status alterado.";
-  if (from === "canceled" && !currentUserIsAdmin()) return "Tarefa Cancelada só pode ser reaberta por administradores.";
+  // Liberação temporária durante a migração; responsabilidade e dependências seguem obrigatórias.
+  if (from === "canceled" && !currentUserIsAdmin() && to !== "doing") return "Tarefa Cancelada pode ser reaberta para Em andamento.";
   if (from === "todo" && !["doing", "canceled"].includes(to)) return "Inicie a tarefa antes de marcar como Atendido.";
   if (from === "doing" && !["done", "canceled"].includes(to)) return "Tarefa Em andamento só pode passar para Atendido ou Cancelado.";
   return "";
 }
-const taskStatusLocked = (task) => task?.status === "done" || (task?.status === "canceled" && !currentUserIsAdmin());
+const taskStatusLocked = (task) => task?.status === "done";
 
 function taskStatusOptions(selected = "todo", blocked = false, flow = false) {
   return TASK_STATUS.filter((s) => !flow || !taskStatusTransitionError(selected, s.id)).map((s) => {
@@ -8331,6 +8511,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   wireMultiPicker("project-task-assignee-job-titles");
   wireMultiPicker("project-task-documents");
   wireMultiPicker("project-task-tables");
+  wireTaskSetupTab(overlay, "project-task", current);
   wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-category", "project-task-channel", "project-task-module", "project-task-type"]);
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
@@ -8373,6 +8554,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
       category: document.getElementById("project-task-category").value.trim(),
       channel: document.getElementById("project-task-channel").value.trim(),
       required_setup: multiPickerValues("project-task-required-setup"),
+      required_setup_configuration: current.source_template_id ? normalizeSetupConfiguration(current.required_setup_configuration) : setupEditorValue("project-task"),
+      required_product_types: current.source_template_id ? setupProductTypes(current.required_product_types) : setupProductTypes(multiPickerValues("project-task-product-types")),
       type: document.getElementById("project-task-type").value.trim(),
       recurrence: document.getElementById("project-task-recurrence").value,
       deadline_window: deadlineWindow,
@@ -11064,13 +11247,19 @@ function openForm(tab, id, opts = {}) {
       return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_product"${noProduct ? " checked" : ""}><span>Não possui produto</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
+    if (tab === "projects" && f.k === "setup_product_types") return `<div class="${cls} setup-product-types"><label>${esc(f.label)}</label>${ctrl}</div>`;
+    if (tab === "projects" && f.k === "erp_platform") return `<div class="field full setup-erp-line"><div class="field"><label>${esc(f.label)}</label>${ctrl}</div><div class="setup-configuration" id="delivery-erp-configuration"></div></div>`;
+    if (tab === "projects" && ["marketplace_channels", "store_platforms", "financial_accounts"].includes(f.k)) {
+      const group = { marketplace_channels: "marketplaces", store_platforms: "stores", financial_accounts: "financial" }[f.k];
+      return `<div class="${cls}"><label>${esc(f.label)}</label>${ctrl}<div class="setup-configuration" id="delivery-${group}-configuration"></div>${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
+    }
     if (tab === "projects" && f.k === "retroactive_enabled") return `<div class="field full retroactive-toggle"><label><input type="checkbox" data-k="retroactive_enabled"${val ? " checked" : ""}><span>Retroativo</span></label></div>`;
     if (tab === "projects" && f.k === "retroactive_start_date") return `<div class="${cls}" id="delivery-retroactive-date-field"${record?.retroactive_enabled || opts.defaults?.retroactive_enabled ? "" : " hidden"}><label>${esc(f.label)}</label>${ctrl}</div>`;
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
     return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
   };
   // Entrega: ERP, canais, frete, empresa e contas financeiras ficam na aba Setup.
-  const setupKeys = new Set(["erp_platform", "marketplace_channels", "store_platforms", "freight_channels", "company_setup", "financial_accounts"]);
+  const setupKeys = new Set(["erp_platform", "marketplace_channels", "store_platforms", "freight_channels", "company_setup", "financial_accounts", "setup_product_types"]);
   const inputs = tab === "projects"
     ? `<div class="form-tab-panel" data-form-tab="general">${fs.filter((f) => !setupKeys.has(f.k)).map(fieldHtml).join("")}</div><div class="form-tab-panel" data-form-tab="setup" hidden><div class="panel-list form-tab-note">Canais ativados passam a liberar suas tarefas e não podem ser desativados depois.</div>${fs.filter((f) => setupKeys.has(f.k)).map(fieldHtml).join("")}</div>`
     : fs.map(fieldHtml).join("");
@@ -11099,12 +11288,7 @@ function openForm(tab, id, opts = {}) {
 
   document.getElementById("cancel").addEventListener("click", returnToPrevious);
   document.getElementById("save").addEventListener("click", () => saveForm(tab, id, fs, opts));
-  document.querySelectorAll("#modal-root [data-form-tab-btn]").forEach((button) => button.addEventListener("click", () => {
-    const panelRoot = button.closest(".modal") || document;
-    panelRoot.querySelectorAll("[data-form-tab-btn]").forEach((item) => item.classList.toggle("active", item === button));
-    panelRoot.querySelectorAll(".form-tab-panel").forEach((panel) => { panel.hidden = panel.dataset.formTab !== button.dataset.formTabBtn; });
-    panelRoot.querySelectorAll("[data-form-tab-note]").forEach((note) => { note.hidden = note.dataset.formTabNote !== button.dataset.formTabBtn; });
-  }));
+  wireFormTabs(document.getElementById("save").closest(".modal"));
   fs.filter((field) => field.type === "multi").forEach((field) => wireMultiPicker(`form-${field.k}`));
   fs.filter((field) => field.type === "search").forEach((field) => wireSingleSearchPicker(`form-${field.k}`));
   document.querySelectorAll("#modal-root [data-search-ref]").forEach((input) => {
@@ -11204,6 +11388,15 @@ function openForm(tab, id, opts = {}) {
     const substatusEl = form?.querySelector('[data-k="substatus"]');
     const continuationEl = form?.querySelector('[data-k="continuation_of_id"]');
     const erpEl = form?.querySelector('[data-k="erp_platform"]');
+    const setupGroups = {
+      erp: () => [erpEl?.value].filter(Boolean),
+      marketplaces: () => multiPickerValues("form-marketplace_channels"),
+      stores: () => multiPickerValues("form-store_platforms"),
+      financial: () => multiPickerValues("form-financial_accounts")
+    };
+    Object.entries(setupGroups).forEach(([group, getChannels]) => setupConfigurationEditor(`delivery-${group}`, getChannels, record?.setup_configuration || opts.defaults?.setup_configuration));
+    const refreshSetup = () => Object.keys(setupGroups).forEach((group) => document.getElementById(`delivery-${group}-configuration`)?.setupEditor?.refresh());
+    erpEl?.addEventListener("change", refreshSetup);
     const retroactiveEl = form?.querySelector('[data-k="retroactive_enabled"]');
     const retroactiveDateEl = form?.querySelector('[data-k="retroactive_start_date"]');
     const syncRetroactive = () => {
@@ -11267,6 +11460,8 @@ function openForm(tab, id, opts = {}) {
         erpEl.disabled = Boolean(persistedErp || inheritedErp);
         erpEl.closest(".field")?.classList.toggle("field-disabled", Boolean(persistedErp || inheritedErp));
       }
+      Object.keys(setupGroups).forEach((group) => document.getElementById(`delivery-${group}-configuration`)?.setupEditor?.inherit(previous?.setup_configuration));
+      refreshSetup();
     };
     // Mercado Livre, Nuvem Shop e Tray trazem contas financeiras e fretes automáticos.
     function applyAutoSetups() {
@@ -11284,6 +11479,7 @@ function openForm(tab, id, opts = {}) {
     }
     form?.addEventListener("multi-picker-change", (event) => {
       if (["form-marketplace_channels", "form-store_platforms"].includes(event.target?.id)) applyAutoSetups();
+      if (["form-marketplace_channels", "form-store_platforms", "form-financial_accounts"].includes(event.target?.id)) refreshSetup();
     }, true);
     const syncContinuityOptions = () => {
       if (!continuationEl) return;
@@ -11905,6 +12101,8 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (companyLookupFresh && lastCompanyLookup === taxIdDigits(body.tax_id) && body.legal_name) Object.assign(body, { registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() });
   }
   if (tab === "projects") {
+    body.setup_configuration = mergeSetupConfigurations(...["erp", "marketplaces", "stores", "financial"].map((group) => setupEditorValue(`delivery-${group}`)));
+    body.setup_product_types = setupProductTypes(body.setup_product_types);
     body.retroactive_enabled = Boolean(body.retroactive_enabled);
     if (!body.retroactive_enabled) body.retroactive_start_date = null;
     else if (!deliveryRetroactiveStart(body)) {
@@ -11928,6 +12126,8 @@ async function saveForm(tab, id, fs, opts = {}) {
       body.store_platforms = normalizeTextList([...previousStores, ...normalizeTextList(body.store_platforms)]);
       body.freight_channels = normalizeTextList([...normalizeTextList(previousDelivery.freight_channels), ...normalizeTextList(body.freight_channels)]);
       body.financial_accounts = normalizeTextList([...normalizeTextList(previousDelivery.financial_accounts), ...normalizeTextList(body.financial_accounts)]);
+      body.setup_configuration = mergeSetupConfigurations(previousDelivery.setup_configuration, body.setup_configuration);
+      body.setup_product_types = setupProductTypes([...setupProductTypes(previousDelivery.setup_product_types), ...body.setup_product_types]);
     }
     if (current?.erp_platform && body.erp_platform !== current.erp_platform) { toast("O ERP ativado não pode ser alterado ou removido.", true); return; }
     const currentStores = normalizeTextList(current?.store_platforms).length ? normalizeTextList(current.store_platforms) : normalizeTextList(current?.store_platform ? [current.store_platform] : []);
@@ -12268,7 +12468,7 @@ const HELP_TASK_OPERATIONS_SECTION = { title: "Executar e acompanhar", steps: ["
     ["Em dia, Atrasado e Adiantado", "Sem conclusão, o atraso começa no dia seguinte ao término previsto. Com término real, o sistema compara a conclusão com o prazo: dentro da janela é Em dia, depois é Atrasado e antes da abertura é Adiantado. Em Data específica, concluir antes do vencimento é Adiantado."],
     ["Subtarefas e checklist", "Subtarefas são trabalhos separados, com acompanhamento próprio. Checklist são verificações dentro de um trabalho; quando existem subtarefas, o checklist fica nelas."],
     ["Operar ou editar", "Operar acompanha a execução, como alterar status. Editar muda o cadastro e o planejamento. Os comandos disponíveis dependem das permissões do usuário."]] };
-const HELP_TASK_SETUP_SECTION = { title: "Requer no Setup", lead: "<b>Canal organiza a tarefa; Requer no Setup controla se ela é liberada na entrega.</b> O campo fica em Tarefas › Cadastro › Editar, abaixo de Canal. Na entrega, a aba Setup ativa ERP, marketplaces, lojas, frete e contas financeiras; não é um segundo cadastro de requisitos. Todos os requisitos selecionados precisam estar ativos no Setup do cliente. Sem requisitos, a tarefa é geral e aparece independentemente do Setup.",
+const HELP_TASK_SETUP_SECTION = { title: "Setup da tarefa", lead: "<b>Canal organiza a tarefa; a aba Setup controla se ela é liberada na entrega.</b> Os requisitos ficam em Tarefas › Cadastro › Editar › Setup. ERP, marketplaces e lojas aceitam módulos e submódulos por canal. Cada conta financeira pode exigir Emite boleto ou Não emite boleto; uma conta não configurada não atende a nenhum desses requisitos. Tipo de produto distingue próprio e terceiros, nacional e internacional. Todos os requisitos selecionados precisam estar ativos no Setup da entrega. Sem requisitos, a tarefa é geral. As regras antigas por canal continuam funcionando sem preencher os novos campos.",
   cards: [["Integração BLING + SHEIN", "Mantenha Canal = BLING e marque BLING e SHEIN em Requer no Setup. A tarefa de integrar SHEIN só aparece quando os dois estiverem ativados."], ["Conciliação do BLING", "Marque somente BLING. Não precisa exigir nenhum marketplace para fazer a conciliação do ERP."], ["Instruções por canal", "Cada integração mantém sua própria tarefa, instruções, checklist e conclusão. Marcar vários requisitos não cria cópias nem uma tarefa por canal."], ["Alterar o modelo", "Edite os requisitos em Tarefas › Cadastro. As entregas vinculadas passam a usar essa regra, inclusive para tarefas já geradas. Tarefas ocultas não são apagadas; voltam quando o Setup atender aos requisitos."]],
   tips: ["Os modelos existentes receberam o canal atual como requisito quando ele faz parte do Setup, preservando o filtro anterior. Revise as integrações e adicione o canal de destino; o sistema não deduz requisitos pelo nome."] };
 const HELP_RECORD_ACTIONS_SECTION = { title: "O que cada ação significa", cards: [["Abrir", "Consultar o conteúdo e acompanhar o registro, quando ele possui uma área interna, como uma entrega ou documento."], ["Editar", "Alterar o registro existente. Não cria outra cópia; confira os impactos de mudar um planejamento em uso."], ["Clonar", "Criar outro registro a partir do atual. Revise os dados da cópia antes de salvar; não use para registrar a conclusão do original."], ["Excluir", "Remover o registro, conforme as permissões e vínculos. Para uma tarefa que não será executada, prefira Cancelado para manter o histórico."], ["Botão apagado", "A função não existe naquele módulo ou seu perfil não tem permissão. Não indica erro de carregamento."]] };

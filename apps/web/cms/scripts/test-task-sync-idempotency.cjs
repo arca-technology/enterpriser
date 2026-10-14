@@ -6,9 +6,10 @@ const ts = require('typescript');
 const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 const tree = ts.createSourceFile('app.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const names = new Set(['syncProductActivities', 'syncProductActivitiesOnce', 'upsertTaskRecord', 'uniqueTaskRecords',
-  'normalizeIdList', 'normalizeTextList', 'activityOccurrenceSort', 'activityTemplateOccurrences', 'isGenericOnboardingTask', 'findDeliveryDuplicate']);
+  'normalizeIdList', 'normalizeTextList', 'normalizeSetupConfiguration', 'setupProductTypes', 'compareLabels',
+  'activityOccurrenceSort', 'activityTemplateOccurrences', 'isGenericOnboardingTask', 'findDeliveryDuplicate']);
 const code = tree.statements.filter(node => (ts.isFunctionDeclaration(node) && names.has(node.name?.text)) ||
-  (ts.isVariableStatement(node) && node.declarationList.declarations.some(d => d.name.text === 'productActivitySyncQueue')))
+  (ts.isVariableStatement(node) && node.declarationList.declarations.some(d => ['productActivitySyncQueue', 'SETUP_PRODUCT_TYPES'].includes(d.name.text))))
   .map(node => node.getText(tree)).join('\n');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function scenario({ conflict = false, failure = false } = {}) {

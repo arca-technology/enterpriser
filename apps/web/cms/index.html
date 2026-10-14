@@ -1472,6 +1472,35 @@
   .delivery-duplicate-actions{flex-wrap:wrap}
   .retroactive-toggle>label{display:flex;align-items:center;justify-content:flex-start;gap:8px;min-height:40px;margin:0;cursor:pointer}
   .retroactive-toggle input[type="checkbox"]{width:16px;height:16px;flex:0 0 16px;margin:0;accent-color:var(--blue)}
+  .setup-configuration{display:grid;gap:8px;min-width:0;grid-column:1 / -1}
+  .setup-channel-row{display:grid;grid-template-columns:minmax(80px,.7fr) repeat(2,minmax(0,1fr));gap:8px;align-items:end;padding:10px 0;border-bottom:1px solid var(--border2);min-width:0}
+  .setup-channel-row>strong{font-size:11px;overflow-wrap:anywhere;align-self:center}
+  .setup-channel-row .field{min-width:0;margin:0}
+  .form .setup-channel-row>.field{grid-column:auto}
+  .setup-channel-row .multi-picker-control{width:100%;min-height:36px}
+  .setup-channel-row .multi-picker-tags{flex-wrap:wrap}
+  .setup-channel-row .multi-picker-chip{max-width:100%;overflow-wrap:anywhere;white-space:normal}
+  .setup-channel-row .multi-picker-chip span{white-space:normal;text-overflow:clip}
+  .setup-product-types .multi-picker-chip{max-width:100%;white-space:normal;text-align:left}
+  .setup-product-types .multi-picker-chip span{white-space:normal;text-overflow:clip;overflow-wrap:anywhere}
+  .setup-financial-row{grid-template-columns:minmax(80px,1fr) minmax(0,1.5fr)}
+  .setup-erp-line{display:grid;grid-template-columns:minmax(90px,.7fr) minmax(0,2fr);gap:8px;align-items:end}
+  .setup-erp-line .setup-configuration{grid-column:auto}
+  .setup-erp-line .setup-channel-row{grid-template-columns:repeat(2,minmax(0,1fr));padding:0;border:0}
+  .setup-erp-line .setup-channel-row>strong{display:none}
+  .task-form-drawer>.form-tabs{flex:0 0 auto}
+  .task-form-grid>.form-tab-panel{grid-template-columns:inherit;gap:inherit}
+  .task-form-grid>.form-tab-panel>.field{min-width:0}
+  .task-form-grid .task-form-wide{grid-column:1 / -1}
+  @media(max-width:600px){
+    .setup-erp-line{grid-template-columns:1fr}
+    .setup-channel-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .setup-channel-row>strong{grid-column:1 / -1}
+    .setup-financial-row{grid-template-columns:minmax(70px,1fr) minmax(0,1.6fr)}
+    .setup-financial-row>strong{grid-column:auto}
+    .setup-channel-row select,.setup-channel-row .multi-picker-control{min-height:44px}
+    .form-tab{min-height:44px}
+  }
   .company-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;padding:8px 18px 18px}
   .company-detail-item{display:flex;min-width:0;flex-direction:column;gap:5px;padding:12px 10px;border-bottom:1px solid var(--border2)}
   .company-detail-item:nth-child(2n){border-left:1px solid var(--border2)}

@@ -15,6 +15,9 @@ for (const admin of [false, true]) {
   }
   assert.equal(context.isLocked({ status: 'done' }), true);
   assert.equal(context.isLocked({ status: 'todo' }), false);
+  assert.equal(context.isLocked({ status: 'canceled' }), false);
+  assert.equal(context.taskStatusTransitionError('canceled', 'doing'), '');
+  for (const status of ['todo', 'done']) assert.equal(!context.taskStatusTransitionError('canceled', status), admin);
 }
 assert(context.taskStatusOptions('todo', true, true).includes('value="doing" disabled'));
 assert(!context.taskStatusOptions('todo', true, true).includes('value="canceled" disabled'));
@@ -32,6 +35,7 @@ Object.assign(context, {
   recalculateDependencySchedules: async () => {}, toast: () => {}
 });
 (async () => {
+  context.currentUserIsAdmin = () => false;
   assert.equal(await context.updateProjectTask('task', { status: 'done' }), false);
   assert.equal(writes, 0);
   assert.equal(await context.updateProjectTask('task', { status: 'doing' }), true);
@@ -41,5 +45,17 @@ Object.assign(context, {
   for (const status of ['todo', 'doing', 'canceled']) assert.equal(await context.updateProjectTask('task', { status }), false);
   assert.equal(writes, 2);
   assert.equal(task.status, 'done');
+  task.status = 'canceled';
+  assert.equal(await context.updateProjectTask('task', { status: 'doing' }), true);
+  assert.equal(task.status, 'doing');
+  task.status = 'canceled';
+  context.taskIsBlocked = () => true;
+  context.taskDependencies = () => [{ status: 'todo' }];
+  context.activityDisplayName = () => 'Dependency';
+  assert.equal(await context.updateProjectTask('task', { status: 'doing' }), false);
+  assert.equal(task.status, 'canceled');
+  context.canEditOperational = () => false;
+  context.taskIsBlocked = () => false;
+  assert.equal(await context.updateProjectTask('task', { status: 'doing' }), false, 'Cannot reopen someone else\'s read-only task');
   console.log('Task transitions, terminal admin lock, dropdown options, real dates and rejected updates passed.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -61,7 +61,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.evaluate(() => closeProductActivityDrawer());
     }
     await openTask();
-    await page.locator('#pa-activity').fill('Conciliação retroativa'); await page.locator('#pa-retroactive').check();
+    await page.locator('#pa-activity').fill('Conciliação retroativa');
+    await page.locator('#product-activity-drawer-overlay [data-form-tab-btn="setup"]').click();
+    await page.locator('#pa-retroactive').check();
+    await page.locator('#product-activity-drawer-overlay [data-form-tab-btn="general"]').click();
     await page.locator('#pa-recurrence').selectOption('monthly'); await page.locator('#pa-deadline-window').selectOption('month');
     await page.locator('#pa-save').click();
     await page.waitForFunction(() => !document.getElementById('pa-save') && !productActivitySavePending);
