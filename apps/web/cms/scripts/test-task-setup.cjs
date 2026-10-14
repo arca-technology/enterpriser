@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
-const context = vm.createContext({ cache: { productById: {}, projectById: {}, productActivities: [] }, loadProjectTasks: () => [] });
+const context = vm.createContext({ cache: { productById: {}, projectById: {}, productActivities: [] }, loadProjectTasks: () => [], visibleOperationalTasks: (rows) => rows });
 const setup = source.slice(source.indexOf('const DELIVERY_CHANNEL_OPTIONS ='), source.indexOf('const MAX_PIPELINES ='));
 vm.runInContext(setup + source.match(/function normalizeTextList\([^]*?^}/m)[0], context);
 const task = { channel: 'BLING', required_setup: ['BLING', 'SHEIN'] };

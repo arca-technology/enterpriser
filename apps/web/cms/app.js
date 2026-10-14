@@ -316,11 +316,56 @@ function taskSetupRequirements(task) {
 }
 function projectTaskEnabled(project, task) {
   const active = activatedDeliveryChannels(project);
-  return taskSetupRequirements(task).every((value) => active.has(normalizeDeliveryChannel(value)));
+  return (!task?.requires_retroactive || Boolean(deliveryRetroactiveStart(project)))
+    && taskSetupRequirements(task).every((value) => active.has(normalizeDeliveryChannel(value)));
+}
+function deliveryRetroactiveStart(project) {
+  if (!project?.retroactive_enabled) return null;
+  const date = project.retroactive_start_date;
+  const start = project.start_date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "") || !/^\d{4}-\d{2}-\d{2}$/.test(start || "") || date >= start) return null;
+  const parsed = new Date(`${date}T12:00:00`);
+  return parsed.getFullYear() === Number(date.slice(0, 4)) && parsed.getMonth() + 1 === Number(date.slice(5, 7)) && parsed.getDate() === Number(date.slice(8, 10)) ? date : null;
 }
 function taskSetupOptions(selected = []) {
   const values = normalizeTextList([...Object.values(DELIVERY_CHANNEL_OPTIONS).flat(), ...DELIVERY_COMPANY_SETUP_OPTIONS, ...selected]);
   return values.map((value) => ({ value, label: value }));
+}
+function productErpChannel(productIds, c = cache) {
+  const channels = new Set(normalizeIdList(productIds).flatMap((id) => {
+    const name = String(c?.productById?.[id]?.name || "").toLocaleUpperCase("pt-BR");
+    return DELIVERY_CHANNEL_OPTIONS.erp.filter((channel) => new RegExp(`\\b${channel}\\b`).test(name));
+  }));
+  return channels.size === 1 ? [...channels][0] : "";
+}
+function wireProductErpDefaults(prefix, productControl, selectedProducts, initialize = false) {
+  if (!productControl) return;
+  const category = document.getElementById(`${prefix}-category`);
+  const channel = document.getElementById(`${prefix}-channel`);
+  const automatic = new Map();
+  let automaticSetup = "";
+  const apply = (emit = true) => {
+    const erp = productErpChannel(selectedProducts());
+    for (const [control, value] of [[category, erp ? "ERP" : ""], [channel, erp]]) {
+      if (!control || (control.value.trim() && control.value !== automatic.get(control))) continue;
+      const changed = control.value !== value;
+      control.value = value;
+      automatic.set(control, value);
+      if (changed && emit) control.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const setup = document.getElementById(`${prefix}-required-setup`);
+    if (!setup) return;
+    if (channel?.value.trim() && channel.value !== erp && channel.value !== automatic.get(channel)) return;
+    const selected = multiPickerValues(setup.id).filter((value) => value !== automaticSetup);
+    if (erp && !selected.includes(erp)) selected.push(erp);
+    const current = multiPickerValues(setup.id);
+    automaticSetup = erp;
+    if (JSON.stringify(current) === JSON.stringify(selected)) return;
+    setup.outerHTML = multiPickerHtml(setup.id, taskSetupOptions(selected), new Set(selected), "Selecionar requisitos");
+    wireMultiPicker(`${prefix}-required-setup`);
+  };
+  productControl.addEventListener(productControl.matches("select") ? "change" : "multi-picker-change", () => apply());
+  if (initialize) apply(false);
 }
 const MAX_PIPELINES = 5;
 const SOURCES = ["Indicação", "Site", "Anúncio", "Evento", "LinkedIn", "Inbound", "Prospecção", "Outro"];
@@ -531,6 +576,7 @@ function mainTemplateOriginField() {
 }
 
 function wireMainTemplateProduct(prefix, section) {
+  wireProductErpDefaults(prefix, document.getElementById(`${prefix}-product`), () => [document.getElementById(`${prefix}-product`)?.value], true);
   document.getElementById(`${prefix}-product`)?.addEventListener("change", (event) => {
     productActivityState.productId = event.target.value;
     const results = section === "goals" ? loadProductGoals() : loadProductObjectives();
@@ -1247,7 +1293,14 @@ function operationalProjectTasks(projectId = null) {
   return visibleOperationalTasks(loadProjectTasks()).filter((task) => {
     if (projectId && task.project_id !== projectId) return false;
     const template = templates.get(task.source_template_id);
-    return projectTaskEnabled(cache?.projectById?.[task.project_id], template || task);
+    const project = cache?.projectById?.[task.project_id];
+    const settings = template || task;
+    if (!projectTaskEnabled(project, settings)) return false;
+    if (!settings.requires_retroactive) return !task.retroactive_reference_date;
+    if (!task.retroactive_reference_date) return false;
+    const length = ["monthly", "bimonthly", "quarterly", "semiannual", "annual"].includes(settings.recurrence) ? 7 : 10;
+    return task.retroactive_reference_date.slice(0, length) >= deliveryRetroactiveStart(project).slice(0, length)
+      && task.retroactive_reference_date < project.start_date;
   });
 }
 function currentUserOwnsOperational(row) {
@@ -1363,6 +1416,8 @@ function activityRemoteBody(task) {
     category: task.category || null,
     channel: task.channel || null,
     required_setup: taskSetupRequirements(task),
+    requires_retroactive: Boolean(task.requires_retroactive),
+    retroactive_reference_date: task.retroactive_reference_date || null,
     type: task.type || null,
     recurrence: task.recurrence || "once",
     deadline_window: task.deadline_window || "date",
@@ -1403,6 +1458,7 @@ function productActivityRemoteBody(template) {
     category: template.category || null,
     channel: template.channel || null,
     required_setup: taskSetupRequirements(template),
+    requires_retroactive: Boolean(template.requires_retroactive),
     type: template.type || null,
     activity: template.activity,
     information: template.information || null,
@@ -1671,13 +1727,12 @@ async function syncProductActivitiesOnce() {
       const objective = template.objective_template_id
         ? loadDeliveryObjectives().find((item) => item.project_id === project.id && item.source_template_id === template.objective_template_id)
         : null;
-      const dates = activityOccurrenceDates(project, template.recurrence || "once", template.consider_business_days);
+      const occurrences = activityTemplateOccurrences(project, template);
       const existing = tasks
         .filter((task) => task.project_id === project.id && task.source_template_id === template.id)
         .sort(activityOccurrenceSort);
-      for (let occurrenceIndex = 0; occurrenceIndex < dates.length; occurrenceIndex += 1) {
+      for (const { date: occurrenceDate, index: occurrenceIndex } of occurrences) {
         const current = existing.find((task) => Number(task.occurrence_index || 0) === occurrenceIndex);
-        const occurrenceDate = dates[occurrenceIndex];
         const window = template.recurrence === "monthly" ? template.deadline_window || "date" : "date";
         const range = monthlyDeadlineRange(occurrenceDate || project.start_date, window);
         const plannedStartDate = range?.start || occurrenceDate || project.start_date || null;
@@ -1698,6 +1753,8 @@ async function syncProductActivitiesOnce() {
           category: template.category || "",
           channel: template.channel || "",
           required_setup: taskSetupRequirements(template),
+          requires_retroactive: Boolean(template.requires_retroactive),
+          retroactive_reference_date: template.requires_retroactive ? occurrenceDate : null,
           type: template.type || "",
           recurrence: template.recurrence || "once",
           deadline_window: window,
@@ -1713,6 +1770,7 @@ async function syncProductActivitiesOnce() {
           const recurrenceChanged = (current.recurrence || "once") !== structural.recurrence;
           const scheduleChanged = recurrenceChanged
             || (current.deadline_window || "date") !== structural.deadline_window
+            || (current.retroactive_reference_date || null) !== structural.retroactive_reference_date
             || Boolean(current.consider_business_days) !== structural.consider_business_days
             || (current.target_days == null ? null : Number(current.target_days)) !== structural.target_days;
           const updates = { ...structural, checklist: hasSubtasks ? [] : mergeTemplateChecklist(template.checklist, current.checklist) };
@@ -1812,6 +1870,7 @@ async function recalculateDependencySchedules(projectId = null) {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const shift = (date, days, business) => business ? addBusinessDays(date, days) : addDays(date, days);
   const candidates = tasks.filter((task) => (!projectId || task.project_id === projectId)
+    && !task.retroactive_reference_date
     && (!task.deadline_window || task.deadline_window === "date")
     && task.start_after_days != null && task.start_after_days !== ""
     && !task.schedule_manual && !["done", "canceled"].includes(task.status)
@@ -1892,6 +1951,20 @@ function activityOccurrenceDates(project, recurrence, considerBusinessDays = fal
     cursor = monthStep ? addMonthsClamped(cursor, monthStep) : addDays(cursor, dayStep || 1);
   }
   return dates.length ? dates : [start];
+}
+function activityTemplateOccurrences(project, template) {
+  const recurrence = template.recurrence || "once";
+  if (!template.requires_retroactive) return activityOccurrenceDates(project, recurrence, template.consider_business_days)
+    .map((date, index) => ({ date, index }));
+  const start = deliveryRetroactiveStart(project);
+  if (!start) return [];
+  const dates = activityOccurrenceDates({ start_date: start, end_date: project.start_date }, recurrence, template.consider_business_days);
+  const monthly = ["monthly", "bimonthly", "quarterly", "semiannual", "annual"].includes(recurrence);
+  // Historical keys never renumber the regular occurrences or completed work.
+  return dates.map((value) => {
+    const date = value || start;
+    return { date, index: recurrence === "once" ? -1 : -Number(date.slice(0, monthly ? 7 : 10).replaceAll("-", "")) };
+  });
 }
 
 const MONTHLY_DEADLINE_OPTIONS = [
@@ -3411,6 +3484,8 @@ function fields(tab, c) {
       { k: "substatus", label: "Substatus", type: "select", options: PROJECT_SUBSTATUS.map((s) => ({ value: s, label: PROJECT_SUBSTATUS_LABEL[s] })) },
       { k: "start_date", label: "Início", type: "date" },
       { k: "end_date", label: "Fim", type: "date" },
+      { k: "retroactive_enabled", label: "Retroativo", type: "checkbox", full: true },
+      { k: "retroactive_start_date", label: "Início retroativo", type: "date", full: true },
       { k: "erp_platform", label: "ERP", type: "select", options: deliveryChannelOptions("erp"), lockWhenSet: true, full: true },
       { k: "marketplace_channels", label: "Marketplaces", type: "multi", options: deliveryChannelOptions("marketplaces"), addOnly: true, full: true, placeholder: "Selecionar marketplaces" },
       { k: "store_platforms", label: "Lojas", type: "multi", options: deliveryChannelOptions("stores"), addOnly: true, full: true, placeholder: "Selecionar lojas" },
@@ -4603,8 +4678,10 @@ function renderTable(c) {
 }
 
 function dealCardHtml(d, c) {
+  const person = c.contactById?.[d.contact_id]?.name || "Pessoa não vinculada";
   return `<div class="card" data-id="${esc(d.id)}">
       <div class="t">${esc(d.title)}</div>
+      <div class="m deal-card-person"><strong>${esc(person)}</strong></div>
       <div class="m">${esc(c.companyById[d.company_id]?.legal_name || c.companyById[d.company_id]?.name || "—")}</div>
       <div class="m">${d.owner_id ? identityPersonHtml(d.owner_id) : '<span class="muted">Sem responsável</span>'}</div>
       <div class="v">${brl(d.amount)}</div></div>`;
@@ -5654,7 +5731,7 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.category, item?.channel, item?.type, item?.activity, item?.recurrence || "once"]
+  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.category, item?.channel, item?.type, item?.activity, item?.recurrence || "once", item?.requires_retroactive ? "retroactive" : "regular"]
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR"))
     .join("|");
 }
@@ -6422,6 +6499,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       category: requestedParent.category || "",
       channel: requestedParent.channel || "",
       required_setup: taskSetupRequirements(requestedParent),
+      requires_retroactive: Boolean(requestedParent.requires_retroactive),
       type: requestedParent.type || "",
       recurrence: requestedParent.recurrence || "once",
       deadline_window: requestedParent.deadline_window || "date",
@@ -6480,6 +6558,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Categoria</label><input id="pa-category" value="${esc(current.category || "")}"></div>
       <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
       <div class="field task-form-wide"><label>Requer no Setup</label>${multiPickerHtml("pa-required-setup", taskSetupOptions(taskSetupRequirements(current)), new Set(taskSetupRequirements(current)), "Selecionar requisitos")}</div>
+      <div class="field task-form-wide retroactive-toggle"><label title="Disponível somente em entregas com Retroativo ativo, usando o período anterior ao início da entrega."><input id="pa-retroactive" type="checkbox"${current.requires_retroactive ? " checked" : ""}><span>Retroativo</span></label></div>
       <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
       <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
       <div class="task-schedule-row task-schedule-row-wide">
@@ -6526,6 +6605,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireMultiPicker("pa-documents");
   wireMultiPicker("pa-tables");
   wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
+  wireProductErpDefaults("pa", document.getElementById("pa-products"), () => multiPickerValues("pa-products"), !editId && !cloneSourceId && !requestedParent);
   renderProductActivityChecklistEditor();
   (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-category") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
 }
@@ -6580,6 +6660,7 @@ async function saveProductActivity() {
     category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
     required_setup: multiPickerValues("pa-required-setup"),
+    requires_retroactive: document.getElementById("pa-retroactive").checked,
     type: document.getElementById("pa-type").value.trim(),
     recurrence: document.getElementById("pa-recurrence").value || "once",
     deadline_window: document.getElementById("pa-recurrence").value === "monthly" ? document.getElementById("pa-deadline-window").value : "date",
@@ -6602,6 +6683,7 @@ async function saveProductActivity() {
     updated_at: new Date().toISOString()
   };
   const saveButton = document.getElementById("pa-save");
+  if (baseBody.requires_retroactive && isGenericOnboardingTask(baseBody)) { toast("O onboarding geral não pode ser retroativo. Cadastre uma tarefa específica para o serviço retroativo.", true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let activitySaved = false;
   productActivitySavePending = true;
@@ -10982,6 +11064,8 @@ function openForm(tab, id, opts = {}) {
       return `<div class="field full optional-company-field"><label>${esc(f.label)}</label><div class="optional-company-row">${ctrl}<label class="optional-company-toggle"><input type="checkbox" data-k="no_product"${noProduct ? " checked" : ""}><span>Não possui produto</span></label></div></div>`;
     }
     const cls = "field" + (f.type === "checkbox" ? " check" : "") + (f.full ? " full" : "");
+    if (tab === "projects" && f.k === "retroactive_enabled") return `<div class="field full retroactive-toggle"><label><input type="checkbox" data-k="retroactive_enabled"${val ? " checked" : ""}><span>Retroativo</span></label></div>`;
+    if (tab === "projects" && f.k === "retroactive_start_date") return `<div class="${cls}" id="delivery-retroactive-date-field"${record?.retroactive_enabled || opts.defaults?.retroactive_enabled ? "" : " hidden"}><label>${esc(f.label)}</label>${ctrl}</div>`;
     if (f.type === "checkbox") return `<div class="${cls}">${ctrl}<label>${esc(f.label)}</label></div>`;
     return `<div class="${cls}"><label>${esc(f.label)}${f.req ? " *" : ""}</label>${ctrl}${f.help ? `<small class="field-help">${esc(f.help)}</small>` : ""}</div>`;
   };
@@ -11120,6 +11204,19 @@ function openForm(tab, id, opts = {}) {
     const substatusEl = form?.querySelector('[data-k="substatus"]');
     const continuationEl = form?.querySelector('[data-k="continuation_of_id"]');
     const erpEl = form?.querySelector('[data-k="erp_platform"]');
+    const retroactiveEl = form?.querySelector('[data-k="retroactive_enabled"]');
+    const retroactiveDateEl = form?.querySelector('[data-k="retroactive_start_date"]');
+    const syncRetroactive = () => {
+      const enabled = Boolean(retroactiveEl?.checked);
+      document.getElementById("delivery-retroactive-date-field").hidden = !enabled;
+      retroactiveDateEl.required = enabled;
+      retroactiveDateEl.disabled = !enabled;
+      if (startEl?.value) retroactiveDateEl.max = addDays(startEl.value, -1);
+      else retroactiveDateEl.removeAttribute("max");
+    };
+    retroactiveEl?.addEventListener("change", syncRetroactive);
+    startEl?.addEventListener("change", syncRetroactive);
+    syncRetroactive();
     const normalizeCnpj = (value) => String(value || "").replace(/\D/g, "");
     const persistedChannels = {
       marketplaces: normalizeTextList(record?.marketplace_channels),
@@ -11808,6 +11905,12 @@ async function saveForm(tab, id, fs, opts = {}) {
     if (companyLookupFresh && lastCompanyLookup === taxIdDigits(body.tax_id) && body.legal_name) Object.assign(body, { registry_pending: false, registry_error: null, registry_checked_at: new Date().toISOString() });
   }
   if (tab === "projects") {
+    body.retroactive_enabled = Boolean(body.retroactive_enabled);
+    if (!body.retroactive_enabled) body.retroactive_start_date = null;
+    else if (!deliveryRetroactiveStart(body)) {
+      showUiError(form.closest('.modal'), "Informe uma data retroativa válida, anterior ao início da entrega.", form.querySelector('[data-k="retroactive_start_date"]'));
+      return;
+    }
     body.name = deliveryGeneratedName(body.client_name, body.product_id);
     if (body.status === "active") body.substatus = null;
     if (body.status === "closed") body.substatus = "closed";

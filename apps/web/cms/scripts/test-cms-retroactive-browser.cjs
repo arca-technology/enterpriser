@@ -1,0 +1,110 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { chromium } = require('playwright');
+const root = path.join(__dirname, '..');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8').replace(/<script[^>]*>[\s\S]*?<\/script>/g, '');
+const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^startApp\(\);/m, '');
+(async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+    const errors = [], writes = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('request', (request) => { if (request.method() !== 'GET') writes.push(request.url()); });
+    await page.route('**/*', (route) => route.request().url() === 'http://retro-test.localhost/'
+      ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
+    await page.goto('http://retro-test.localhost/');
+    await page.evaluate(() => { window.CRM_CONFIG = {}; });
+    await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
+    await page.addScriptTag({ content: source });
+    await page.evaluate(async () => {
+      await loadAll(); document.getElementById('boot-gate')?.remove(); hideLogin();
+      currentProfile = { ...cache.users[0], role: 'admin', status: 'active' };
+      cache.productById.pr1.name = 'BLING UP'; cache.productById.pr2.name = 'OLIST IN';
+      cache.projectById.pj1.start_date = '2026-10-01'; cache.projectById.pj1.end_date = '2026-12-31'; cache.projectById.pj1.erp_platform = 'BLING';
+      init = async () => { await syncProductActivities(); refreshActivityCache(); render(); };
+      state.tab = 'deals'; state.view = 'kanban'; render();
+    });
+    const expected = await page.evaluate(() => cache.contactById[cache.deals[0].contact_id].name);
+    assert.ok(await page.locator('.deal-card-person').allTextContents().then((text) => text.some((value) => value === expected)));
+    const escaped = await page.evaluate(() => dealCardHtml({ id: 'safe', title: 'Produto', contact_id: 'x' }, { contactById: { x: { name: '<img onerror="bad()">' } }, companyById: {} }));
+    assert.ok(escaped.includes('&lt;img') && !escaped.includes('<img onerror'));
+    assert.ok(await page.evaluate(() => dealCardHtml({ id: 'missing', title: 'Produto' }, { contactById: {}, companyById: {} }).includes('Pessoa não vinculada')));
+    await page.screenshot({ path: path.join(os.tmpdir(), 'cms-person-kanban.png') });
+    const openTask = () => page.evaluate(async () => { openMainPmCatalog('activities'); productActivityState.productId = 'pr1'; await openProductActivityDrawer(); });
+    const choose = async (id) => {
+      await page.locator('#pa-products .multi-picker-control').click();
+      await page.locator(`#pa-products .multi-picker-option[data-value="${id}"]`).click();
+      await page.locator('#pa-products .multi-picker-control').click();
+    };
+    await openTask();
+    assert.equal(await page.locator('#pa-category').inputValue(), 'ERP'); assert.equal(await page.locator('#pa-channel').inputValue(), 'BLING');
+    assert.deepEqual(await page.evaluate(() => multiPickerValues('pa-required-setup')), ['BLING']);
+    assert.equal(await page.locator('#pa-retroactive').isChecked(), false);
+    await choose('pr2');
+    assert.equal(await page.locator('#pa-channel').inputValue(), '');
+    assert.deepEqual(await page.evaluate(() => multiPickerValues('pa-required-setup')), []);
+    await choose('pr1');
+    assert.equal(await page.locator('#pa-channel').inputValue(), 'OLIST');
+    assert.deepEqual(await page.evaluate(() => multiPickerValues('pa-required-setup')), ['OLIST']);
+    await page.locator('#pa-category').fill('Financeiro'); await page.locator('#pa-channel').fill('Canal manual');
+    await choose('pr1');
+    assert.equal(await page.locator('#pa-category').inputValue(), 'Financeiro'); assert.equal(await page.locator('#pa-channel').inputValue(), 'Canal manual');
+    await page.evaluate(() => closeProductActivityDrawer());
+    for (const [section, prefix] of [['goals', 'pg'], ['objectives', 'po']]) {
+      await page.evaluate((section) => { openMainPmCatalog(section); openMainPmTemplate(section); }, section);
+      await page.locator(`#${prefix}-product`).selectOption('pr2');
+      assert.equal(await page.locator(`#${prefix}-category`).inputValue(), 'ERP');
+      assert.equal(await page.locator(`#${prefix}-channel`).inputValue(), 'OLIST');
+      await page.evaluate(() => closeProductActivityDrawer());
+    }
+    await openTask();
+    await page.locator('#pa-activity').fill('Conciliação retroativa'); await page.locator('#pa-retroactive').check();
+    await page.locator('#pa-recurrence').selectOption('monthly'); await page.locator('#pa-deadline-window').selectOption('month');
+    await page.locator('#pa-save').click();
+    await page.waitForFunction(() => !document.getElementById('pa-save') && !productActivitySavePending);
+    assert.equal(await page.evaluate(() => loadProductActivities().find((item) => item.activity === 'Conciliação retroativa').requires_retroactive), true);
+    assert.equal(await page.evaluate(() => loadProjectTasks().filter((item) => item.title === 'Conciliação retroativa').length), 0);
+    const openDelivery = () => page.evaluate(() => { closeModal(); state.tab = 'projects'; state.view = 'table'; render(); openForm('projects', 'pj1'); });
+    await openDelivery();
+    assert.equal(await page.locator('#delivery-retroactive-date-field').isVisible(), false);
+    await page.locator('[data-k="retroactive_enabled"]').check();
+    assert.equal(await page.locator('#delivery-retroactive-date-field').isVisible(), true);
+    assert.equal(await page.locator('[data-k="retroactive_start_date"]').getAttribute('max'), '2026-09-30');
+    await page.locator('#save').click();
+    assert.match(await page.locator('.ui-error-banner').innerText(), /data retroativa válida/);
+    await page.locator('[data-k="retroactive_start_date"]').fill('2026-10-01'); await page.locator('#save').click();
+    assert.equal(await page.evaluate(() => cache.projectById.pj1.retroactive_enabled || false), false);
+    await page.locator('[data-k="retroactive_start_date"]').fill('2026-01-01');
+    await page.screenshot({ path: path.join(os.tmpdir(), 'cms-retroactive-delivery-desktop.png') });
+    await page.locator('#save').click();
+    await page.waitForFunction(() => loadProjectTasks().filter((item) => item.title === 'Conciliação retroativa').length === 9);
+    assert.equal(await page.evaluate(() => cache.projectById.pj1.retroactive_start_date), '2026-01-01');
+    assert.equal(await page.evaluate(() => operationalProjectTasks('pj1').filter((task) => task.title === 'Conciliação retroativa').length), 9);
+    const namesAndDates = await page.evaluate(() => operationalProjectTasks('pj1').filter((task) => task.title === 'Conciliação retroativa').map((task) => ({ id: task.id, end: task.due_date, state: taskDeadlineState(task), index: task.occurrence_index })));
+    assert.ok(namesAndDates.every((task) => task.state === 'Atrasado' && task.index < 0));
+    assert.equal(namesAndDates[0].end, '2026-01-31');
+    await page.evaluate(() => { state.tab = 'activities'; state.pmScopes = {}; state.view = 'table'; render(); });
+    assert.ok(await page.locator('#main').innerText().then((text) => text.includes('Conciliação retroativa')));
+    await page.evaluate(async () => { await syncProductActivities(); await syncProductActivities(); });
+    assert.deepEqual(await page.evaluate(() => loadProjectTasks().filter((task) => task.title === 'Conciliação retroativa').map((task) => task.id)), namesAndDates.map((task) => task.id));
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 }); await openDelivery();
+      await page.locator('[data-k="retroactive_start_date"]').scrollIntoViewIfNeeded();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.screenshot({ path: path.join(os.tmpdir(), `cms-retroactive-delivery-${width}.png`) });
+      await page.evaluate(() => closeModal());
+    }
+    await page.setViewportSize({ width: 1440, height: 900 }); await openDelivery();
+    await page.locator('[data-k="retroactive_enabled"]').uncheck();
+    assert.equal(await page.locator('#delivery-retroactive-date-field').isVisible(), false);
+    await page.locator('#save').click(); await page.waitForFunction(() => !document.getElementById('save'));
+    assert.equal(await page.evaluate(() => cache.projectById.pj1.retroactive_start_date), null);
+    assert.equal(await page.evaluate(() => operationalProjectTasks('pj1').filter((task) => task.title === 'Conciliação retroativa').length), 0);
+    assert.equal(await page.evaluate(() => loadProjectTasks().filter((task) => task.title === 'Conciliação retroativa').length), 9);
+    assert.deepEqual(errors, []); assert.deepEqual(writes, []);
+    console.log('CMS browser passed: person on board, escaped names, ERP defaults/manual preservation, product switches and mixed selections, goals/objectives, retroactive template and delivery save, validation, historical overdue months, idempotency, opt-out without deletion and mobile layout.');
+  } finally { await browser.close(); }
+})().catch((error) => { console.error(error); process.exitCode = 1; });

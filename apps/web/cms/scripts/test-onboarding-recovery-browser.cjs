@@ -51,6 +51,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#save').click();
     await page.locator('#delivery-duplicate-create').waitFor();
+    await page.locator('#delivery-duplicate-create').evaluate((button) => Promise.all(button.closest('.modal').getAnimations().map((animation) => animation.finished.catch(() => {}))));
     await page.screenshot({ path: path.join(os.tmpdir(), 'cms-delivery-duplicate-mobile.png') });
     for (const id of ['cancel', 'create', 'open']) {
       const rect = await page.locator('#delivery-duplicate-'+id).boundingBox();
