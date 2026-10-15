@@ -1502,6 +1502,29 @@ function saveProjectTasks(rows) {
   localStorage.setItem("crm_project_tasks", JSON.stringify(rows));
   if (cache && !isLive()) cache.activityRecords = rows;
 }
+// Product-linked tasks keep their operational state in activities, while the
+// model is the source of truth for identifying fields. Never mutate the stored
+// task here: sync, status changes and deadlines still operate on raw records.
+function taskWithCurrentTemplate(task, templatesById = null) {
+  if (!task?.source_template_id) return task;
+  const template = templatesById?.get(task.source_template_id)
+    || loadProductActivities().find((item) => item.id === task.source_template_id);
+  if (!template) return task; // manual task or a model that was removed
+  return {
+    ...task,
+    title: template.activity ?? task.title,
+    group: template.group ?? "",
+    subgroup: template.subgroup ?? "",
+    sector: template.sector ?? "",
+    subsector: template.subsector ?? "",
+    module: template.module ?? "",
+    submodule: template.submodule ?? "",
+    category: template.category ?? "",
+    channel: template.channel ?? "",
+    type: template.type ?? "",
+    information: template.information ?? ""
+  };
+}
 function operationalProjectTasks(projectId = null) {
   const templates = new Map((cache?.productActivities || []).map((item) => [item.id, item]));
   return visibleOperationalTasks(loadProjectTasks()).filter((task) => {
@@ -1515,7 +1538,7 @@ function operationalProjectTasks(projectId = null) {
     const length = ["monthly", "bimonthly", "quarterly", "semiannual", "annual"].includes(settings.recurrence) ? 7 : 10;
     return task.retroactive_reference_date.slice(0, length) >= deliveryRetroactiveStart(project).slice(0, length)
       && task.retroactive_reference_date < project.start_date;
-  });
+  }).map((task) => taskWithCurrentTemplate(task, templates));
 }
 function currentUserOwnsOperational(row) {
   if (!row || !currentProfile?.id) return false;
@@ -2905,7 +2928,8 @@ function stackedCell(values) {
 }
 const activityDisplayName = (item) => {
   if (!item) return "—";
-  const parts = [item.category, item.channel, item.module, item.submodule, item.activity || item.title, item.type]
+  const current = taskWithCurrentTemplate(item);
+  const parts = [current.category, current.channel, current.module, current.submodule, current.activity || current.title, current.type]
     .map((value) => String(value || "").trim())
     .filter(Boolean);
   return parts.length ? parts.join(" | ") : "—";
@@ -5577,7 +5601,7 @@ function refreshActivityCache() {
   const tasks = operationalProjectTasks();
   const objectives = loadDeliveryObjectives();
   cache.deliveryObjectiveById = Object.fromEntries(objectives.map((objective) => [objective.id, objective]));
-  cache.activityById = Object.fromEntries(allTasks.map((task) => [task.id, task]));
+  cache.activityById = Object.fromEntries(allTasks.map((task) => [task.id, taskWithCurrentTemplate(task)]));
   cache.activities = tasks.map((task) => {
     const project = cache.projectById[task.project_id];
     const company = project ? cache.companyById[project.company_id] : null;
