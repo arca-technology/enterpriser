@@ -14304,7 +14304,7 @@ function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMP
   const flow = state.view === "flow";
   const map = flow ? registrationFlowShellHtml(items, adapter, state.search, adapter.scope, allItems) : registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no ${flow ? "fluxo" : "mapa"}</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${esc(MODULE_COUNT_LABEL[registrationsState.section] || adapter.countLabel || "Tarefas")}</span></div>
     <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}">${!adapter.canAdd || adapter.canAdd() ? `<button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button>` : ""}</div>
     <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: ${flow ? "Fluxo" : "Mapa mental"}">${viewTriggerInner(flow ? "flow" : "mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
@@ -15224,7 +15224,7 @@ function openRegistrationColumnFilter(header, table, key) {
 }
 
 function registrationTemplateTable(singular, count, firstColumn, extraHeaders, rows, colspan, addLabel = firstColumn) {
-  return `<div class="modal-toolbar"><span class="muted">${count} ${{ tarefa: "Tarefas", meta: "Metas", objetivo: "Objetivos" }[singular]} nos produtos</span><button class="btn primary" id="registration-add">+ ${addLabel}</button></div>
+  return `<div class="modal-toolbar"><span class="muted">${count} ${{ tarefa: "Tarefas", meta: "Metas", objetivo: "Objetivos" }[singular]}</span><button class="btn primary" id="registration-add">+ ${addLabel}</button></div>
     <div class="product-activity-list"><table><thead><tr><th>${firstColumn}</th>${extraHeaders}${tableActionsHead()}</tr></thead><tbody>${rows || `<tr><td colspan="${colspan}" class="empty">Nenhum registro cadastrado.</td></tr>`}</tbody></table></div>`;
 }
 

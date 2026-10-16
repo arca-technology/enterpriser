@@ -124,12 +124,37 @@ const library = fs.readFileSync(path.join(root, 'vendor/dagre.min.js'), 'utf8');
       await page.locator('#registration-view-menu-btn').click();
       await page.locator('#registration-view-dd [data-view="flow"]').click(); await ready();
       assert.ok(await page.locator('.registration-flow-node').count() > 0);
+      for (const width of [390, 360]) {
+        await page.setViewportSize({ width, height: 844 });
+        for (const light of [true, false]) {
+          await page.evaluate(light => document.body.classList.toggle('light', light), light);
+          assert.equal(await page.locator('.registration-flow-node .reg-template-edit').first().isVisible(), true, `${section}: mobile flow card content must stay visible`);
+          const visibleNames = await page.locator('.flow-node-open strong').evaluateAll(names => names.every(name => name.getBoundingClientRect().width > 0 && name.getBoundingClientRect().height > 0));
+          assert.equal(visibleNames, true, `${section}: every flow card must display its name`);
+          const title = await page.locator('.main-pm-catalog .registration-toolbar-title').boundingBox();
+          const search = await page.locator('.main-pm-catalog .registration-toolbar-center .search').boundingBox();
+          const tools = await page.locator('.main-pm-catalog .registration-toolbar-right').boundingBox();
+          const add = await page.locator('#registration-add').boundingBox();
+          assert.ok(title && search && tools && add && title.y < search.y && tools.y < search.y, 'Catalog title and tools must be above search, like execution');
+          assert.ok(search.x + search.width <= add.x && add.x + add.width <= width, 'Mobile search and add must fit');
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+          if (width === 390 && light && section === 'objectives') {
+            await page.locator('[data-flow-action="vertical"]').click();
+            await page.screenshot({ path: path.join(os.tmpdir(), 'registration-flow-catalog-mobile-light.png') });
+          }
+        }
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
       await page.locator('.registration-flow-node .reg-template-edit').first().click();
       assert.equal(await page.locator('.activity-form-drawer').count(), 1);
       await page.locator('.activity-form-drawer .modal-close-x').click();
       await page.locator('#registration-view-menu-btn').click();
       await page.locator('#registration-view-dd [data-view="table"]').click();
       assert.equal(await page.locator('#registrations-root table').count(), 1);
+      await page.setViewportSize({ width: 390, height: 844 });
+      assert.equal(await page.locator('.main-pm-catalog .registration-toolbar-title').isVisible(), true);
+      assert.equal(await page.locator('.main-pm-catalog .registration-cols-btn').isVisible(), true);
+      await page.setViewportSize({ width: 1440, height: 900 });
     }
     const modelAudit = await page.evaluate(() => {
       const adapter = REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER;
