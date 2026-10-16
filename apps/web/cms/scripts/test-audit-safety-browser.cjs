@@ -13,9 +13,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.route('**/*', (route) => route.request().url() === 'http://audit-test.local/'
+    await page.route('**/*', (route) => route.request().url() === 'http://audit-test.localhost/'
       ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
-    await page.goto('http://audit-test.local/');
+    await page.goto('http://audit-test.localhost/');
     await page.evaluate(() => { window.CRM_CONFIG = {}; });
     await page.addScriptTag({ content: fs.readFileSync(path.join(root, 'public/legacy/navigation-icons.js'), 'utf8') });
     await page.addScriptTag({ content: source });
@@ -61,6 +61,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       const projects = cache.projects;
       const tasks = ['automatic', 'manual', 'done', 'canceled'].map((id) => ({
         id, project_id: 'test-project', source_template_id: `template-${id}`, occurrence_index: 0,
+        title: 'Stored name',
         planned_start_date: '2026-01-05', planned_end_date: '2026-01-08', due_date: '2026-01-08',
         deadline_window: 'date', target_days: 7, recurrence: 'monthly', schedule_manual: id === 'manual',
         status: ['done', 'canceled'].includes(id) ? id : 'todo',
@@ -75,7 +76,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         loadDeliveryObjectives = () => [];
         recalculateDependencySchedules = syncDeliveryObjectiveDependencies = syncDeliveryGoalDependencies = async () => {};
         await syncProductActivities();
-        return tasks;
+        return tasks.map(task => ({ ...task, currentTitle: taskWithCurrentTemplate(task).title }));
       } finally {
         cache.projects = projects;
         names.forEach((name) => { window[name] = originals[name]; });
@@ -87,7 +88,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(task.planned_end_date, '2026-01-08');
       assert.equal(task.due_date, '2026-01-08');
       assert.equal(task.deadline_window, 'date');
-      assert.equal(task.title, 'Updated name');
+      assert.equal(task.title, 'Stored name');
+      assert.equal(task.currentTitle, 'Updated name');
     }
 
     const pipeline = await page.evaluate(async () => {

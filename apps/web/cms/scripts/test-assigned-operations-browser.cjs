@@ -109,7 +109,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.evaluate(() => { closeModal(); render(); });
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 844 });
-      await page.evaluate(() => openAccountSwitcher());
+      await page.evaluate(() => openSettings());
+      await page.locator('#settings-accounts-tab').click();
       assert.equal(await page.locator('#account-add-form').count(), 1);
       await page.waitForFunction(() => {
         const box = document.getElementById('account-add').getBoundingClientRect();

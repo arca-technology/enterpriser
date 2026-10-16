@@ -877,7 +877,7 @@ function automaticallyAssignTask(task) {
   return ids.length ? { ...task, owner_id: ids[0], assignee_ids: ids } : task;
 }
 function userAssignmentOptions(field, selected = []) {
-  return normalizeTextList([...(cache?.productActivities || []), ...(cache?.activityRecords || [])].map((row) => row[field.task]).concat(selected)).map((value) => ({ value, label: value }));
+  return normalizeTextList([...(cache?.productActivities || []), ...(cache?.activityRecords || []).map((task) => taskWithCurrentTemplate(task))].map((row) => row[field.task]).concat(selected)).map((value) => ({ value, label: value }));
 }
 function defaultUserPermissions() {
   const permissions = {};
@@ -1505,6 +1505,8 @@ function saveProjectTasks(rows) {
 // Product-linked tasks keep their operational state in activities, while the
 // model is the source of truth for identifying fields. Never mutate the stored
 // task here: sync, status changes and deadlines still operate on raw records.
+const TASK_TEMPLATE_IDENTIFICATION_FIELDS = ["title", "activity", "information", "group", "subgroup", "sector", "subsector", "module", "submodule", "category", "channel", "type",
+  "required_setup", "required_setup_configuration", "required_product_types", "requires_retroactive"];
 function taskWithCurrentTemplate(task, templatesById = null) {
   if (!task?.source_template_id) return task;
   const template = templatesById?.get(task.source_template_id)
@@ -1512,7 +1514,8 @@ function taskWithCurrentTemplate(task, templatesById = null) {
   if (!template) return task; // manual task or a model that was removed
   return {
     ...task,
-    title: template.activity ?? task.title,
+    title: template.activity ?? "",
+    activity: template.activity ?? "",
     group: template.group ?? "",
     subgroup: template.subgroup ?? "",
     sector: template.sector ?? "",
@@ -1522,8 +1525,21 @@ function taskWithCurrentTemplate(task, templatesById = null) {
     category: template.category ?? "",
     channel: template.channel ?? "",
     type: template.type ?? "",
-    information: template.information ?? ""
+    information: template.information ?? "",
+    required_setup: taskSetupRequirements(template),
+    required_setup_configuration: normalizeSetupConfiguration(template.required_setup_configuration),
+    required_product_types: setupProductTypes(template.required_product_types),
+    requires_retroactive: Boolean(template.requires_retroactive)
   };
+}
+function taskDateRangeError(current = {}, patch = {}) {
+  const proposed = { ...current, ...patch };
+  const changed = (keys) => keys.some((key) => key in patch && (patch[key] || null) !== (current[key] || null));
+  if (changed(["planned_start_date", "planned_end_date", "due_date"]) && proposed.planned_start_date
+    && (proposed.planned_end_date || proposed.due_date) && proposed.planned_start_date > (proposed.planned_end_date || proposed.due_date)) return "O término previsto não pode ser anterior ao início previsto.";
+  if (changed(["actual_start_date", "actual_end_date"]) && proposed.actual_start_date && proposed.actual_end_date
+    && proposed.actual_start_date > proposed.actual_end_date) return "O término real não pode ser anterior ao início real.";
+  return "";
 }
 function operationalProjectTasks(projectId = null) {
   const templates = new Map((cache?.productActivities || []).map((item) => [item.id, item]));
@@ -2017,6 +2033,7 @@ async function syncProductActivitiesOnce() {
             || Boolean(current.consider_business_days) !== structural.consider_business_days
             || (current.target_days == null ? null : Number(current.target_days)) !== structural.target_days;
           const updates = { ...structural, checklist: hasSubtasks ? [] : mergeTemplateChecklist(template.checklist, current.checklist) };
+          TASK_TEMPLATE_IDENTIFICATION_FIELDS.concat("priority").forEach((key) => delete updates[key]);
           const defaultAssignees = normalizeIdList(template.default_assignee_ids, template.default_owner_id);
           if (!normalizeIdList(current.assignee_ids, current.owner_id).length && defaultAssignees.length) {
             updates.assignee_ids = defaultAssignees;
@@ -2035,6 +2052,8 @@ async function syncProductActivitiesOnce() {
             updates.due_date = dueDate;
             updates.planned_end_date = dueDate;
           }
+          // Keep invalid legacy intervals for review; never create a new inversion while filling missing dates.
+          if (taskDateRangeError(current, updates)) ["planned_start_date", "planned_end_date", "due_date"].forEach((key) => delete updates[key]);
           if (Object.entries(updates).some(([key, value]) => key === "checklist"
             ? JSON.stringify(normalizeChecklist(current[key])) !== JSON.stringify(value)
             : key === "required_setup_configuration"
@@ -2060,6 +2079,8 @@ async function syncProductActivitiesOnce() {
           actual_start_date: null, actual_end_date: null, notes: "", status: "todo",
           created_at: now, updated_at: now
         };
+        const dateError = taskDateRangeError({}, body);
+        if (dateError) throw new Error(`${activityDisplayName(template)} · ${dateError}`);
         const saved = isLive() ? await createActivityOrLoadExisting(body) : body;
         const cached = upsertTaskRecord(tasks, saved);
         upsertTaskRecord(existing, cached);
@@ -2141,6 +2162,7 @@ async function recalculateDependencySchedules(projectId = null) {
           ? Math.round((new Date(`${previousEnd}T12:00:00`) - new Date(`${previousStart}T12:00:00`)) / 86400000) : 0;
         end = addDays(start, duration);
       }
+      if (taskDateRangeError(task, { planned_start_date: start, planned_end_date: end, due_date: end })) continue;
       if (task.planned_start_date === start && task.planned_end_date === end && task.due_date === end) continue;
       Object.assign(task, { planned_start_date: start, planned_end_date: end, due_date: end });
       changedIds.add(task.id);
@@ -4314,7 +4336,7 @@ function templateBulkProvider(section) {
       ids.forEach((id) => {
         const item = rows.find((row) => row.id === id);
         if (!item) return;
-        const linked = section === "activities" ? rows.filter((row) => (row.template_group_id || row.id) === (item.template_group_id || item.id)) : [item];
+        const linked = section === "activities" ? rows.filter((row) => productTemplateGroupKey(row, rows) === productTemplateGroupKey(item, rows)) : [item];
         linked.forEach((row) => targets.set(row.id, row));
       });
       for (const row of targets.values()) {
@@ -4686,7 +4708,7 @@ function rowsFor(tab, c) {
   if (tab === "contacts") annotateContactLinks(c);
   if (tab === "conversations") annotateConversationLinks(c);
   let rows = c[tab] || [];
-  if (tab === "activities") rows = visibleOperationalTasks(rows);
+  if (tab === "activities") rows = visibleOperationalTasks(rows).map((task) => taskWithCurrentTemplate(task));
   if (state.q) {
     const q = state.q.toLowerCase();
     const cols = columns(tab, c);
@@ -5316,6 +5338,7 @@ function scheduleViewState(key, kind = "activities") {
 }
 
 function scheduleItem(tab, row, c) {
+  if (tab === "activities") row = taskWithCurrentTemplate(row);
   const item = timelineItem(tab, row, c);
   if (!item) return null;
   const project = tab === "projects" ? row : c.projectById?.[row.project_id];
@@ -5935,6 +5958,7 @@ function renderMatrix(c) {
 }
 
 let productActivityState = { productId: null, editId: null, objectiveEditId: null, goalEditId: null, tab: "activities" };
+const productWorkspaceTableStates = new Map();
 let productActivityChecklistDraft = [];
 let productActivityRelatedIds = [];
 let productActivityDraftGroupId = null;
@@ -5978,9 +6002,15 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  return [item?.group, item?.subgroup, item?.sector, item?.subsector, item?.module, item?.submodule, item?.category, item?.channel, item?.type, item?.activity, item?.recurrence || "once", item?.requires_retroactive ? "retroactive" : "regular"]
-    .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR"))
-    .join("|");
+  const rows = loadProductActivities();
+  const identify = (row, path = new Set()) => {
+    if (path.has(row?.id)) return ["cycle", row.id];
+    const next = new Set(path).add(row?.id);
+    const parent = row?.parent_template_id ? rows.find((candidate) => candidate.id === row.parent_template_id) : null;
+    return [[row?.group, row?.subgroup, row?.sector, row?.subsector, row?.module, row?.submodule, row?.category, row?.channel, row?.type, row?.activity, row?.recurrence || "once", row?.requires_retroactive ? "retroactive" : "regular"]
+      .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")), parent ? identify(parent, next) : row?.parent_template_id || null];
+  };
+  return JSON.stringify(identify(item));
 }
 
 function productResultIdentity(item) {
@@ -6037,10 +6067,258 @@ function renderProductWorkspace() {
   if (productActivityState.tab === "objectives") renderProductObjectives();
   else if (productActivityState.tab === "goals") renderProductGoals();
   else renderProductActivities();
-  wireSecondaryTableSelection(
-    document.querySelector("#product-activities-root table"),
-    `product:${productActivityState.productId}:${productActivityState.tab}`
-  );
+}
+
+function productWorkspaceTableState() {
+  const scope = `product:${productActivityState.productId}:${productActivityState.tab}`;
+  if (!productWorkspaceTableStates.has(scope)) productWorkspaceTableStates.set(scope, { sortKey: null, sortDir: 1, filters: {}, search: "", view: "table" });
+  const tableState = productWorkspaceTableStates.get(scope);
+  tableState.search ??= "";
+  tableState.view = tableState.view === "mindmap" ? "mindmap" : "table";
+  return tableState;
+}
+
+function setupProductWorkspaceToolbar(root, table, tableState) {
+  const toolbar = root.querySelector(".modal-toolbar");
+  const count = toolbar.querySelector(".muted");
+  const action = toolbar.querySelector("#pa-ready,#po-new,#pg-new");
+  toolbar.classList.add("registration-toolbar", "product-workspace-toolbar");
+  toolbar.innerHTML = `<div class="registration-toolbar-left"></div>
+    <div class="registration-toolbar-center"><input class="search registration-toolbar-search product-workspace-search" aria-label="Buscar ${esc(MODULE_COUNT_LABEL[productActivityState.tab].toLocaleLowerCase("pt-BR"))} do produto" placeholder="Buscar..." value="${esc(tableState.search)}"></div>
+    <div class="registration-toolbar-right"><button class="btn registration-cols-btn product-cols-btn" type="button" title="Selecionar colunas" aria-label="Selecionar colunas">⊞</button>
+      <button class="btn view-menu-trigger active product-view-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Modo de visualização">${viewTriggerInner(tableState.view)}</button>
+      <button class="view" type="button" disabled title="Matriz (indisponível nos cadastros)" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}</div>`;
+  if (count) { count.classList.add("product-record-count"); toolbar.querySelector(".registration-toolbar-left").appendChild(count); }
+  if (action) toolbar.querySelector(".registration-toolbar-center").appendChild(action);
+  toolbar.querySelector(".product-workspace-search").addEventListener("input", (event) => {
+    tableState.search = event.target.value;
+    applyProductWorkspaceTableState(table, tableState);
+  });
+  toolbar.querySelector(".product-cols-btn").addEventListener("click", () => {
+    openSecondaryColumnManager({
+      scope: `product:${productActivityState.productId}:${productActivityState.tab}`,
+      label: MODULE_COUNT_LABEL[productActivityState.tab],
+      definitions: [...table.querySelectorAll("th[data-product-column]")].map((header) => ({ k: header.dataset.productColumn, h: header.dataset.productLabel })),
+      onChange: () => { if (table.isConnected) applyProductWorkspaceColumnPreferences(table); }
+    });
+  });
+  toolbar.querySelector(".product-view-menu-btn").addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeFloaters();
+    const button = event.currentTarget;
+    const rect = button.getBoundingClientRect();
+    const panel = document.createElement("div");
+    panel.id = "product-view-dd"; panel.className = "view-dd"; panel.setAttribute("role", "menu");
+    panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 198))}px`;
+    panel.style.top = `${rect.bottom + 5}px`;
+    panel.innerHTML = ["table", "mindmap"].map((view) => `<button class="view-option${view === tableState.view ? " active" : ""}" type="button" role="menuitemradio" aria-checked="${view === tableState.view}" data-view="${view}"><span class="view-option-icon">${viewIcon(view)}</span><span>${VIEW_LABELS[view]}</span></button>`).join("");
+    document.body.appendChild(panel);
+    panel.uiReturnFocus = button;
+    button.setAttribute("aria-expanded", "true");
+    const close = () => { panel.remove(); button.setAttribute("aria-expanded", "false"); document.removeEventListener("mousedown", outside); };
+    const outside = (event) => { if (!panel.contains(event.target) && !button.contains(event.target)) close(); };
+    panel.querySelectorAll("[data-view]").forEach((option) => option.addEventListener("click", () => {
+      tableState.view = option.dataset.view;
+      close();
+      renderProductWorkspacePresentation(root, table, tableState);
+      button.focus();
+    }));
+    panel.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); button.focus(); }
+      if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        const options = [...panel.querySelectorAll("[data-view]")];
+        const next = (options.indexOf(document.activeElement) + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+        options[next].focus();
+      }
+    });
+    panel.querySelector(`[data-view="${tableState.view}"]`)?.focus();
+    document.addEventListener("mousedown", outside);
+  });
+}
+
+function applyProductWorkspaceColumnPreferences(table) {
+  const prefs = secondaryColumnPrefs(`product:${productActivityState.productId}:${productActivityState.tab}`);
+  const headers = [...table.querySelectorAll("th[data-product-column]")];
+  const definitions = headers.map((header) => ({ k: header.dataset.productColumn, h: header.dataset.productLabel }));
+  const ordered = orderedColumnDefinitions(definitions, prefs);
+  const rearrange = (row, attribute) => {
+    const cells = [...row.cells];
+    const fixed = cells.filter((cell) => !cell.dataset[attribute]);
+    const leading = fixed.filter((cell) => !cell.classList.contains("table-actions-head") && !cell.classList.contains("table-actions-cell"));
+    leading.forEach((cell) => row.appendChild(cell));
+    ordered.forEach((column) => {
+      const cell = cells.find((candidate) => candidate.dataset[attribute] === column.k);
+      if (cell) { cell.hidden = prefs[column.k] === false; row.appendChild(cell); }
+    });
+    fixed.filter((cell) => !leading.includes(cell)).forEach((cell) => row.appendChild(cell));
+  };
+  rearrange(table.tHead.rows[0], "productColumn");
+  table.querySelectorAll("tbody tr[data-id]").forEach((row) => rearrange(row, "productColumn"));
+}
+
+function renderProductWorkspacePresentation(root, table, tableState) {
+  const mindmap = tableState.view === "mindmap";
+  table.closest(".product-activity-list").hidden = mindmap;
+  const trigger = root.querySelector(".product-view-menu-btn");
+  trigger.innerHTML = viewTriggerInner(tableState.view);
+  trigger.title = `Modo de visualização: ${VIEW_LABELS[tableState.view]}`;
+  root.querySelector(".product-cols-btn").disabled = mindmap;
+  let host = root.querySelector(".product-mind-view");
+  if (!host) { host = document.createElement("div"); host.className = "product-mind-view"; root.appendChild(host); }
+  host.hidden = !mindmap;
+  if (!mindmap) { host.replaceChildren(); return; }
+  const section = productActivityState.tab;
+  const source = section === "activities" ? loadProductActivities() : section === "goals" ? loadProductGoals() : loadProductObjectives();
+  const byId = new Map(source.filter((item) => item.product_id === productActivityState.productId).map((item) => [item.id, item]));
+  const items = [...table.querySelectorAll("tbody tr[data-id]")].filter((row) => !row.hidden)
+    .map((row, index) => ({ ...byId.get(row.dataset.id), sort_order: index }));
+  const base = section === "activities" ? REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER : section === "goals" ? REGISTRATION_MIND_MAP_GOAL_ADAPTER : REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER;
+  const adapter = { ...base, scope: `product:${productActivityState.productId}:${section}`, rootLabel: MODULE_COUNT_LABEL[section],
+    groupId: (item) => item.id, editClass: "product-mind-edit", editAttrs: (item) => `data-id="${esc(item.id)}"` };
+  host.innerHTML = registrationMindMapShellHtml(items, adapter).html;
+  host.querySelectorAll(".product-mind-edit").forEach((button) => button.addEventListener("click", () => {
+    if (section === "activities") openProductActivityDrawer(button.dataset.id);
+    else if (section === "goals") openProductGoalDrawer(button.dataset.id);
+    else openProductObjectiveDrawer(button.dataset.id);
+  }));
+  wireMindMap(host, () => renderProductWorkspacePresentation(root, table, tableState));
+}
+
+function productWorkspaceCellValue(row, key) {
+  const cell = row.querySelector(`td[data-product-column="${CSS.escape(key)}"]`);
+  if (!cell) return "—";
+  const copy = cell.cloneNode(true);
+  copy.querySelectorAll(".task-subtask-branch").forEach((element) => element.remove());
+  return copy.textContent.replace(/\s+/g, " ").trim() || "—";
+}
+
+function applyProductWorkspaceTableState(table, tableState) {
+  const rows = [...table.querySelectorAll("tbody tr[data-id]")];
+  const byId = new Map(rows.map((row) => [row.dataset.id, row]));
+  const compare = (a, b) => tableState.sortKey
+    ? compareLabels(productWorkspaceCellValue(a, tableState.sortKey), productWorkspaceCellValue(b, tableState.sortKey)) * tableState.sortDir
+      || Number(a.dataset.productOriginalOrder) - Number(b.dataset.productOriginalOrder)
+    : Number(a.dataset.productOriginalOrder) - Number(b.dataset.productOriginalOrder);
+  const children = new Map();
+  rows.forEach((row) => {
+    const parentId = byId.has(row.dataset.parentId) ? row.dataset.parentId : "";
+    if (!children.has(parentId)) children.set(parentId, []);
+    children.get(parentId).push(row);
+  });
+  const ordered = [], visited = new Set();
+  const append = (row) => {
+    if (visited.has(row)) return;
+    visited.add(row); ordered.push(row);
+    (children.get(row.dataset.id) || []).sort(compare).forEach(append);
+  };
+  (children.get("") || []).sort(compare).forEach(append);
+  rows.filter((row) => !visited.has(row)).sort(compare).forEach(append);
+  const active = Object.entries(tableState.filters).filter(([, values]) => values?.size);
+  const query = tableState.search.trim().toLocaleLowerCase("pt-BR");
+  const visible = new Set(rows.filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
+    && active.every(([key, values]) => values.has(productWorkspaceCellValue(row, key)))));
+  // A matching subtask keeps its parent visible as context, never as another match.
+  [...visible].forEach((row) => {
+    let parent = byId.get(row.dataset.parentId);
+    const path = new Set([row]);
+    while (parent && !path.has(parent)) { path.add(parent); visible.add(parent); parent = byId.get(parent.dataset.parentId); }
+  });
+  ordered.forEach((row) => {
+    table.tBodies[0].appendChild(row);
+    row.hidden = !visible.has(row);
+    if (row.classList.contains("pa-row")) row.draggable = !tableState.sortKey && !active.length && !query;
+  });
+  table.querySelector(".product-filter-empty")?.remove();
+  if (rows.length && !visible.size) {
+    const empty = table.tBodies[0].insertRow();
+    empty.className = "product-filter-empty";
+    empty.innerHTML = `<td class="empty" colspan="${table.tHead.rows[0].cells.length}">Nenhum registro corresponde aos filtros.</td>`;
+  }
+  const headers = [...table.querySelectorAll("th[data-product-column]")];
+  headers.forEach((header) => {
+    const selected = tableState.sortKey === header.dataset.productColumn;
+    header.setAttribute("aria-sort", selected ? (tableState.sortDir > 0 ? "ascending" : "descending") : "none");
+    header.classList.toggle("filtered", Boolean(tableState.filters[header.dataset.productColumn]?.size));
+    header.querySelector(".product-sort-arrow")?.remove();
+    if (selected) header.insertAdjacentHTML("beforeend", `<span class="arrow product-sort-arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>`);
+  });
+  const strip = table.closest("#product-activities-root").querySelector(".product-filter-strip");
+  strip.hidden = !active.length;
+  strip.querySelector(".registration-filter-badges").innerHTML = active.map(([key, values]) =>
+    `<button class="registration-filter-badge" data-key="${esc(key)}" title="Limpar filtro"><span>${esc(headers.find((header) => header.dataset.productColumn === key)?.dataset.productLabel || "Coluna")}: ${esc([...values].join(", "))}</span><b>×</b></button>`).join("");
+  strip.querySelectorAll(".registration-filter-badge").forEach((button) => button.addEventListener("click", () => {
+    delete tableState.filters[button.dataset.key]; applyProductWorkspaceTableState(table, tableState);
+  }));
+  const clear = strip.querySelector(".filter-clear-all");
+  clear.hidden = active.length < 2;
+  clear.onclick = () => { tableState.filters = {}; applyProductWorkspaceTableState(table, tableState); };
+  const root = table.closest("#product-activities-root");
+  root.querySelector(".product-record-count").textContent = `${visible.size} ${MODULE_COUNT_LABEL[productActivityState.tab]}`;
+  table._refreshSecondarySelection?.();
+  renderProductWorkspacePresentation(root, table, tableState);
+}
+
+function openProductWorkspaceColumnFilter(header, table, key, tableState) {
+  document.getElementById("product-filter-dd")?.remove();
+  const values = [...new Set([...table.querySelectorAll("tbody tr[data-id]")].map((row) => productWorkspaceCellValue(row, key)))].sort(compareLabels);
+  const rect = header.getBoundingClientRect();
+  const panel = document.createElement("div");
+  panel.id = "product-filter-dd"; panel.className = "filter-dd";
+  panel.uiReturnFocus = header;
+  panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 328))}px`;
+  panel.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - 360))}px`;
+  document.body.appendChild(panel);
+  mountColumnFilterPanel(panel, {
+    title: `Filtrar · ${header.dataset.productLabel}`, values, key, current: tableState.filters[key],
+    onApply: (rule) => {
+      if (rule) tableState.filters[key] = rule; else delete tableState.filters[key];
+      panel.remove();
+      if (table.isConnected) applyProductWorkspaceTableState(table, tableState);
+    }
+  });
+  setTimeout(() => {
+    const outside = (event) => {
+      if (!panel.contains(event.target) && !header.contains(event.target)) { panel.remove(); document.removeEventListener("mousedown", outside); }
+    };
+    document.addEventListener("mousedown", outside);
+  }, 50);
+}
+
+function wireProductWorkspaceTable() {
+  document.getElementById("product-filter-dd")?.remove();
+  document.getElementById("product-view-dd")?.remove();
+  const root = document.getElementById("product-activities-root");
+  const table = root?.querySelector("table");
+  if (!table) return;
+  const tableState = productWorkspaceTableState();
+  const rows = [...table.querySelectorAll("tbody tr[data-id]")];
+  rows.forEach((row, index) => { row.dataset.productOriginalOrder = index; });
+  table.querySelectorAll("thead th").forEach((header, index) => {
+    if (header.classList.contains("noclick")) return;
+    const key = `c${index}`;
+    header.dataset.productColumn = key; header.dataset.productLabel = header.textContent.trim();
+    rows.forEach((row) => { if (row.children[index]) row.children[index].dataset.productColumn = key; });
+    header.tabIndex = 0;
+    header.title = "Clique para ordenar; terceiro clique restaura a ordem. Ctrl+clique para filtrar.";
+    const activate = (event) => {
+      if (event.ctrlKey || event.metaKey) { openProductWorkspaceColumnFilter(header, table, key, tableState); return; }
+      if (tableState.sortKey !== key) { tableState.sortKey = key; tableState.sortDir = 1; }
+      else if (tableState.sortDir > 0) tableState.sortDir = -1;
+      else { tableState.sortKey = null; tableState.sortDir = 1; }
+      applyProductWorkspaceTableState(table, tableState);
+    };
+    header.addEventListener("click", activate);
+    header.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); activate(event); } });
+  });
+  const strip = document.createElement("div");
+  strip.className = "registration-filter-strip product-filter-strip";
+  strip.innerHTML = '<div class="registration-filter-badges"></div><button class="filter-clear-all" type="button" hidden><span aria-hidden="true">×</span> Limpar tudo</button>';
+  setupProductWorkspaceToolbar(root, table, tableState);
+  root.querySelector(".modal-toolbar").after(strip);
+  applyProductWorkspaceTableState(table, tableState);
+  wireSecondaryTableSelection(table, `product:${productActivityState.productId}:${productActivityState.tab}`);
+  applyProductWorkspaceColumnPreferences(table);
 }
 
 function renderProductActivities() {
@@ -6052,7 +6330,7 @@ function renderProductActivities() {
   const templates = productTemplates.filter((item) => !item.parent_template_id || !productTemplateIds.has(item.parent_template_id))
     .sort(compareTemplates)
     .flatMap((item) => [item, ...productTemplateSubtasks(item.id, productTemplates).sort(compareTemplates)]);
-  const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" draggable="true">
+  const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" data-parent-id="${esc(item.parent_template_id || "")}" draggable="true">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
     <td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td>
     <td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
@@ -6080,11 +6358,14 @@ function renderProductActivities() {
   document.querySelectorAll(".pa-edit").forEach((button) => button.addEventListener("click", () => openProductActivityDrawer(button.dataset.id)));
   document.querySelectorAll(".pa-clone").forEach((button) => button.addEventListener("click", () => cloneProductActivity(button.dataset.id)));
   document.querySelectorAll(".pa-delete").forEach((button) => button.addEventListener("click", async () => {
+    if (!requireCurrentUserPermission("activityTemplates", "delete", "Tarefas")) return;
     if (!window.confirm("Desvincular esta tarefa do produto? Entregas que já receberam a tarefa manterão a cópia existente.")) return;
     try {
        const allTemplates = loadProductActivities();
        const currentTemplate = allTemplates.find((item) => item.id === button.dataset.id);
        const removedIds = new Set([button.dataset.id, ...productTemplateDescendantIds(button.dataset.id, allTemplates)]);
+       const removalError = productTemplateRemovalError([...removedIds], allTemplates);
+       if (removalError) { toast(removalError, true); return; }
        const parentTemplate = productTemplateParent(currentTemplate, allTemplates);
        const siblings = parentTemplate ? productTemplateSubtasks(parentTemplate.id, allTemplates).filter((item) => item.id !== button.dataset.id) : [];
        if (parentTemplate && !siblings.length) {
@@ -6121,6 +6402,7 @@ function renderProductActivities() {
     } catch (err) { toast("Erro ao excluir tarefa · " + err.message, true); }
   }));
   wireProductActivityDragAndDrop();
+  wireProductWorkspaceTable();
 }
 
 function renderProductObjectives() {
@@ -6138,7 +6420,7 @@ function renderProductObjectives() {
     const dependencyActivities = normalizeIdList(item.dependency_activity_template_ids)
       .map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
     const dependencies = [...dependencyObjectives, ...dependencyActivities];
-    return `<tr>
+    return `<tr data-id="${esc(item.id)}">
       <td><strong>${esc(resultDisplayName(item))}</strong></td>
       <td>${esc(item.completion_criteria || "—")}</td>
       <td>${esc(item.comments || "—")}</td>
@@ -6161,6 +6443,7 @@ function renderProductObjectives() {
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
   document.querySelectorAll(".po-clone").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(null, button.dataset.id)));
   document.querySelectorAll(".po-delete").forEach((button) => button.addEventListener("click", () => deleteProductObjective(button.dataset.id)));
+  wireProductWorkspaceTable();
 }
 
 function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
@@ -6330,7 +6613,7 @@ function renderProductGoals() {
     const dependencyActivities = normalizeIdList(item.dependency_activity_template_ids)
       .map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
     const dependencies = [...dependencyGoals, ...dependencyActivities];
-    return `<tr>
+    return `<tr data-id="${esc(item.id)}">
       <td><strong>${esc(resultDisplayName(item))}</strong></td>
       <td>${esc(item.metric)}</td>
       <td>${esc(target)}</td>
@@ -6353,6 +6636,7 @@ function renderProductGoals() {
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
   document.querySelectorAll(".pg-clone").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(null, button.dataset.id)));
   document.querySelectorAll(".pg-delete").forEach((button) => button.addEventListener("click", () => deleteProductGoal(button.dataset.id)));
+  wireProductWorkspaceTable();
 }
 
 function openProductGoalDrawer(editId = null, cloneSourceId = null) {
@@ -6509,6 +6793,30 @@ async function deleteProductGoal(goalId) {
 function cloneProductActivity(templateId) {
   openProductActivityDrawer(null, templateId);
 }
+function productTemplateGroupMembers(item, rows = loadProductActivities()) {
+  if (!item) return [];
+  const key = item.template_group_id || item.id;
+  return rows.filter((row) => (row.template_group_id || row.id) === key);
+}
+function productTemplateGroupAmbiguous(item, rows = loadProductActivities()) {
+  const members = productTemplateGroupMembers(item, rows);
+  return new Set(members.map((row) => row.product_id)).size !== members.length;
+}
+function productTemplateGroupKey(item, rows = loadProductActivities()) {
+  return productTemplateGroupAmbiguous(item, rows) ? `${item.template_group_id || item.id}:${item.id}` : item.template_group_id || item.id;
+}
+function copiedTemplateGroupId(source, targetRows) {
+  const group = source.template_group_id || source.id;
+  return targetRows.some((row) => (row.template_group_id || row.id) === group) ? crypto.randomUUID() : group;
+}
+function productTemplateRemovalError(ids, rows = loadProductActivities(), tasks = loadProjectTasks()) {
+  const removed = new Set(ids);
+  const referenced = tasks.some((task) => removed.has(task.source_template_id))
+    || rows.some((row) => !removed.has(row.id) && (removed.has(row.parent_template_id)
+      || normalizeIdList(row.dependency_template_ids, row.depends_on_template_id).some((id) => removed.has(id))))
+    || [...loadProductObjectives(), ...loadProductGoals()].some((row) => normalizeIdList(row.dependency_activity_template_ids).some((id) => removed.has(id)));
+  return referenced ? "Este modelo possui execuções ou dependências. Revise os vínculos antes de excluir ou desvincular; nenhum registro foi alterado." : "";
+}
 
 function openReadyActivityPicker() {
   document.getElementById("product-activity-drawer-overlay")?.remove();
@@ -6621,6 +6929,7 @@ function openReadyActivityPicker() {
           .map((id) => activityMap.get(id)).filter(Boolean);
         const draft = {
           ...source, id: activityMap.get(source.id), product_id: productActivityState.productId,
+          template_group_id: copiedTemplateGroupId(source, rows.filter((item) => item.product_id === productActivityState.productId)),
           parent_template_id: activityMap.get(source.parent_template_id) || null,
           dependency_template_ids: dependencyIds,
           depends_on_template_id: dependencyIds[0] || null,
@@ -6659,7 +6968,7 @@ function wireProductActivityDragAndDrop() {
   let dragged = null;
   tbody.querySelectorAll(".pa-row").forEach((row) => {
     row.addEventListener("dragstart", (event) => {
-      if (event.target.closest("button")) { event.preventDefault(); return; }
+      if (!row.draggable || event.target.closest("button")) { event.preventDefault(); return; }
       dragged = row;
       row.classList.add("dragging");
       event.dataTransfer.effectAllowed = "move";
@@ -6683,6 +6992,8 @@ function wireProductActivityDragAndDrop() {
 }
 
 async function persistProductActivityOrder() {
+  const tableState = productWorkspaceTableState();
+  if (tableState.sortKey || tableState.search.trim() || Object.values(tableState.filters).some((values) => values?.size)) return;
   const ids = [...document.querySelectorAll("#pa-tbody .pa-row")].map((row) => row.dataset.id);
   const rows = loadProductActivities();
   const changed = [];
@@ -6704,6 +7015,7 @@ async function persistProductActivityOrder() {
     } else saveProductActivities(rows);
     await syncProductActivities();
     refreshActivityCache();
+    document.querySelectorAll("#pa-tbody .pa-row").forEach((row, index) => { row.dataset.productOriginalOrder = index; });
     toast("Ordem das tarefas salva.");
   } catch (err) {
     toast("Erro ao salvar a ordem · " + err.message, true);
@@ -6762,17 +7074,15 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       assign_to_client: Boolean(requestedParent.assign_to_client)
     });
   }
-  productActivityParentGroupId = requestedParent ? (requestedParent.template_group_id || requestedParent.id) : null;
+  productActivityParentGroupId = requestedParent ? productTemplateGroupKey(requestedParent, allTemplates) : null;
   productActivityDraftGroupId = editing?.template_group_id || crypto.randomUUID();
   productActivityRelatedIds = editing
-    ? loadProductActivities().filter((item) => item.template_group_id
-      ? item.template_group_id === editing.template_group_id
-      : item.id === editing.id).map((item) => item.id)
+    ? allTemplates.filter((item) => productTemplateGroupKey(item, allTemplates) === productTemplateGroupKey(editing, allTemplates)).map((item) => item.id)
     : [];
   const selectedProductIds = new Set(editing
     ? loadProductActivities().filter((item) => productActivityRelatedIds.includes(item.id)).map((item) => item.product_id)
     : requestedParent
-      ? allTemplates.filter((item) => (item.template_group_id || item.id) === productActivityParentGroupId).map((item) => item.product_id)
+      ? allTemplates.filter((item) => productTemplateGroupKey(item, allTemplates) === productActivityParentGroupId).map((item) => item.product_id)
       : [productActivityState.productId]);
   const hasSubtasks = editing && allTemplates.some((item) => productActivityRelatedIds.includes(item.parent_template_id));
   productActivityChecklistDraft = normalizeChecklist(current.checklist || requestedParent?.checklist).map((item) => ({ ...item, checked: false }));
@@ -6799,7 +7109,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
     <div class="form product-activity-form task-form-grid">
       ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
       ${mainTemplateOriginField()}
-      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent))}</div>
+      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent || (editing && productTemplateGroupAmbiguous(editing, allTemplates))))}</div>
       <div class="field"><label>Grupo</label><select id="pa-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group, "Sem grupo")}</select></div>
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
@@ -6888,8 +7198,14 @@ async function saveProductActivity() {
   const assigneeJobTitles = multiPickerValues("pa-assignee-job-titles");
   const selectedProductIds = multiPickerValues("pa-products");
   if (!selectedProductIds.length) { toast("Selecione pelo menos um produto.", true); return; }
+  if (current && productTemplateGroupAmbiguous(current, rows) && (selectedProductIds.length !== 1 || selectedProductIds[0] !== current.product_id)) {
+    toast("O grupo possui mais de um modelo no mesmo produto. A propagação exige revisão dos vínculos.", true); return;
+  }
+  const removedIds = productActivityRelatedIds.filter((id) => { const row = rows.find((item) => item.id === id); return row && !selectedProductIds.includes(row.product_id); });
+  const removalError = productTemplateRemovalError(removedIds, rows);
+  if (removalError) { toast(removalError, true); return; }
   const parentTemplates = productActivityParentGroupId
-    ? rows.filter((item) => (item.template_group_id || item.id) === productActivityParentGroupId)
+    ? rows.filter((item) => productTemplateGroupKey(item, rows) === productActivityParentGroupId)
     : [];
   const parentsToClear = parentTemplates.filter((parent) => !rows.some((item) => item.parent_template_id === parent.id));
   if (productActivityParentGroupId && selectedProductIds.some((productId) => !parentTemplates.some((item) => item.product_id === productId))) {
@@ -7327,6 +7643,7 @@ function taskIsBlocked(task, tasks = loadProjectTasks()) {
 }
 
 function taskCardHtml(task) {
+  task = taskWithCurrentTemplate(task);
   const allTasks = operationalProjectTasks(task.project_id);
   const owners = assigneeCellHtml(task.assignee_ids, task.owner_id, task.assign_to_client, task.assignee_job_titles);
   const objective = cache.deliveryObjectiveById?.[task.objective_id];
@@ -7989,6 +8306,7 @@ const PROJECT_TABLE_LABELS = {
 
 function projectSectionValues(item, tasks = []) {
   if (projectBoardState.section === "activities") {
+    item = taskWithCurrentTemplate(item);
     const project = cache.projectById?.[item.project_id] || cache.projects.find((entry) => entry.id === item.project_id);
     const checklist = checklistProgress(item.checklist);
     const subtasks = taskSubtaskProgress(item.id, tasks);
@@ -8284,6 +8602,9 @@ async function updateProjectTask(taskId, patch) {
   const task = tasks.find((item) => item.id === taskId);
   if (!task) return false;
   if (!canEditOperational("activities", task, "operate")) { toast("Esta tarefa está disponível somente para consulta.", true); return false; }
+  if (task.source_template_id && TASK_TEMPLATE_IDENTIFICATION_FIELDS.some((key) => key in patch)) {
+    toast("Altere a identificação e os requisitos no Cadastro de Tarefas, não na execução da entrega.", true); return false;
+  }
   const transitionError = patch.status ? taskStatusTransitionError(task.status || "todo", patch.status) : "";
   if (transitionError) {
     toast(transitionError, true);
@@ -8299,6 +8620,8 @@ async function updateProjectTask(taskId, patch) {
   const changes = { ...patch, updated_at: new Date().toISOString() };
   if (["doing", "done"].includes(patch.status) && !task.actual_start_date) changes.actual_start_date = today;
   if (patch.status === "done" && !task.actual_end_date) changes.actual_end_date = today;
+  const dateError = taskDateRangeError(task, changes);
+  if (dateError) { toast(dateError, true); return false; }
   if (isLive()) await updateRow("activities", taskId, changes);
   Object.assign(task, changes);
   if (isLive()) cache.activityRecords = tasks;
@@ -8586,6 +8909,14 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   wireMultiPicker("project-task-tables");
   wireTaskSetupTab(overlay, "project-task", current);
   wireTaskStructureToggle("project-task-use-structure", "project-task-title", "project-task-title-label", ["project-task-category", "project-task-channel", "project-task-module", "project-task-type"]);
+  if (current.source_template_id) {
+    ["title", "information", "group", "subgroup", "sector", "subsector", "category", "channel", "module", "submodule", "type"].forEach((key) => {
+      const field = document.getElementById(`project-task-${key}`);
+      if (!field) return;
+      if (field.matches("select")) field.disabled = true;
+      else field.readOnly = true;
+    });
+  }
   document.querySelectorAll(".task-subtask-edit").forEach((button) => button.addEventListener("click", () =>
     openDeliveryTaskDrawer(projectId, button.dataset.id)));
   document.getElementById("project-task-add-subtask")?.addEventListener("click", () =>
@@ -8661,7 +8992,8 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
     try {
       const allTasks = loadProjectTasks();
       if (editId) {
-        const saved = isLive() ? await updateRow("activities", editId, draft) : { ...current, ...draft };
+        if (current.source_template_id) TASK_TEMPLATE_IDENTIFICATION_FIELDS.forEach((key) => delete draft[key]);
+        const saved = isLive() ? await updateRow("activities", editId, draft) : { ...allTasks.find((task) => task.id === editId), ...draft };
         Object.assign(allTasks.find((task) => task.id === editId), saved);
       } else {
         const saved = isLive() ? await createRow("activities", draft) : draft;
@@ -8889,6 +9221,8 @@ function wireProjectBoard(projectId) {
 }
 
 function closeFloaters() {
+  document.getElementById("product-filter-dd")?.remove();
+  document.getElementById("product-view-dd")?.remove();
   document.getElementById("filter-dd")?.remove();
   document.getElementById("cols-dd")?.remove();
   document.getElementById("csv-dd")?.remove();
@@ -11141,6 +11475,8 @@ function escCloseHandler(e) {
   e.stopImmediatePropagation();
 }
 function closeModal() {
+  document.getElementById("product-filter-dd")?.remove();
+  document.getElementById("product-view-dd")?.remove();
   closeSidebarSubmodules();
   document.getElementById("modal-root").innerHTML = "";
   syncSidebarModuleNavigation();
@@ -13396,7 +13732,7 @@ function registrationProductName(productId) {
 
 const REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER = {
   scope: "registration",
-  groupId: (item) => item.template_group_id || item.id,
+  groupId: (item) => productTemplateGroupKey(item),
   parent: (item, items) => productTemplateParent(item, items),
   dependencies: (item) => normalizeIdList(item.dependency_template_ids, item.depends_on_template_id),
   subtitle: (node) => [...new Set(node.linked.map((item) => registrationProductName(item.product_id)))].join(", ") || "Sem produto",
@@ -13680,9 +14016,9 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
   if (kind === "activities") {
     const groups = new Set(passing.map((row) => row.dataset.taskGroup).filter(Boolean));
     return [items.filter((item) => {
-      if (groups.has(item.template_group_id || item.id)) return true;
+      if (groups.has(productTemplateGroupKey(item, items))) return true;
       const parent = productTemplateParent(item, items);
-      return Boolean(parent && groups.has(parent.template_group_id || parent.id));
+      return Boolean(parent && groups.has(productTemplateGroupKey(parent, items)));
     }), adapter, filters];
   }
   if (kind === "users") {
@@ -14091,14 +14427,14 @@ function renderRegistrationsSection() {
     {
     const groups = new Map();
     items.forEach((item) => {
-      const key = item.template_group_id || item.id;
+      const key = productTemplateGroupKey(item, items);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
     });
     const grouped = [...groups.entries()].map(([id, linked]) => {
       const item = linked[0];
       const parent = linked.map((candidate) => productTemplateParent(candidate, items)).find(Boolean);
-      return { id, linked, item, parentGroupId: parent ? (parent.template_group_id || parent.id) : null };
+      return { id, linked, item, parentGroupId: parent ? productTemplateGroupKey(parent, items) : null };
     });
     const groupedById = new Map(grouped.map((group) => [group.id, group]));
     const childrenByParent = new Map();

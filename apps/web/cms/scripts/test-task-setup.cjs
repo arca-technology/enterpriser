@@ -49,7 +49,8 @@ const merged = context.mergeSetupConfigurations(configuration, { BLING: { module
 assert.equal(merged.BLING.modules.length, 2);
 assert.equal(merged.BLING.submodules.length, 1);
 assert.equal(merged.INTER.emits_boleto, true);
-vm.runInContext(source.match(/function operationalProjectTasks\([^]*?^}/m)[0], context);
+vm.runInContext(source.match(/function taskWithCurrentTemplate\([^]*?^}/m)[0] + source.match(/function operationalProjectTasks\([^]*?^}/m)[0], context);
+context.loadProductActivities = () => context.cache.productActivities;
 context.cache.projectById.p = { erp_platform: 'BLING' };
 context.cache.productActivities = [{ id: 'template', ...task }];
 context.loadProjectTasks = () => [{ id: 'existing', project_id: 'p', source_template_id: 'template', channel: 'BLING', required_setup: ['BLING'] }];

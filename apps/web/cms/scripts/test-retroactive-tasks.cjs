@@ -10,8 +10,8 @@ const functions = new Set(['normalizeIdList', 'normalizeTextList', 'dateOnly', '
   'activatedDeliveryChannels', 'projectStoreList', 'deliveryAutoSetups', 'normalizeDeliveryChannel', 'syncProductActivitiesOnce',
   'activityOccurrenceSort', 'uniqueTaskRecords', 'upsertTaskRecord', 'mergeTemplateChecklist', 'normalizeChecklist',
   'operationalProjectTasks', 'productErpChannel', 'activityRemoteBody', 'productActivityRemoteBody', 'recalculateDependencySchedules',
-  'normalizeSetupConfiguration', 'setupProductTypes', 'compareLabels', 'mergeDeliveryLogistics']);
-const constants = new Set(['DELIVERY_CHANNEL_OPTIONS', 'DELIVERY_AUTO_SETUPS', 'DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS', 'MANAGED_DELIVERY_CHANNELS', 'SETUP_PRODUCT_TYPES', 'addDays', 'addBusinessDays']);
+  'normalizeSetupConfiguration', 'setupProductTypes', 'compareLabels', 'mergeDeliveryLogistics', 'taskWithCurrentTemplate', 'taskDateRangeError']);
+const constants = new Set(['DELIVERY_CHANNEL_OPTIONS', 'DELIVERY_AUTO_SETUPS', 'DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS', 'MANAGED_DELIVERY_CHANNELS', 'SETUP_PRODUCT_TYPES', 'TASK_TEMPLATE_IDENTIFICATION_FIELDS', 'addDays', 'addBusinessDays']);
 const code = tree.statements.filter((node) => ts.isFunctionDeclaration(node) ? functions.has(node.name?.text)
   : ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => constants.has(d.name.text)))
   .map((node) => node.getText(tree)).join('\n');

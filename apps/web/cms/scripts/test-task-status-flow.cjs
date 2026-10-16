@@ -27,6 +27,8 @@ Object.assign(context, { currentUserCan: () => true, canEditOperational: () => t
 assert(context.inlineTaskStatus({ id: 'finished', status: 'done' }).includes(' disabled'));
 assert(!context.inlineTaskStatus({ id: 'open', status: 'todo' }).includes(' disabled'));
 vm.runInContext(source.match(/async function updateProjectTask\([^]*?^}/m)[0], context);
+vm.runInContext(source.match(/function taskDateRangeError\([^]*?^}/m)[0], context);
+vm.runInContext(source.match(/const TASK_TEMPLATE_IDENTIFICATION_FIELDS = \[[^]*?\];/)[0], context);
 const task = { id: 'task', project_id: 'project', status: 'todo' };
 let writes = 0;
 Object.assign(context, {
@@ -57,5 +59,17 @@ Object.assign(context, {
   context.canEditOperational = () => false;
   context.taskIsBlocked = () => false;
   assert.equal(await context.updateProjectTask('task', { status: 'doing' }), false, 'Cannot reopen someone else\'s read-only task');
+  context.canEditOperational = () => true;
+  task.source_template_id = 'model';
+  const beforeWrites = writes;
+  assert.equal(await context.updateProjectTask('task', { category: 'Other' }), false);
+  task.planned_start_date = '2026-10-10';
+  task.planned_end_date = '2026-10-20';
+  assert.equal(await context.updateProjectTask('task', { planned_end_date: '2026-10-01' }), false);
+  assert.equal(await context.updateProjectTask('task', { actual_end_date: '2020-01-01' }), false);
+  assert.equal(writes, beforeWrites, 'Invalid bulk/inline changes must not write');
+  assert.equal(await context.updateProjectTask('task', { planned_end_date: '2026-10-21' }), true);
+  delete task.source_template_id;
+  assert.equal(await context.updateProjectTask('task', { category: 'Manual category' }), true);
   console.log('Task transitions, terminal admin lock, dropdown options, real dates and rejected updates passed.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
