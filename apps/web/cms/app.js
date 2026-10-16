@@ -6074,7 +6074,7 @@ function productWorkspaceTableState() {
   if (!productWorkspaceTableStates.has(scope)) productWorkspaceTableStates.set(scope, { sortKey: null, sortDir: 1, filters: {}, search: "", view: "table" });
   const tableState = productWorkspaceTableStates.get(scope);
   tableState.search ??= "";
-  tableState.view = tableState.view === "mindmap" ? "mindmap" : "table";
+  tableState.view = ["mindmap", "flow"].includes(tableState.view) ? tableState.view : "table";
   return tableState;
 }
 
@@ -6111,7 +6111,7 @@ function setupProductWorkspaceToolbar(root, table, tableState) {
     panel.id = "product-view-dd"; panel.className = "view-dd"; panel.setAttribute("role", "menu");
     panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 198))}px`;
     panel.style.top = `${rect.bottom + 5}px`;
-    panel.innerHTML = ["table", "mindmap"].map((view) => `<button class="view-option${view === tableState.view ? " active" : ""}" type="button" role="menuitemradio" aria-checked="${view === tableState.view}" data-view="${view}"><span class="view-option-icon">${viewIcon(view)}</span><span>${VIEW_LABELS[view]}</span></button>`).join("");
+    panel.innerHTML = ["table", "mindmap", "flow"].map((view) => `<button class="view-option${view === tableState.view ? " active" : ""}" type="button" role="menuitemradio" aria-checked="${view === tableState.view}" data-view="${view}"><span class="view-option-icon">${viewIcon(view)}</span><span>${VIEW_LABELS[view]}</span></button>`).join("");
     document.body.appendChild(panel);
     panel.uiReturnFocus = button;
     button.setAttribute("aria-expanded", "true");
@@ -6158,7 +6158,7 @@ function applyProductWorkspaceColumnPreferences(table) {
 }
 
 function renderProductWorkspacePresentation(root, table, tableState) {
-  const mindmap = tableState.view === "mindmap";
+  const mindmap = ["mindmap", "flow"].includes(tableState.view);
   table.closest(".product-activity-list").hidden = mindmap;
   const trigger = root.querySelector(".product-view-menu-btn");
   trigger.innerHTML = viewTriggerInner(tableState.view);
@@ -6176,13 +6176,16 @@ function renderProductWorkspacePresentation(root, table, tableState) {
   const base = section === "activities" ? REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER : section === "goals" ? REGISTRATION_MIND_MAP_GOAL_ADAPTER : REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER;
   const adapter = { ...base, scope: `product:${productActivityState.productId}:${section}`, rootLabel: MODULE_COUNT_LABEL[section],
     groupId: (item) => item.id, editClass: "product-mind-edit", editAttrs: (item) => `data-id="${esc(item.id)}"` };
-  host.innerHTML = registrationMindMapShellHtml(items, adapter).html;
+  host.innerHTML = tableState.view === "flow"
+    ? registrationFlowShellHtml(items, adapter, "", adapter.scope, [...byId.values()]).html
+    : registrationMindMapShellHtml(items, adapter).html;
   host.querySelectorAll(".product-mind-edit").forEach((button) => button.addEventListener("click", () => {
     if (section === "activities") openProductActivityDrawer(button.dataset.id);
     else if (section === "goals") openProductGoalDrawer(button.dataset.id);
     else openProductObjectiveDrawer(button.dataset.id);
   }));
-  wireMindMap(host, () => renderProductWorkspacePresentation(root, table, tableState));
+  if (tableState.view === "flow") wireRegistrationFlow(host);
+  else wireMindMap(host, () => renderProductWorkspacePresentation(root, table, tableState));
 }
 
 function productWorkspaceCellValue(row, key) {
@@ -9252,8 +9255,8 @@ const VIEW_ICON_PATHS = {
   matrix: '<circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/>',
   dashboard: '<path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/>'
 };
-const viewIcon = (id) => `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
-const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", schedule: "Cronograma", mindmap: "Mapa mental", matrix: "Matriz", dashboard: "Dashboard" };
+const viewIcon = (id) => id === "flow" ? (window.CRM_NAV_ICONS?.flow || window.CRM_NAV_ICONS?.processes || "").replace("<svg ", '<svg class="view-svg" ') : `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
+const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", schedule: "Cronograma", mindmap: "Mapa mental", flow: "Fluxo", matrix: "Matriz", dashboard: "Dashboard" };
 const viewButtonInner = (id) => `${viewIcon(id)}<span class="view-label">${VIEW_LABELS[id] || ""}</span>`;
 const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="view-label">${VIEW_LABELS[id] || "Tabela"}</span><span class="chevron">▾</span>`;
 const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa mental", icon: "⌘" }];
@@ -11467,6 +11470,11 @@ function escCloseHandler(e) {
     e.preventDefault();
     e.stopImmediatePropagation();
     return;
+  }
+  const flowFullscreen = document.querySelector(".registration-flow-shell.is-fullscreen");
+  if (flowFullscreen) {
+    flowFullscreen.querySelector('[data-flow-action="fullscreen"]')?.click();
+    e.preventDefault(); e.stopImmediatePropagation(); return;
   }
   if (closeTopModalLayer()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   if (modalCloseOverride) modalCloseOverride();
@@ -14007,7 +14015,7 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
     if (header.textContent.trim().toLocaleUpperCase("pt-BR") !== "AÇÕES") labels.set(`c${index}`, { index, label: header.textContent.trim() });
   });
   const filters = active.map(([key, values]) => ({ key, values, label: labels.get(key)?.label || "Coluna" }));
-  if (!table || !active.length) return [items, adapter, filters];
+  if (!table || !active.length) return [items, adapter, filters, items];
   const rows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty") && !row.classList.contains("registration-subtask-row"));
   const passing = rows.filter((row) => active.every(([key, selected]) => {
     const index = labels.get(key)?.index;
@@ -14019,14 +14027,14 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
       if (groups.has(productTemplateGroupKey(item, items))) return true;
       const parent = productTemplateParent(item, items);
       return Boolean(parent && groups.has(productTemplateGroupKey(parent, items)));
-    }), adapter, filters];
+    }), adapter, filters, items];
   }
   if (kind === "users") {
     const ids = new Set(passing.map((row) => row.dataset.userId));
     return [items.filter((item) => ids.has(item.id)), adapter, filters];
   }
   const ids = new Set(passing.map((row) => row.querySelector("[data-id]")?.dataset.id).filter(Boolean));
-  return [items.filter((item) => ids.has(item.id)), adapter, filters];
+  return [items.filter((item) => ids.has(item.id)), adapter, filters, items];
 }
 
 function mindMapFilterStripHtml(filters, badgeClass = "mind-filter-badge", clearClass = "mind-filter-clear-all") {
@@ -14035,13 +14043,270 @@ function mindMapFilterStripHtml(filters, badgeClass = "mind-filter-badge", clear
     `<button class="registration-filter-badge ${badgeClass}" data-key="${esc(filter.key)}" title="Limpar filtro"><span>${esc(filter.label)}: ${esc([...filter.values].join(", "))}</span><b>×</b></button>`).join("")}</div><button class="filter-clear-all ${clearClass}" type="button"${filters.length < 2 ? " hidden" : ""}><span aria-hidden="true">×</span> Limpar tudo</button></div>`;
 }
 
-function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, filters = []) {
+let registrationFlowLibraryPromise;
+const registrationFlowStates = new Map();
+function loadRegistrationFlowLibrary() {
+  if (window.dagre?.layout) return Promise.resolve(window.dagre);
+  if (!registrationFlowLibraryPromise) registrationFlowLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = document.querySelector('script[src*="/legacy/app.js"]') ? "/legacy/vendor/dagre.min.js" : "vendor/dagre.min.js";
+    script.onload = () => window.dagre?.layout ? resolve(window.dagre) : reject(new Error("Biblioteca de fluxo indisponível."));
+    script.onerror = () => reject(new Error("Não foi possível carregar o fluxo."));
+    document.head.appendChild(script);
+  }).catch((error) => { registrationFlowLibraryPromise = null; throw error; });
+  return registrationFlowLibraryPromise;
+}
+
+function registrationFlowModel(items, adapter, search = "", allItems = items) {
+  const hierarchy = registrationTaskHierarchy(allItems, adapter);
+  const query = String(search).trim().toLocaleLowerCase("pt-BR");
+  const allowed = new Set(items.map((item) => item.id));
+  const matches = new Set([...hierarchy.nodeById.values()].filter((node) => node.linked.some((item) => allowed.has(item.id)
+    && (!query || [mindMapTitle(adapter, item), adapter.searchText(item), item.category, item.channel, item.group, item.module, item.submodule, item.information]
+      .join(" ").toLocaleLowerCase("pt-BR").includes(query)))).map((node) => node.id));
+  const visible = new Set();
+  const visit = (id) => {
+    if (visible.has(id) || !hierarchy.nodeById.has(id)) return;
+    visible.add(id);
+    const node = hierarchy.nodeById.get(id);
+    if (node.parentId) visit(node.parentId);
+    node.dependencies.forEach(visit);
+  };
+  matches.forEach(visit);
+  const nodes = [...hierarchy.nodeById.values()].filter((node) => visible.has(node.id)).map((node) => ({
+    ...node, context: !matches.has(node.id), label: mindMapTitle(adapter, node.item),
+    lane: [node.item.category || "Sem categoria", node.item.channel || "Sem canal"].join(" | ")
+  }));
+  const edges = nodes.flatMap((node) => [
+    ...[...node.dependencies].filter((id) => visible.has(id)).map((from) => ({ from, to: node.id, kind: "dependency", label: "Após" })),
+    ...(node.parentId && visible.has(node.parentId) && !node.dependencies.has(node.parentId) ? [{ from: node.parentId, to: node.id, kind: "subtask", label: "Subtarefa" }] : [])
+  ]);
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  // Only the existing Setup rules establish exclusivity; a shared predecessor alone does not.
+  const logisticsMode = (node) => {
+    const choices = [node.item.name, node.item.activity, node.item.submodule, ...normalizeTextList(node.item.required_setup), ...node.label.split("|")]
+      .map((value) => String(value || "").trim().toLocaleUpperCase("pt-BR"));
+    return DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.flat().find((value) => choices.includes(value));
+  };
+  const forks = new Map();
+  edges.filter((edge) => edge.kind === "dependency").forEach((edge) => {
+    const node = byId.get(edge.to);
+    const mode = logisticsMode(node);
+    const group = DELIVERY_LOGISTICS_EXCLUSIVE_GROUPS.findIndex((values) => values.includes(mode));
+    if (group < 0) return;
+    const key = JSON.stringify([edge.from, node.item.product_id, node.lane, group]);
+    if (!forks.has(key)) forks.set(key, []);
+    forks.get(key).push({ edge, mode });
+  });
+  const replaced = new Set();
+  forks.forEach((entries, key) => {
+    if (new Set(entries.map((entry) => entry.mode)).size < 2) return;
+    const id = `flow-choice:${key}`;
+    const target = byId.get(entries[0].edge.to);
+    nodes.push({ id, choice: true, lane: target.lane, label: "Modalidade logística", subtitle: "Uma opção por vez" });
+    edges.push({ from: entries[0].edge.from, to: id, kind: "dependency", label: "" });
+    entries.forEach(({ edge }) => { replaced.add(edge); edges.push({ from: id, to: edge.to, kind: "alternative", label: "OU" }); });
+  });
+  return { nodes, edges: edges.filter((edge) => !replaced.has(edge)), count: matches.size, adapter };
+}
+
+function registrationFlowShellHtml(items, adapter, search = "", scope = adapter.scope, allItems = items) {
+  const model = registrationFlowModel(items, adapter, search, allItems);
+  const key = `flow:${scope}`;
+  if (!registrationFlowStates.has(key)) registrationFlowStates.set(key, { vertical: false, zoom: 1, left: 0, top: 0 });
+  const state = registrationFlowStates.get(key);
+  const iconButton = (action, label, icon, pressed = null) => `<button class="view" type="button" data-flow-action="${action}" title="${label}" aria-label="${label}"${pressed == null ? "" : ` aria-pressed="${pressed}"`}>${window.CRM_NAV_ICONS?.[icon] || ""}</button>`;
+  const html = `<section class="registration-flow-shell" data-flow-scope="${esc(key)}" aria-label="Fluxo de ${esc(adapter.rootLabel || "Tarefas")}">
+    <div class="registration-flow-controls" role="group" aria-label="Controles do fluxo">
+      ${iconButton("horizontal", "Fluxo horizontal", "flowHorizontal", !state.vertical)}${iconButton("vertical", "Fluxo vertical", "flowVertical", state.vertical)}
+      ${iconButton("zoom-out", "Diminuir zoom", "flowZoomOut")}<button class="view flow-zoom" type="button" data-flow-action="reset" title="Zoom 100%" aria-label="Zoom 100%">${Math.round(state.zoom * 100)}%</button>${iconButton("zoom-in", "Aumentar zoom", "flowZoomIn")}
+      ${iconButton("fit", "Ajustar à tela", "flowFit")}${iconButton("fullscreen", "Tela cheia", "flowFullscreen", false)}
+    </div>
+    <div class="registration-flow-scroll" tabindex="0" aria-label="Diagrama de dependências"><div class="registration-flow-canvas"></div>
+      <div class="registration-flow-status muted" role="status">${model.nodes.length ? "Carregando fluxo..." : "Nenhum registro corresponde aos filtros."}</div></div></section>`;
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  // Keep the model local to this render, without persisting any record changes.
+  const token = crypto.randomUUID();
+  registrationFlowPending.set(token, model);
+  template.content.firstElementChild.dataset.flowToken = token;
+  queueMicrotask(() => registrationFlowPending.delete(token));
+  return { count: model.count, html: template.innerHTML };
+}
+const registrationFlowPending = new Map();
+
+function layoutRegistrationFlow(shell, model, dagre) {
+  const canvas = shell.querySelector(".registration-flow-canvas");
+  const status = shell.querySelector(".registration-flow-status");
+  const state = registrationFlowStates.get(shell.dataset.flowScope);
+  const graph = new dagre.graphlib.Graph({ compound: true, multigraph: true });
+  graph.setGraph({ rankdir: state.vertical ? "TB" : "LR", nodesep: 32, ranksep: 86, edgesep: 18, marginx: 24, marginy: 36 });
+  graph.setDefaultEdgeLabel(() => ({}));
+  const lanes = new Map(model.nodes.map((node) => [node.lane, `lane:${node.lane}`]));
+  lanes.forEach((id, label) => graph.setNode(id, { label }));
+  canvas.innerHTML = model.nodes.map((node) => {
+    if (node.choice) return `<div class="registration-flow-node flow-choice" data-flow-node="${esc(node.id)}"><span>${window.CRM_NAV_ICONS?.flow || ""}</span><strong>${esc(node.label)}</strong><small>${esc(node.subtitle)}</small></div>`;
+    const extra = model.adapter.extraDependencyNames?.(node.item) || [];
+    const unresolved = node.linked.flatMap((item) => model.adapter.dependencies(item)).filter((id) => !model.nodes.some((entry) => entry.linked?.some((item) => item.id === id)));
+    const details = extra.length ? `<small class="flow-prerequisites">Tarefas: ${esc(extra.join("; "))}</small>` : "";
+    return `<article class="registration-flow-node${node.context ? " is-context" : ""}" data-flow-node="${esc(node.id)}">
+      <button class="flow-node-open ${model.adapter.editClass || ""}" type="button" ${model.adapter.editAttrs(node.item)} aria-label="Abrir ${esc(node.label)}"${model.adapter.editClass ? "" : " disabled"}>
+        <strong>${esc(node.label)}</strong><small>${esc(model.adapter.subtitle(node))}</small>${details}
+        ${node.context ? '<span class="flow-context-label">Pré-requisito</span>' : ""}${unresolved.length ? `<small class="flow-unresolved">${new Set(unresolved).size} vínculo(s) fora deste fluxo</small>` : ""}
+      </button></article>`;
+  }).join("");
+  const cards = new Map([...canvas.querySelectorAll("[data-flow-node]")].map((card) => [card.dataset.flowNode, card]));
+  model.nodes.forEach((node) => {
+    const card = cards.get(node.id);
+    graph.setNode(node.id, { width: card.offsetWidth, height: card.offsetHeight });
+    graph.setParent(node.id, lanes.get(node.lane));
+  });
+  model.edges.forEach((edge, index) => graph.setEdge(edge.from, edge.to, { width: edge.label ? 58 : 0, height: edge.label ? 20 : 0, label: edge.label }, String(index)));
+  const cycles = dagre.graphlib.alg.findCycles(graph).length;
+  dagre.layout(graph);
+  canvas.style.width = `${graph.graph().width}px`;
+  canvas.style.height = `${graph.graph().height}px`;
+  model.nodes.forEach((node) => {
+    const position = graph.node(node.id), card = cards.get(node.id);
+    card.style.left = `${position.x - position.width / 2}px`;
+    card.style.top = `${position.y - position.height / 2}px`;
+  });
+  lanes.forEach((id, label) => {
+    const position = graph.node(id);
+    const group = document.createElement("div");
+    group.className = "registration-flow-lane";
+    Object.assign(group.style, { left: `${position.x - position.width / 2}px`, top: `${position.y - position.height / 2}px`, width: `${position.width}px`, height: `${position.height}px` });
+    group.innerHTML = `<strong>${esc(label)}</strong>`;
+    canvas.prepend(group);
+  });
+  const marker = `flow-arrow-${shell.dataset.flowToken}`;
+  const edgePaths = graph.edges().map((key) => {
+    const position = graph.edge(key), edge = model.edges[Number(key.name)];
+    const points = position.points;
+    const d = points.map((point, i) => `${i ? "L" : "M"}${point.x},${point.y}`).join(" ");
+    return `<g class="flow-edge flow-edge-${edge.kind}" data-flow-from="${esc(edge.from)}" data-flow-to="${esc(edge.to)}"><path d="${d}" marker-end="url(#${marker})"/>${edge.label ? `<rect x="${position.x - 30}" y="${position.y - 10}" width="60" height="20" rx="3"/><text x="${position.x}" y="${position.y + 4}" text-anchor="middle">${esc(edge.label)}</text>` : ""}</g>`;
+  }).join("");
+  canvas.insertAdjacentHTML("afterbegin", `<svg class="registration-flow-links" width="${graph.graph().width}" height="${graph.graph().height}" aria-hidden="true"><defs><marker id="${marker}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"/></marker></defs>${edgePaths}</svg>`);
+  status.textContent = cycles ? `${cycles} ciclo(s) de dependências para revisar.` : "";
+  status.hidden = !cycles;
+  shell.dataset.flowReady = "true";
+  canvas.style.zoom = state.zoom;
+  return graph;
+}
+
+function wireRegistrationFlow(root) {
+  const shell = root.querySelector(".registration-flow-shell");
+  if (!shell) return;
+  const model = registrationFlowPending.get(shell.dataset.flowToken);
+  if (!model) return;
+  const state = registrationFlowStates.get(shell.dataset.flowScope);
+  const scroller = shell.querySelector(".registration-flow-scroll");
+  const canvas = shell.querySelector(".registration-flow-canvas");
+  let graph;
+  const zoom = (value, x = scroller.clientWidth / 2, y = scroller.clientHeight / 2) => {
+    const previous = state.zoom;
+    state.zoom = Math.max(0.25, Math.min(2, value));
+    canvas.style.zoom = state.zoom;
+    scroller.scrollLeft = (scroller.scrollLeft + x) * state.zoom / previous - x;
+    scroller.scrollTop = (scroller.scrollTop + y) * state.zoom / previous - y;
+    const button = shell.querySelector(".flow-zoom");
+    button.textContent = `${Math.round(state.zoom * 100)}%`;
+    button.setAttribute("aria-label", `Zoom ${Math.round(state.zoom * 100)}%, voltar a 100%`);
+  };
+  shell.querySelectorAll("[data-flow-action]").forEach((button) => button.addEventListener("click", () => {
+    const action = button.dataset.flowAction;
+    if (action === "zoom-in") zoom(state.zoom * 1.2);
+    else if (action === "zoom-out") zoom(state.zoom / 1.2);
+    else if (action === "reset") zoom(1);
+    else if (action === "fit" && graph) {
+      zoom(Math.min(1, (scroller.clientWidth - 32) / graph.graph().width, (scroller.clientHeight - 80) / graph.graph().height));
+      scroller.scrollLeft = 0; scroller.scrollTop = 0;
+    } else if (action === "fullscreen") {
+      shell.classList.toggle("is-fullscreen");
+      button.setAttribute("aria-pressed", String(shell.classList.contains("is-fullscreen")));
+      button.title = shell.classList.contains("is-fullscreen") ? "Sair da tela cheia (Esc)" : "Tela cheia";
+      button.setAttribute("aria-label", button.title);
+    } else if (["horizontal", "vertical"].includes(action)) {
+      state.vertical = action === "vertical";
+      shell.querySelectorAll('[data-flow-action="horizontal"],[data-flow-action="vertical"]').forEach((entry) => entry.setAttribute("aria-pressed", String((entry.dataset.flowAction === "vertical") === state.vertical)));
+      loadRegistrationFlowLibrary().then((dagre) => { if (shell.isConnected) { graph = layoutRegistrationFlow(shell, model, dagre); bindEditors(); scroller.scrollLeft = 0; scroller.scrollTop = 0; } }).catch(showError);
+    }
+  }));
+  const bindEditors = () => {
+    if (!root.closest("#product-activities-root")) canvas.querySelectorAll(".reg-template-edit").forEach((button) => {
+      button.disabled = !currentUserCan(REGISTRATION_PERMISSION_MODULE[registrationsState.section], "edit");
+      button.addEventListener("click", () => openRegistrationTemplateEditor(registrationsState.section, button.dataset.product, button.dataset.id));
+    });
+    else canvas.querySelectorAll(".product-mind-edit").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (productActivityState.tab === "activities") openProductActivityDrawer(button.dataset.id);
+        else if (productActivityState.tab === "goals") openProductGoalDrawer(button.dataset.id);
+        else openProductObjectiveDrawer(button.dataset.id);
+      });
+    });
+  };
+  const showError = (error) => {
+    if (!shell.isConnected) return;
+    const status = shell.querySelector(".registration-flow-status");
+    status.hidden = false;
+    status.replaceChildren(document.createTextNode(`${error.message} `));
+    const retry = document.createElement("button");
+    retry.className = "btn"; retry.textContent = "Tentar novamente";
+    retry.onclick = () => { retry.disabled = true; load(); };
+    status.appendChild(retry);
+  };
+  const load = () => {
+    if (!model.nodes.length) return;
+    loadRegistrationFlowLibrary().then((dagre) => {
+      if (!shell.isConnected) return;
+      graph = layoutRegistrationFlow(shell, model, dagre); bindEditors();
+      scroller.scrollLeft = state.left; scroller.scrollTop = state.top;
+    }).catch(showError);
+  };
+  scroller.addEventListener("scroll", () => { state.left = scroller.scrollLeft; state.top = scroller.scrollTop; }, { passive: true });
+  scroller.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const rect = scroller.getBoundingClientRect();
+    zoom(state.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), event.clientX - rect.left, event.clientY - rect.top);
+  }, { passive: false });
+  let drag = null, suppressClick = false, pinch = null;
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.button || event.pointerType === "touch" || event.target.closest("button")) return;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop };
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (!drag || drag.id !== event.pointerId || Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return;
+    suppressClick = true; scroller.setPointerCapture(event.pointerId); scroller.classList.add("is-panning");
+    scroller.scrollLeft = drag.left - event.clientX + drag.x; scroller.scrollTop = drag.top - event.clientY + drag.y;
+    event.preventDefault();
+  });
+  const release = () => { drag = null; scroller.classList.remove("is-panning"); };
+  scroller.addEventListener("pointerup", release); scroller.addEventListener("pointercancel", release);
+  scroller.addEventListener("click", (event) => { if (suppressClick) { event.preventDefault(); event.stopPropagation(); suppressClick = false; } }, true);
+  const distance = (touches) => Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+  scroller.addEventListener("touchstart", (event) => { if (event.touches.length === 2) pinch = { distance: distance(event.touches), zoom: state.zoom }; }, { passive: true });
+  scroller.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) return;
+    event.preventDefault(); zoom(pinch.zoom * distance(event.touches) / Math.max(1, pinch.distance));
+  }, { passive: false });
+  scroller.addEventListener("touchend", () => { pinch = null; }, { passive: true });
+  canvas.addEventListener("pointerover", (event) => {
+    const id = event.target.closest("[data-flow-node]")?.dataset.flowNode;
+    canvas.querySelectorAll(".flow-edge").forEach((edge) => edge.classList.toggle("is-active", Boolean(id) && [edge.dataset.flowFrom, edge.dataset.flowTo].includes(id)));
+  });
+  canvas.addEventListener("pointerleave", () => canvas.querySelectorAll(".flow-edge.is-active").forEach((edge) => edge.classList.remove("is-active")));
+  load();
+}
+
+function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, filters = [], allItems = items) {
   const state = registrationTableState();
-  const map = registrationMindMapShellHtml(items, adapter, state.search);
+  const flow = state.view === "flow";
+  const map = flow ? registrationFlowShellHtml(items, adapter, state.search, adapter.scope, allItems) : registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
-    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no mapa</span></div>
+    <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${adapter.countLabel || "tarefa(s)"} no ${flow ? "fluxo" : "mapa"}</span></div>
     <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}">${!adapter.canAdd || adapter.canAdd() ? `<button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa mental">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: ${flow ? "Fluxo" : "Mapa mental"}">${viewTriggerInner(flow ? "flow" : "mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
 
@@ -14299,7 +14564,8 @@ function wireRegistrationMindMap(root) {
     event.stopPropagation();
     openRegistrationViewMenu();
   });
-  wireMindMap(root, renderRegistrationsSection);
+  if (state.view === "flow") wireRegistrationFlow(root);
+  else wireMindMap(root, renderRegistrationsSection);
 }
 
 function openRegistrationViewMenu() {
@@ -14315,7 +14581,8 @@ function openRegistrationViewMenu() {
   panel.style.top = `${rect.bottom + 5}px`;
   const modes = [
     { id: "table", label: "Tabela", icon: "▦" },
-    { id: "mindmap", label: "Mapa mental", icon: "⌘" }
+    { id: "mindmap", label: "Mapa mental", icon: "⌘" },
+    ...(["activities", "goals", "objectives"].includes(registrationsState.section) ? [{ id: "flow", label: "Fluxo", icon: viewIcon("flow") }] : [])
   ];
   panel.innerHTML = modes.map((mode) => `<button class="view-option${state.view === mode.id ? " active" : ""}" data-view="${mode.id}">
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${state.view === mode.id ? "✓" : ""}</span>
@@ -14512,7 +14779,7 @@ function renderRegistrationsSection() {
       row.querySelector(".table-actions-cell")?.before(cell);
     });
     root.querySelector("tbody td.empty")?.setAttribute("colspan", "31");
-    if (tableState.view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
+    if (["mindmap", "flow"].includes(tableState.view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
     const items = loadProductGoals();
@@ -14528,7 +14795,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
-    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
+    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
   } else {
     const items = loadProductObjectives();
     const activities = loadProductActivities();
@@ -14543,7 +14810,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
-    if (registrationTableState().view === "mindmap") root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
+    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
@@ -14592,7 +14859,7 @@ function renderRegistrationsSection() {
     const originIndex = [...root.querySelectorAll("thead th")].findIndex((head) => head.textContent.trim() === "Origem");
     if (originIndex >= 0) root.querySelectorAll("tbody tr").forEach((row) => { if (row.cells[originIndex] && !row.querySelector("td.empty")) row.cells[originIndex].textContent = "Projeto"; });
   }
-  if (["activities", "goals", "objectives"].includes(section) && registrationTableState().view === "mindmap") wireRegistrationMindMap(root);
+  if (["activities", "goals", "objectives"].includes(section) && ["mindmap", "flow"].includes(registrationTableState().view)) wireRegistrationMindMap(root);
   wireRegistrationTable();
   wireMainPmModeButtons(root);
 }
