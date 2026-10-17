@@ -161,7 +161,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       }
     }
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.evaluate(() => { pmTestAdmin = false; state.pmScopes = {}; state.tab = 'activities'; render(); });
+    await page.evaluate(() => { pmTestAdmin = false; state.pmScopes = {}; state.tab = 'activities'; state.view = defaultRecordView(); render(); });
     assert.equal(await page.locator('#pm-mode-button').isVisible(), false);
     assert.equal(await page.locator('#floating-log').isVisible(), false);
     assert.equal(await page.locator('#tabs [data-tab="goals"]').isVisible(), true);

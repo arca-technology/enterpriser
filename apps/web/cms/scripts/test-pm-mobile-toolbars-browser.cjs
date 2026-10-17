@@ -47,13 +47,22 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       for (const [section, label] of [['activities', 'Tarefas'], ['goals', 'Metas'], ['objectives', 'Objetivos']]) {
         await page.locator(`#mobile-module-track [data-mobile-tab="${section}"]`).evaluate(button => button.click());
         if (await page.evaluate(() => mainPmCatalogActive())) await page.locator('#main [data-pm-mode]').click();
+        assert.equal(await page.evaluate(() => state.view), 'list', 'Mobile execution starts in the actual List view');
+        assert.equal(await page.locator('#main table.explicit-list-view').count(), 1);
         const execution = await page.locator('.subbar').boundingBox();
         assert.ok(execution);
         await page.locator('#pm-mode-button').click();
         assert.equal(await page.locator('#main .registration-toolbar-title').innerText(), label);
+        if (navigation === 'top') {
+          assert.equal(await page.evaluate(() => registrationTableState().view), 'list', 'Mobile catalogs default to List');
+          assert.equal(await page.locator('#main .list-view-controls').count(), 1);
+          if (section === 'objectives') await page.screenshot({ path: path.join(os.tmpdir(), 'pm-mobile-default-list.png') });
+        }
         for (const view of ['table', 'list', 'mindmap']) {
           await page.locator('#registration-view-menu-btn').click();
           await page.locator(`#registration-view-dd [data-view="${view}"]`).click();
+          await page.evaluate(() => renderRegistrationsSection());
+          assert.equal(await page.evaluate(() => registrationTableState().view), view, 'Rerender preserves a manually selected view');
           for (const width of [390, 360]) {
             await page.setViewportSize({ width, height: 844 });
             const toolbar = page.locator('#main .registration-toolbar');
@@ -81,8 +90,34 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.equal(await page.locator('#pm-mode-button').isVisible(), true);
       }
     }
+    await page.evaluate(() => { closeModal(); openProductActivities('pr1'); });
+    for (const section of ['activities', 'goals', 'objectives']) {
+      await page.locator(`[data-product-tab="${section}"]`).evaluate(button => button.click());
+      assert.equal(await page.evaluate(() => productWorkspaceTableState().view), 'list', 'Mobile product tabs default to List');
+      assert.equal(await page.locator('#product-activities-root .list-view-controls').count(), 1);
+    }
+    await page.evaluate(() => { closeModal(); openProjectBoard(cache.projects[0].id); });
+    assert.equal(await page.evaluate(() => projectBoardState.view), 'dashboard', 'Delivery overview remains a dashboard');
+    for (const section of ['activities', 'goals', 'objectives']) {
+      await page.locator(`[data-project-section="${section}"]`).evaluate(button => button.click());
+      assert.equal(await page.evaluate(() => projectBoardState.view), 'list', 'Mobile delivery sections default to List');
+    }
+    await page.evaluate(() => { closeModal(); saveNavigationPreference({ mode: 'top' }); });
+    for (const section of ['contacts', 'companies', 'conversations', 'deals', 'projects']) {
+      await page.locator(`#tabs [data-tab="${section}"]`).evaluate(button => button.click());
+      assert.equal(await page.evaluate(() => state.view), 'list', `${section}: mobile default is List`);
+    }
+    await page.locator('#view-menu-btn').click();
+    await page.locator('#view-dd [data-view="table"]').click();
+    await page.evaluate(() => render());
+    assert.equal(await page.evaluate(() => state.view), 'table', 'Explicit Table choice remains available on mobile');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('#tabs [data-tab="contacts"]').click();
+    assert.equal(await page.evaluate(() => state.view), 'table', 'Desktop still defaults to Table');
+    await page.evaluate(() => { registrationsState.tables = {}; openMainPmCatalog('objectives'); });
+    assert.equal(await page.evaluate(() => registrationTableState().view), 'table', 'Desktop catalogs still default to Table');
     assert.equal(await page.evaluate(() => JSON.stringify([loadProductActivities(), loadProductGoals(), loadProductObjectives(), loadProjectTasks()]) === recordSnapshot), true);
     assert.deepEqual(errors, []); assert.deepEqual(writes, []);
-    console.log('PM mobile toolbars passed: Tarefas, Metas and Objetivos; real execution/catalog switch; top/sidebar preferences; table/list/map; 360/390px touch; visible titles/counts/actions; equal toolbar heights; columns and zero data writes.');
+    console.log('Mobile List defaults passed: execution, catalogs, products, delivery sections and main modules; manual Table/Map preserved; desktop Table and delivery dashboard unchanged; 360/390px toolbars, top/sidebar navigation and zero data writes.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

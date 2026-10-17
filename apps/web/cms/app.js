@@ -749,7 +749,7 @@ function wireMainPmModeButtons(root) {
     if (!mainPmModeAvailable()) return;
     closeFloaters();
     state.pmScopes[state.tab] = mainPmCatalogActive() ? "deliveries" : "catalog";
-    state.view = "table";
+    state.view = defaultRecordView();
     render();
   }));
 }
@@ -760,7 +760,7 @@ function openMainPmCatalog(section) {
   closeFloaters();
   state.tab = section;
   state.pmScopes[section] = "catalog";
-  state.view = "table";
+  state.view = defaultRecordView();
   state.q = "";
   state.sortK = null;
   state.selectedConversations.clear();
@@ -2759,7 +2759,7 @@ function wireSimpleListView(root, scope) {
   const table = root.querySelector("table");
   if (!button || !table) return;
   const key = `list-view:${scope}`;
-  const active = tableListViews.get(key) || "table";
+  const active = tableListViews.get(key) || defaultRecordView();
   applyListPresentation(table, active === "list");
   button.innerHTML = viewTriggerInner(active);
   button.title = `Modo de visualização: ${VIEW_LABELS[active]}`;
@@ -4812,7 +4812,7 @@ function openDealsForContact(contactId, createWhenEmpty = false) {
   if (!contact) { toast("Vincule a conversa a uma pessoa antes de acessar os negócios.", true); return; }
   const deals = (cache.deals || []).filter((deal) => deal.contact_id === contactId);
   state.tab = "deals";
-  state.view = "table";
+  state.view = defaultRecordView();
   state.q = "";
   state.sortK = null;
   state.filters.deals = { contact_id: new Set([String(contactId)]) };
@@ -5937,7 +5937,7 @@ function homeNavigate(tab, rows = null) {
   if (!currentUserCan(tab === "goals" || tab === "objectives" ? "projects" : tab, "view")) return;
   closeFloaters();
   state.tab = tab;
-  state.view = "table";
+  state.view = defaultRecordView();
   state.q = "";
   state.sortK = null;
   state.filters[tab] = rows ? { id: new Set(rows.length ? rows.map((row) => String(row.id)) : ["__home_no_results__"]) } : {};
@@ -6762,7 +6762,7 @@ function renderProductWorkspace() {
 
 function productWorkspaceTableState() {
   const scope = `product:${productActivityState.productId}:${productActivityState.tab}`;
-  if (!productWorkspaceTableStates.has(scope)) productWorkspaceTableStates.set(scope, { sortKey: null, sortDir: 1, filters: {}, search: "", view: "table" });
+  if (!productWorkspaceTableStates.has(scope)) productWorkspaceTableStates.set(scope, { sortKey: null, sortDir: 1, filters: {}, search: "", view: defaultRecordView() });
   const tableState = productWorkspaceTableStates.get(scope);
   tableState.search ??= "";
   if (tableState.view === "flow") tableState.view = "mindmap";
@@ -8492,7 +8492,7 @@ function openProjectBoard(projectId) {
     if (!confirmUiDiscard(document.querySelector(".project-data-module"), () => button.click())) return;
     closeMobileNavigation();
     projectBoardState.section = button.dataset.projectSection;
-    projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : "table";
+    projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : defaultRecordView();
     projectBoardState.search = "";
     projectBoardState.page = 1;
     projectBoardState.sortKey = null;
@@ -9189,7 +9189,7 @@ function renderProjectBoard(projectId) {
     root.innerHTML = `<div class="project-board">${renderDeliveryOverview(project)}</div>`;
     root.querySelectorAll(".delivery-overview-open").forEach((button) => button.addEventListener("click", () => {
       projectBoardState.section = button.dataset.overviewSection;
-      projectBoardState.view = "table";
+      projectBoardState.view = defaultRecordView();
       projectBoardState.search = button.dataset.overviewSearch || "";
       projectBoardState.page = 1;
       projectBoardState.sortKey = null;
@@ -9212,8 +9212,8 @@ function renderProjectBoard(projectId) {
   const rows = filterProjectSectionRows(allRows, allTasks);
   const client = cache.companyById[project.company_id]?.legal_name || "Sem cliente";
   const product = cache.productById[project.product_id]?.name || "Sem produto";
-  if (projectBoardState.section !== "activities" && projectBoardState.view === "matrix") projectBoardState.view = "table";
-  const view = projectBoardState.view || "table";
+  if (projectBoardState.section !== "activities" && projectBoardState.view === "matrix") projectBoardState.view = defaultRecordView();
+  const view = projectBoardState.view || defaultRecordView();
   let body = "";
   if (projectBoardState.section === "activities") {
     body = ["table", "list"].includes(view) ? renderTaskTable(rows)
@@ -9600,7 +9600,7 @@ async function openDeliveryTaskDrawer(projectId, editId = null, parentTaskId = n
   if (!document.querySelector("#ov .modal.full")) {
     openProjectBoard(projectId);
     projectBoardState.section = "activities";
-    projectBoardState.view = "table";
+    projectBoardState.view = defaultRecordView();
     renderProjectBoard(projectId);
   }
   const parentId = current.parent_activity_id || parentTaskId || null;
@@ -10009,6 +10009,10 @@ function closeFloaters() {
   document.getElementById("registration-view-dd")?.remove();
   document.getElementById("project-view-dd")?.remove();
   document.getElementById("project-data-dd")?.remove();
+}
+
+function defaultRecordView() {
+  return window.matchMedia("(max-width:767px)").matches ? "list" : "table";
 }
 
 const VIEW_MODES = [
@@ -11706,7 +11710,7 @@ async function importWhatsAppFile(file) {
     if (!existing) conversations.unshift(row);
     saveConversations(conversations);
     state.tab = "conversations";
-    state.view = "table";
+    state.view = defaultRecordView();
     state.q = "";
     document.getElementById("search").value = "";
     render();
@@ -11967,8 +11971,8 @@ function render() {
   modeButton.title = modeButton.ariaLabel = `Alterar para ${catalog ? "Execução" : "Cadastro"}`;
   document.querySelector(".subbar")?.classList.toggle("home-hidden", isHome);
   const requestedMode = VIEW_MODES.find((mode) => mode.id === state.view);
-  if (!requestedMode || !viewModeAvailable(requestedMode)) state.view = "table";
-  if (state.view === "matrix" || state.view === "dashboard") state.view = "table";
+  if (!requestedMode || !viewModeAvailable(requestedMode)) state.view = defaultRecordView();
+  if (state.view === "matrix" || state.view === "dashboard") state.view = defaultRecordView();
   document.getElementById("selection-actions").classList.toggle("show", hasConversationSelection);
   document.querySelectorAll(".view").forEach((v) => {
     v.hidden = isHome;
@@ -15877,11 +15881,11 @@ function registrationDashboardButtonHtml() {
 
 function registrationTableState() {
   if (!registrationsState.tables[registrationsState.section]) {
-    registrationsState.tables[registrationsState.section] = { sortKey: null, sortDir: 1, filters: {}, search: "", page: 1, pageSize: 50, view: "table" };
+    registrationsState.tables[registrationsState.section] = { sortKey: null, sortDir: 1, filters: {}, search: "", page: 1, pageSize: 50, view: defaultRecordView() };
   }
   const state = registrationsState.tables[registrationsState.section];
   if (state.view === "flow") state.view = "mindmap";
-  if (!state.view || state.view === "dashboard") state.view = "table";
+  if (!state.view || state.view === "dashboard") state.view = defaultRecordView();
   return state;
 }
 
@@ -16840,7 +16844,7 @@ async function importSelectedGoogleContacts() {
     }
     await init();
     state.tab = "contacts";
-    state.view = "table";
+    state.view = defaultRecordView();
     closeModal();
     render();
     toast(`${created} contato(s) criado(s), ${updated} atualizado(s) e ${companiesCreated} empresa(s) criada(s).`);
@@ -21303,7 +21307,7 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
     closeFloaters();
     closeMobileNavigation();
     state.tab = t.dataset.tab; state.sortK = null; state.sortDir = 1; state.q = "";
-    state.view = "table";
+    state.view = defaultRecordView();
     if (state.tab !== "conversations") state.selectedConversations.clear();
     document.getElementById("search").value = ""; render();
   });
