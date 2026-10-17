@@ -801,8 +801,8 @@ function wireMainTemplateProduct(prefix, section) {
       root.outerHTML = multiPickerHtml(id, options, selected, placeholder);
       wireMultiPicker(id);
     };
-    updatePicker(`${prefix}-${section === "goals" ? "goal" : "objective"}-dependencies`, results.filter((item) => item.product_id === event.target.value).map((item) => ({ value: item.id, label: item.name })), `Selecionar ${section === "goals" ? "metas" : "objetivos"}`);
-    updatePicker(`${prefix}-activity-dependencies`, loadProductActivities().filter((item) => item.product_id === event.target.value).map((item) => ({ value: item.id, label: activityDisplayName(item) })), "Selecionar tarefas");
+    updatePicker(`${prefix}-${section === "goals" ? "goal" : "objective"}-dependencies`, results.filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: item.name })), `Selecionar ${section === "goals" ? "metas" : "objetivos"}`);
+    updatePicker(`${prefix}-activity-dependencies`, loadProductActivities().filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: activityDisplayName(item) })), "Selecionar tarefas");
   });
 }
 const SINGULAR = { contacts: "pessoa", companies: "empresa", conversations: "conversa", deals: "negócio", products: "produto", projects: "entrega" };
@@ -1613,6 +1613,7 @@ function loadProductObjectives() {
   } catch (e) { return []; }
 }
 function saveProductObjectives(rows) {
+  rows = expandResultVariations(rows, "objectives");
   localStorage.setItem("crm_product_objectives", JSON.stringify(rows));
   if (cache && !isLive()) cache.productObjectives = rows;
 }
@@ -1624,6 +1625,7 @@ function loadProductGoals() {
   } catch (e) { return []; }
 }
 function saveProductGoals(rows) {
+  rows = expandResultVariations(rows, "goals");
   localStorage.setItem("crm_product_goals", JSON.stringify(rows));
   if (cache && !isLive()) cache.productGoals = rows;
 }
@@ -1798,7 +1800,7 @@ async function syncProductObjectives() {
   const objectives = loadDeliveryObjectives();
   let changed = false;
   for (const project of cache.projects || []) {
-    for (const template of templates.filter((item) => item.product_id === project.product_id)) {
+    for (const template of templates.filter((item) => item.product_id === project.product_id && !isVariationParent(item))) {
       const current = objectives.find((item) => item.project_id === project.id && item.source_template_id === template.id);
       const structural = {
         name: template.name,
@@ -1883,7 +1885,7 @@ async function syncProductGoals() {
   const goals = loadDeliveryGoals();
   let changed = false;
   for (const project of cache.projects || []) {
-    for (const template of templates.filter((item) => item.product_id === project.product_id)) {
+    for (const template of templates.filter((item) => item.product_id === project.product_id && !isVariationParent(item))) {
       const current = goals.find((item) => item.project_id === project.id && item.source_template_id === template.id);
       const structural = {
         name: template.name,
@@ -4342,14 +4344,15 @@ function templateBulkProvider(section) {
         const linked = section === "activities" ? rows.filter((row) => productTemplateGroupKey(row, rows) === productTemplateGroupKey(item, rows)) : [item];
         linked.forEach((row) => targets.set(row.id, row));
       });
-      if (section === "activities" && [...targets.values()].some((row) => Object.keys(patch).some((key) => row.variation_axes?.[key]))) throw new Error("Edite os valores de variação na tarefa pai, não pela edição em massa.");
+      if ([...targets.values()].some((row) => Object.keys(patch).some((key) => row.variation_axes?.[key]))) throw new Error("Edite os valores de variação no cadastro pai, não pela edição em massa.");
       if (section === "activities" && [...targets.values()].some((row) => row.variation_parent_id && Object.keys(patch).some((key) => !TASK_VARIATION_DETAIL_FIELDS.includes(key)))) throw new Error("A estrutura da variação deve ser alterada na tarefa pai.");
+      if (section !== "activities" && [...targets.values()].some((row) => row.variation_parent_id && Object.keys(patch).some((key) => !resultVariationDetailFields(section).includes(key)))) throw new Error("A estrutura da variação deve ser alterada no cadastro pai.");
       for (const row of targets.values()) {
         const changes = { ...patch, updated_at: new Date().toISOString() };
-        const saved = isLive() ? await updateRow(config.table, row.id, changes) : taskVariationApplyDetails(row, changes);
+        const saved = isLive() ? await updateRow(config.table, row.id, changes) : section === "activities" ? taskVariationApplyDetails(row, changes) : applyResultVariationDetails(row, changes, section);
         Object.assign(row, saved);
       }
-      if (isLive()) cache[config.cacheKey] = section === "activities" && rows.some((row) => Object.keys(row.variation_axes || {}).length) ? await fetchTable("productActivities") : rows;
+      if (isLive()) cache[config.cacheKey] = rows.some(isVariationParent) ? await fetchTable(config.table) : rows;
       else config.save(rows);
       return ids.filter((id) => rows.some((row) => row.id === id)).length;
     },
@@ -6144,8 +6147,130 @@ function productActivityIdentity(item) {
 }
 
 function productResultIdentity(item) {
-  return JSON.stringify([item?.category, item?.channel, item?.name]
-    .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")));
+  return JSON.stringify([[item?.category, item?.channel, item?.name]
+    .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")), item?.variation_axes || {}]);
+}
+
+function isVariationParent(item) { return Boolean(Object.keys(item?.variation_axes || {}).length); }
+function resultVariationDetailFields(section) {
+  return ["comments", "notes", "target_days", "default_owner_id", "default_assignee_ids", "assign_to_client", "dependency_activity_template_ids",
+    ...(section === "goals" ? ["metric", "comparison", "target_value", "unit", "dependency_goal_template_ids"] : ["completion_criteria", "dependency_objective_template_ids"])];
+}
+function applyResultVariationDetails(row, changes, section) {
+  if (!row.variation_parent_id) return { ...row, ...changes };
+  const fields = resultVariationDetailFields(section).filter((key) => Object.hasOwn(changes, key));
+  return { ...row, ...Object.fromEntries(fields.map((key) => [key, changes[key]])), updated_at: changes.updated_at || row.updated_at,
+    variation_override_fields: [...new Set([...(row.variation_override_fields || []), ...fields.filter((key) => taskVariationDetailChanged(row[key], changes[key]))])] };
+}
+function expandResultVariations(rows, section) {
+  const result = rows.map((row) => ({ ...row }));
+  for (const parent of result.filter(isVariationParent)) {
+    const combinations = taskVariationCombinations(parent.variation_axes);
+    const existing = result.filter((row) => row.variation_parent_id === parent.id);
+    const keys = new Set(combinations.map(taskVariationKey));
+    if (existing.some((child) => !keys.has(taskVariationKey(child.variation_values)))) throw new Error("Preserve as variações já cadastradas.");
+    combinations.forEach((values, index) => {
+      const previous = existing.find((child) => taskVariationKey(child.variation_values) === taskVariationKey(values));
+      const child = { ...parent, ...values, id: previous?.id || crypto.randomUUID(), variation_parent_id: parent.id, variation_axes: {},
+        variation_values: { ...values }, variation_override_fields: previous?.variation_override_fields || [], created_at: previous?.created_at || parent.created_at,
+        sort_order: previous?.sort_order ?? Number(parent.sort_order || 0) + index + 1 };
+      for (const key of child.variation_override_fields.filter((key) => resultVariationDetailFields(section).includes(key))) child[key] = previous[key];
+      if (previous) Object.assign(previous, child);
+      else result.push(child);
+    });
+  }
+  return result;
+}
+function resultVariationFieldHtml(section, prefix, key, current, locked) {
+  const label = key === "category" ? "Categoria" : "Canal";
+  if (current.variation_parent_id) return `<div class="field"><label for="${prefix}-${key}">${label}</label><input id="${prefix}-${key}" value="${esc(current[key] || "")}" disabled></div>`;
+  const values = current.variation_axes?.[key] || [], persisted = isVariationParent(current);
+  const rows = section === "goals" ? loadProductGoals() : loadProductObjectives();
+  const options = normalizeTextList([...rows.map((row) => row[key]), ...values, current[key], ...(key === "channel" ? Object.values(DELIVERY_CHANNEL_OPTIONS).flat() : [])])
+    .sort(compareLabels).map((value) => ({ value, label: value }));
+  return `<div class="field task-variation-field"><div class="task-field-heading"><label for="${prefix}-${key}">${label}</label><label class="task-variation-toggle"><input id="${prefix}-vary-${key}" type="checkbox" aria-label="Variações de ${label}"${values.length ? " checked" : ""}${locked || persisted ? " disabled" : ""}><span>Variações</span></label></div>
+    <input id="${prefix}-${key}" value="${esc(values.length ? values.join(" | ") : current[key] || "")}"${values.length ? " hidden" : ""}>
+    <div class="task-variation-values"${values.length ? "" : " hidden"}>${multiPickerHtml(`${prefix}-variants-${key}`, options, new Set(values), "Selecionar valores", false, false, new Set(persisted ? values : []), true)}</div></div>`;
+}
+function resultVariationAxes(prefix) {
+  return Object.fromEntries(["category", "channel"].filter((key) => document.getElementById(`${prefix}-vary-${key}`)?.checked)
+    .map((key) => [key, multiPickerValues(`${prefix}-variants-${key}`)]));
+}
+function resultVariationFormValues(section, prefix) {
+  const assignees = assigneePickerValue(`${prefix}-assignees`), resultKey = section === "goals" ? "goal" : "objective";
+  const days = document.getElementById(`${prefix}-target-days`).value;
+  return { comments: document.getElementById(`${prefix}-comments`).value.trim(), notes: document.getElementById(`${prefix}-notes`).value.trim(),
+    target_days: days === "" ? null : Number(days), default_owner_id: assignees.ids[0] || null, default_assignee_ids: assignees.ids, assign_to_client: assignees.assignToClient,
+    [`dependency_${resultKey}_template_ids`]: multiPickerValues(`${prefix}-${resultKey}-dependencies`), dependency_activity_template_ids: multiPickerValues(`${prefix}-activity-dependencies`),
+    ...(section === "goals" ? { metric: document.getElementById(`${prefix}-metric`).value.trim(), comparison: document.getElementById(`${prefix}-comparison`).value,
+      target_value: Number(document.getElementById(`${prefix}-target`).value), unit: document.getElementById(`${prefix}-unit`).value.trim() }
+      : { completion_criteria: document.getElementById(`${prefix}-criteria`).value.trim() }) };
+}
+function wireResultVariations(section, prefix, current) {
+  productActivityState.resultVariationDraftId = current.id || crypto.randomUUID();
+  productActivityState.resultVariationSnapshot = resultVariationFormValues(section, prefix);
+  if (current.variation_parent_id) { document.getElementById(`${prefix}-name`).disabled = true; return; }
+  const preview = document.getElementById(`${prefix}-variation-preview`);
+  const update = () => {
+    const axes = resultVariationAxes(prefix); preview.hidden = !Object.keys(axes).length;
+    if (preview.hidden) return;
+    const base = { name: document.getElementById(`${prefix}-name`).value.trim(), category: axes.category ? "" : document.getElementById(`${prefix}-category`).value.trim(), channel: axes.channel ? "" : document.getElementById(`${prefix}-channel`).value.trim() };
+    try { const combinations = taskVariationCombinations(axes); preview.innerHTML = `<label>${combinations.length} variação(ões)</label><div class="task-variation-preview-list">${combinations.slice(0,20).map((values) => `<div>${esc(resultDisplayName({ ...base, ...values }))}</div>`).join("")}</div>`; }
+    catch (error) { preview.textContent = error.message; }
+  };
+  ["category", "channel"].forEach((key) => {
+    const toggle = document.getElementById(`${prefix}-vary-${key}`), input = document.getElementById(`${prefix}-${key}`), picker = document.getElementById(`${prefix}-variants-${key}`);
+    const host = picker.parentElement; input.dataset.singleValue = current[key] || "";
+    wireMultiPicker(picker.id);
+    const sync = () => { if (toggle.checked) input.value = multiPickerValues(picker.id).join(" | "); update(); };
+    picker.addEventListener("multi-picker-change", sync);
+    toggle.addEventListener("change", () => {
+      if (toggle.checked && input.value.trim() && !multiPickerValues(picker.id).length) {
+        picker.outerHTML = multiPickerHtml(picker.id, [{ value: input.value.trim(), label: input.value.trim() }], new Set([input.value.trim()]), "Selecionar valores", false, false, new Set(), true);
+        wireMultiPicker(picker.id); document.getElementById(picker.id).addEventListener("multi-picker-change", sync);
+      }
+      input.hidden = toggle.checked; host.hidden = !toggle.checked;
+      if (!toggle.checked) input.value = input.dataset.singleValue;
+      sync();
+    });
+    input.addEventListener("input", () => { if (!toggle.checked) input.dataset.singleValue = input.value; update(); });
+  });
+  document.getElementById(`${prefix}-name`).addEventListener("input", update); update();
+}
+function resultVariationSaveBody(section, prefix, current, body, rows) {
+  if (current?.variation_parent_id) {
+    const snapshot = productActivityState.resultVariationSnapshot || {};
+    return { ...Object.fromEntries(resultVariationDetailFields(section).filter((key) => taskVariationDetailChanged(body[key], snapshot[key])).map((key) => [key, body[key]])), updated_at: body.updated_at };
+  }
+  const axes = resultVariationAxes(prefix);
+  taskVariationCombinations(axes);
+  if (Object.keys(axes).length || current?.variation_axes) body.variation_axes = axes;
+  Object.keys(axes).forEach((key) => { body[key] = ""; });
+  const familyId = current?.id || productActivityState.resultVariationDraftId;
+  const candidates = Object.keys(axes).length ? taskVariationCombinations(axes).map((values) => ({ ...body, ...values, variation_axes: {} })) : [body];
+  if (rows.some((row) => row.id !== familyId && row.variation_parent_id !== familyId && row.product_id === body.product_id
+    && candidates.some((candidate) => productResultIdentity(candidate) === productResultIdentity(row)))) throw new Error("Já existe um cadastro com a mesma categoria, canal e nome neste produto. Nenhum registro foi convertido.");
+  return body;
+}
+
+function decorateResultVariationRows(root, items, product = false) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  root.querySelectorAll("tbody tr").forEach((row, index) => {
+    const id = row.dataset.id || row.querySelector(".reg-template-edit")?.dataset.id || items[index]?.id;
+    const item = byId.get(id); if (!item) return;
+    row.dataset.id = id;
+    const name = row.cells[0], children = items.filter((child) => child.variation_parent_id === id);
+    if (item.variation_parent_id) {
+      row.dataset.parentId = item.variation_parent_id;
+      if (!product) { row.classList.add("registration-subtask-row"); row.dataset.parentGroup = item.variation_parent_id; row.dataset.expandParent = item.variation_parent_id; }
+      name.insertAdjacentHTML("afterbegin", '<span class="task-subtask-branch">↳</span> ');
+      name.insertAdjacentHTML("beforeend", '<small class="task-variation-badge">Variação</small>');
+    } else if (!product) row.dataset.taskGroup = id;
+    if (children.length) {
+      name.insertAdjacentHTML("beforeend", `<small class="task-variation-badge">Pai de variações</small><span class="registration-subtask-count">${children.length}</span><span hidden>${esc(children.map(resultDisplayName).join(" "))}</span>`);
+      if (!product) name.insertAdjacentHTML("afterbegin", `<button class="registration-task-toggle" data-group="${esc(id)}" title="Expandir variações">${registrationExpandedTaskGroups.has(id) ? "▾" : "▸"}</button>`);
+    }
+  });
 }
 
 function renderProductActivityChecklistEditor() {
@@ -6572,6 +6697,7 @@ function renderProductObjectives() {
     <div class="product-activity-list"><table><thead><tr>
       <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th class="compact-multi-cell">Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
+  decorateResultVariationRows(root, objectives, true);
   document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
   document.querySelectorAll(".po-clone").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(null, button.dataset.id)));
@@ -6585,10 +6711,12 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   productActivityState.objectiveEditId = editId;
   const objectives = loadProductObjectives().filter((item) => item.product_id === productActivityState.productId);
   const cloneSource = objectives.find((item) => item.id === cloneSourceId);
-  const current = objectives.find((item) => item.id === editId) || cloneSource || {};
+  const current = objectives.find((item) => item.id === editId) || (cloneSource ? { ...cloneSource, id: null, variation_parent_id: null, variation_values: {}, variation_override_fields: [] } : {});
+  const variationParent = objectives.find((item) => item.id === current.variation_parent_id);
+  const variationLocked = Boolean(editId && loadDeliveryObjectives().some((item) => item.source_template_id === editId));
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const objectiveDependencyOptions = objectives
-    .filter((item) => item.id !== editId)
+    .filter((item) => item.id !== editId && !isVariationParent(item))
     .map((item) => ({ value: item.id, label: item.name }));
   const activityDependencyOptions = loadProductActivities()
     .filter((item) => item.product_id === productActivityState.productId && !Object.keys(item.variation_axes || {}).length)
@@ -6599,11 +6727,13 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   overlay.innerHTML = `<aside class="activity-form-drawer">
     <h3>${editId ? "Editar objetivo" : cloneSource ? "Clonar objetivo" : "Novo objetivo"}<button class="modal-close-x" id="po-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
+      ${variationParent ? `<div class="field"><label>Objetivo pai</label><input value="${esc(resultDisplayName(variationParent))}" disabled></div>` : ""}
       ${mainTemplateProductField("po", editId, cloneSourceId)}
       ${mainTemplateOriginField()}
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
-      <div class="field"><label>Categoria</label><input id="po-category" value="${esc(current.category || "")}"></div>
-      <div class="field"><label>Canal</label><input id="po-channel" value="${esc(current.channel || "")}"></div>
+      ${resultVariationFieldHtml("objectives", "po", "category", current, variationLocked)}
+      ${resultVariationFieldHtml("objectives", "po", "channel", current, variationLocked)}
+      <div class="field task-variation-preview" id="po-variation-preview" hidden></div>
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
       <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
       <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
@@ -6622,6 +6752,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   wireMultiPicker("po-objective-dependencies");
   wireMultiPicker("po-activity-dependencies");
   wireMainTemplateProduct("po", "objectives");
+  wireResultVariations("objectives", "po", current);
   document.getElementById("po-name")?.focus();
 }
 
@@ -6647,11 +6778,7 @@ async function saveProductObjective() {
   const channel = document.getElementById("po-channel").value.trim();
   const rows = loadProductObjectives();
   const current = rows.find((item) => item.id === productActivityState.objectiveEditId);
-  const duplicate = rows.find((item) => item.id !== current?.id
-    && item.product_id === productActivityState.productId
-    && productResultIdentity(item) === productResultIdentity({ name, category, channel }));
-  if (duplicate) { toast("Já existe um objetivo com a mesma categoria, canal e nome neste produto.", true); return; }
-  const recordId = current?.id || crypto.randomUUID();
+  const recordId = current?.id || productActivityState.resultVariationDraftId || crypto.randomUUID();
   const dependencyObjectiveIds = multiPickerValues("po-objective-dependencies");
   const dependencyActivityIds = multiPickerValues("po-activity-dependencies");
   const assignees = assigneePickerValue("po-assignees");
@@ -6679,19 +6806,21 @@ async function saveProductObjective() {
     updated_at: new Date().toISOString()
   };
   const saveButton = document.getElementById("po-save");
+  let changes;
+  try { changes = resultVariationSaveBody("objectives", "po", current, body, rows); } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let objectiveSaved = false;
   productObjectiveSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
     if (current) {
-      const saved = isLive() ? await updateRow("productObjectives", current.id, body) : { ...current, ...body };
+      const saved = isLive() ? await updateRow("productObjectives", current.id, changes) : applyResultVariationDetails(current, changes, "objectives");
       Object.assign(current, saved);
     } else {
-      const draft = { id: recordId, ...body, created_at: new Date().toISOString() };
+      const draft = { id: recordId, ...changes, created_at: new Date().toISOString() };
       rows.push(isLive() ? await createRow("productObjectives", draft) : draft);
     }
-    if (isLive()) cache.productObjectives = rows;
+    if (isLive()) cache.productObjectives = rows.some(isVariationParent) ? await fetchTable("productObjectives") : rows;
     else saveProductObjectives(rows);
     objectiveSaved = true;
     closeProductActivityDrawer();
@@ -6710,6 +6839,8 @@ async function saveProductObjective() {
 
 async function deleteProductObjective(objectiveId) {
   if (!requireCurrentUserPermission("objectiveTemplates", "delete", "Objetivos")) return;
+  const objective = loadProductObjectives().find((item) => item.id === objectiveId);
+  if (objective?.variation_parent_id || isVariationParent(objective)) { toast("Preserve a família de variações e seus vínculos.", true); return; }
   const linked = loadProductActivities().filter((item) => item.objective_template_id === objectiveId).length;
   const detail = linked ? ` ${linked} tarefa(s) ficarão sem objetivo.` : "";
   if (!window.confirm(`Excluir este objetivo?${detail}`)) return;
@@ -6765,6 +6896,7 @@ function renderProductGoals() {
     <div class="product-activity-list"><table><thead><tr>
     <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th>Prazo sugerido</th><th class="compact-multi-cell">Responsável padrão</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+  decorateResultVariationRows(root, goals, true);
   document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
   document.querySelectorAll(".pg-clone").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(null, button.dataset.id)));
@@ -6778,12 +6910,14 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   productActivityState.goalEditId = editId;
   const goals = loadProductGoals();
   const cloneSource = goals.find((item) => item.id === cloneSourceId);
-  const current = goals.find((item) => item.id === editId) || cloneSource || {};
+  const current = goals.find((item) => item.id === editId) || (cloneSource ? { ...cloneSource, id: null, variation_parent_id: null, variation_values: {}, variation_override_fields: [] } : {});
+  const variationParent = goals.find((item) => item.id === current.variation_parent_id);
+  const variationLocked = Boolean(editId && loadDeliveryGoals().some((item) => item.source_template_id === editId));
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const comparisonOptions = Object.entries(GOAL_COMPARISON_LABEL).map(([value, label]) =>
     `<option value="${value}"${value === (current.comparison || "at_least") ? " selected" : ""}>${label}</option>`).join("");
   const goalDependencyOptions = loadProductGoals()
-    .filter((item) => item.product_id === productActivityState.productId && item.id !== editId)
+    .filter((item) => item.product_id === productActivityState.productId && item.id !== editId && !isVariationParent(item))
     .map((item) => ({ value: item.id, label: item.name }));
   const activityDependencyOptions = loadProductActivities()
     .filter((item) => item.product_id === productActivityState.productId && !Object.keys(item.variation_axes || {}).length)
@@ -6794,11 +6928,13 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   overlay.innerHTML = `<aside class="activity-form-drawer">
     <h3>${editId ? "Editar meta" : cloneSource ? "Clonar meta" : "Nova meta"}<button class="modal-close-x" id="pg-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form">
+      ${variationParent ? `<div class="field"><label>Meta pai</label><input value="${esc(resultDisplayName(variationParent))}" disabled></div>` : ""}
       ${mainTemplateProductField("pg", editId, cloneSourceId)}
       ${mainTemplateOriginField()}
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
-      <div class="field"><label>Categoria</label><input id="pg-category" value="${esc(current.category || "")}"></div>
-      <div class="field"><label>Canal</label><input id="pg-channel" value="${esc(current.channel || "")}"></div>
+      ${resultVariationFieldHtml("goals", "pg", "category", current, variationLocked)}
+      ${resultVariationFieldHtml("goals", "pg", "channel", current, variationLocked)}
+      <div class="field task-variation-preview" id="pg-variation-preview" hidden></div>
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
@@ -6820,6 +6956,7 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   wireMultiPicker("pg-goal-dependencies");
   wireMultiPicker("pg-activity-dependencies");
   wireMainTemplateProduct("pg", "goals");
+  wireResultVariations("goals", "pg", current);
   document.getElementById("pg-name")?.focus();
 }
 
@@ -6847,11 +6984,7 @@ async function saveProductGoal() {
   const channel = document.getElementById("pg-channel").value.trim();
   const rows = loadProductGoals();
   const current = rows.find((item) => item.id === productActivityState.goalEditId);
-  const duplicate = rows.find((item) => item.id !== current?.id
-    && item.product_id === productActivityState.productId
-    && productResultIdentity(item) === productResultIdentity({ name, category, channel }));
-  if (duplicate) { toast("Já existe uma meta com a mesma categoria, canal e nome neste produto.", true); return; }
-  const recordId = current?.id || crypto.randomUUID();
+  const recordId = current?.id || productActivityState.resultVariationDraftId || crypto.randomUUID();
   const dependencyGoalIds = multiPickerValues("pg-goal-dependencies");
   const dependencyActivityIds = multiPickerValues("pg-activity-dependencies");
   const assignees = assigneePickerValue("pg-assignees");
@@ -6882,19 +7015,21 @@ async function saveProductGoal() {
     updated_at: new Date().toISOString()
   };
   const saveButton = document.getElementById("pg-save");
+  let changes;
+  try { changes = resultVariationSaveBody("goals", "pg", current, body, rows); } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let goalSaved = false;
   productGoalSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
     if (current) {
-      const saved = isLive() ? await updateRow("productGoals", current.id, body) : { ...current, ...body };
+      const saved = isLive() ? await updateRow("productGoals", current.id, changes) : applyResultVariationDetails(current, changes, "goals");
       Object.assign(current, saved);
     } else {
-      const draft = { id: recordId, ...body, created_at: new Date().toISOString() };
+      const draft = { id: recordId, ...changes, created_at: new Date().toISOString() };
       rows.push(isLive() ? await createRow("productGoals", draft) : draft);
     }
-    if (isLive()) cache.productGoals = rows;
+    if (isLive()) cache.productGoals = rows.some(isVariationParent) ? await fetchTable("productGoals") : rows;
     else saveProductGoals(rows);
     goalSaved = true;
     closeProductActivityDrawer();
@@ -6912,6 +7047,8 @@ async function saveProductGoal() {
 
 async function deleteProductGoal(goalId) {
   if (!requireCurrentUserPermission("goalTemplates", "delete", "Metas")) return;
+  const goal = loadProductGoals().find((item) => item.id === goalId);
+  if (goal?.variation_parent_id || isVariationParent(goal)) { toast("Preserve a família de variações e seus vínculos.", true); return; }
   if (!window.confirm("Excluir esta meta do produto?")) return;
   try {
     if (isLive()) await deleteRow("productGoals", goalId);
@@ -7230,7 +7367,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
   const selectedTables = new Set(normalizeIdList(current.custom_table_ids));
   const objectiveOptions = ['<option value="">Sem objetivo</option>'].concat(
-    loadProductObjectives().filter((item) => item.product_id === productActivityState.productId).sort((a, b) => compareLabels(resultDisplayName(a), resultDisplayName(b))).map((item) =>
+    loadProductObjectives().filter((item) => item.product_id === productActivityState.productId && !isVariationParent(item)).sort((a, b) => compareLabels(resultDisplayName(a), resultDisplayName(b))).map((item) =>
       `<option value="${esc(item.id)}"${item.id === current.objective_template_id ? " selected" : ""}>${esc(resultDisplayName(item))}</option>`)
   ).join("");
   const recurrenceOptions = RECURRENCE_OPTIONS.map(([value, label]) =>
@@ -13926,7 +14063,7 @@ const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
   title: resultDisplayName,
   groupId: (item) => item.id,
-  parent: () => null,
+  parent: (item, items) => items.find((candidate) => candidate.id === item.variation_parent_id) || null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
   extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
   subtitle: (node) => registrationProductName(node.item.product_id),
@@ -14190,7 +14327,7 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
     return [items.filter((item) => ids.has(item.id)), adapter, filters];
   }
   const ids = new Set(passing.map((row) => row.querySelector("[data-id]")?.dataset.id).filter(Boolean));
-  return [items.filter((item) => ids.has(item.id)), adapter, filters, items];
+  return [items.filter((item) => ids.has(item.id) || ids.has(item.variation_parent_id)), adapter, filters, items];
 }
 
 function mindMapFilterStripHtml(filters, badgeClass = "mind-filter-badge", clearClass = "mind-filter-clear-all") {
@@ -14975,6 +15112,12 @@ function renderRegistrationsSection() {
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
     if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
+  if (["goals", "objectives"].includes(section)) {
+    const items = section === "goals" ? loadProductGoals() : loadProductObjectives();
+    decorateResultVariationRows(root, items);
+    const count = root.querySelector(".modal-toolbar .muted");
+    if (count) count.textContent = `${items.filter((item) => !item.variation_parent_id).length} ${MODULE_COUNT_LABEL[section]}`;
+  }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {
       const firstProduct = cache.products?.[0];
@@ -15002,7 +15145,8 @@ function renderRegistrationsSection() {
     const collapsed = !registrationExpandedTaskGroups.has(groupId);
     childRows.forEach((row) => { row.hidden = collapsed; });
     button.textContent = collapsed ? "▸" : "▾";
-    const variation = Object.keys(loadProductActivities().find((item) => productTemplateGroupKey(item) === groupId)?.variation_axes || {}).length;
+    const source = section === "activities" ? loadProductActivities() : section === "goals" ? loadProductGoals() : loadProductObjectives();
+    const variation = source.some((item) => isVariationParent(item) && (item.id === groupId || item.template_group_id === groupId));
     button.title = `${collapsed ? "Expandir" : "Recolher"} ${variation ? "variações" : "subtarefas"}`;
   }));
   root.querySelectorAll(".reg-template-open").forEach((button) => button.addEventListener("click", () =>
@@ -15289,7 +15433,7 @@ function applyRegistrationTableState(table) {
   const start = (tableState.page - 1) * tableState.pageSize;
   const pageRows = new Set(filteredRows.slice(start, start + tableState.pageSize));
   rows.forEach((row) => { row.hidden = !pageRows.has(row); });
-  if (registrationsState.section === "activities") {
+  if (["activities", "goals", "objectives"].includes(registrationsState.section)) {
     rows.forEach((row) => {
       const groupId = row.dataset.taskGroup;
       if (!groupId) return;
