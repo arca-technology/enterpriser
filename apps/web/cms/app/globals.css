@@ -1311,6 +1311,15 @@
   .product-mind-view[hidden],#product-activities-root>.product-activity-list[hidden]{display:none}
   @media(max-width:1100px){.modal-toolbar.product-workspace-toolbar{grid-template-columns:minmax(0,1fr) auto;height:auto;min-height:40px;flex:0 0 auto;gap:6px}.product-workspace-toolbar .registration-toolbar-center{grid-column:1/-1;order:-1}.product-workspace-toolbar .registration-toolbar-right{flex-wrap:nowrap;justify-content:flex-end}}
   .product-activity-list{flex:1 1 auto;min-height:0;overflow:auto;max-height:none}
+  .task-field-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:22px}
+  .task-field-heading>label{margin:0}
+  .task-variation-toggle{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer;font-size:11px}
+  .task-variation-toggle input{width:14px;height:14px;margin:0;accent-color:var(--blue)}
+  .task-variation-field>input[hidden],.task-variation-values[hidden],.task-variation-preview[hidden]{display:none!important}
+  .task-variation-preview-list{display:grid;max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:5px;background:var(--panel)}
+  .task-variation-preview-list>div,.task-variation-preview-list>small{padding:8px 10px;border-bottom:1px solid var(--border2);font-size:11px;line-height:1.4;overflow-wrap:anywhere}
+  .task-variation-badge{margin-left:6px;color:var(--muted);font-size:10px;font-weight:500}
+  @media(max-width:767px){.task-variation-toggle{min-height:36px;padding:4px 0}.task-variation-toggle input{width:18px;height:18px}.task-variation-preview-list{max-height:180px}}
   .product-activity-list table{font-size:12px}
   .pa-row{transition:opacity .15s ease,background .15s ease}
   .pa-row.dragging{opacity:.45;background:var(--row)}

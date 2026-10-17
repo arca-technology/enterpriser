@@ -390,6 +390,7 @@ function taskSetupRequirements(task) {
   return MANAGED_DELIVERY_CHANNELS.has(normalizeDeliveryChannel(task?.channel)) ? [task.channel] : [];
 }
 function projectTaskEnabled(project, task) {
+  if (Object.keys(task?.variation_axes || {}).length) return false;
   const active = activatedDeliveryChannels(project);
   const configuration = normalizeSetupConfiguration(project?.setup_configuration);
   const required = normalizeSetupConfiguration(task?.required_setup_configuration);
@@ -1600,6 +1601,7 @@ function loadProductActivities() {
   } catch (e) { return []; }
 }
 function saveProductActivities(rows) {
+  rows = expandTaskVariations(rows);
   localStorage.setItem("crm_product_activities", JSON.stringify(rows));
   if (cache && !isLive()) cache.productActivities = rows;
 }
@@ -4334,17 +4336,19 @@ function templateBulkProvider(section) {
       const rows = config.load();
       const targets = new Map();
       ids.forEach((id) => {
-        const item = rows.find((row) => row.id === id);
+        const selected = rows.find((row) => row.id === id);
+        const item = section === "activities" && selected?.variation_parent_id ? rows.find((row) => row.id === selected.variation_parent_id) : selected;
         if (!item) return;
         const linked = section === "activities" ? rows.filter((row) => productTemplateGroupKey(row, rows) === productTemplateGroupKey(item, rows)) : [item];
         linked.forEach((row) => targets.set(row.id, row));
       });
+      if (section === "activities" && [...targets.values()].some((row) => Object.keys(patch).some((key) => row.variation_axes?.[key]))) throw new Error("Edite os valores de variação na tarefa pai, não pela edição em massa.");
       for (const row of targets.values()) {
         const changes = { ...patch, updated_at: new Date().toISOString() };
         const saved = isLive() ? await updateRow(config.table, row.id, changes) : { ...row, ...changes };
         Object.assign(row, saved);
       }
-      if (isLive()) cache[config.cacheKey] = rows;
+      if (isLive()) cache[config.cacheKey] = section === "activities" && rows.some((row) => Object.keys(row.variation_axes || {}).length) ? await fetchTable("productActivities") : rows;
       else config.save(rows);
       return ids.filter((id) => rows.some((row) => row.id === id)).length;
     },
@@ -5989,7 +5993,111 @@ function productTemplateSubtasks(templateId, templates = loadProductActivities()
 }
 
 function productTemplateParent(template, templates = loadProductActivities()) {
-  return template?.parent_template_id ? templates.find((item) => item.id === template.parent_template_id) || null : null;
+  const parentId = template?.variation_parent_id || template?.parent_template_id;
+  return parentId ? templates.find((item) => item.id === parentId) || null : null;
+}
+
+const TASK_VARIATION_FIELDS = [{ key: "category", label: "Categoria" }, { key: "channel", label: "Canal" },
+  { key: "module", label: "Módulo" }, { key: "submodule", label: "Submódulo" }, { key: "type", label: "Tipo" }];
+const MAX_TASK_VARIATIONS = 200;
+function taskVariationCombinations(axes = {}) {
+  if (!axes || Array.isArray(axes) || typeof axes !== "object" || Object.keys(axes).some((key) => !TASK_VARIATION_FIELDS.some((field) => field.key === key))) throw new Error("Campos de variação inválidos.");
+  let combinations = [{}];
+  for (const { key, label } of TASK_VARIATION_FIELDS.filter((field) => Object.hasOwn(axes, field.key))) {
+    const values = axes[key];
+    if (!Array.isArray(values) || !values.length || values.length > 50 || values.some((value) => typeof value !== "string" || !value.trim() || value.trim().length > 200)) throw new Error(`Selecione de 1 a 50 valores em ${label}.`);
+    const unique = new Set(values.map((value) => value.trim().toLocaleLowerCase("pt-BR")));
+    if (unique.size !== values.length) throw new Error(`Há valores repetidos em ${label}.`);
+    if (combinations.length * values.length > MAX_TASK_VARIATIONS) throw new Error(`O limite é ${MAX_TASK_VARIATIONS} combinações por tarefa.`);
+    combinations = combinations.flatMap((combination) => values.map((value) => ({ ...combination, [key]: value.trim() })));
+  }
+  return combinations;
+}
+function taskVariationKey(values) {
+  return JSON.stringify(Object.entries(values || {}).sort(([a], [b]) => a.localeCompare(b)));
+}
+function expandTaskVariations(rows) {
+  const result = rows.map((row) => ({ ...row }));
+  for (const parent of result.filter((row) => Object.keys(row.variation_axes || {}).length)) {
+    const existing = result.filter((row) => row.variation_parent_id === parent.id);
+    const combinations = taskVariationCombinations(parent.variation_axes);
+    const keys = new Set(combinations.map(taskVariationKey));
+    if (existing.some((child) => !keys.has(taskVariationKey(child.variation_values)))) throw new Error("Preserve as variações já cadastradas para não perder os vínculos e o histórico.");
+    combinations.forEach((values, index) => {
+      const previous = existing.find((child) => taskVariationKey(child.variation_values) === taskVariationKey(values));
+      const linked = result.find((child) => child.variation_parent_id && taskVariationKey(child.variation_values) === taskVariationKey(values)
+        && result.find((candidate) => candidate.id === child.variation_parent_id)?.template_group_id === parent.template_group_id);
+      const child = { ...parent, ...values, id: previous?.id || crypto.randomUUID(), variation_parent_id: parent.id,
+        variation_axes: {}, variation_values: { ...values }, template_group_id: previous?.template_group_id || linked?.template_group_id || crypto.randomUUID(),
+        created_at: previous?.created_at || parent.created_at, sort_order: previous?.sort_order ?? Number(parent.sort_order || 0) + index + 1 };
+      const channelAxes = new Set((parent.variation_axes.channel || []).map((value) => value.trim().toLocaleLowerCase("pt-BR")));
+      if (values.channel && (parent.required_setup || []).some((value) => channelAxes.has(value.trim().toLocaleLowerCase("pt-BR")))) {
+        child.required_setup = normalizeTextList([...(parent.required_setup || []).filter((value) => !channelAxes.has(value.trim().toLocaleLowerCase("pt-BR"))), values.channel]);
+        child.required_setup_configuration = Object.fromEntries(Object.entries(parent.required_setup_configuration || {}).filter(([key]) => !channelAxes.has(key.toLocaleLowerCase("pt-BR")) || key.toLocaleLowerCase("pt-BR") === values.channel.toLocaleLowerCase("pt-BR")));
+      }
+      if (previous) Object.assign(previous, child);
+      else { existing.push(child); result.push(child); }
+    });
+  }
+  return result;
+}
+function taskVariationFieldHtml(key, current, locked = false) {
+  const field = TASK_VARIATION_FIELDS.find((entry) => entry.key === key);
+  const values = current.variation_axes?.[key] || [];
+  const persisted = productActivityState.editId && values.length;
+  const options = normalizeTextList([...(loadProductActivities().map((row) => row[key])), ...values, current[key],
+    ...(key === "channel" ? Object.values(DELIVERY_CHANNEL_OPTIONS).flat() : [])]).sort(compareLabels).map((value) => ({ value, label: value }));
+  return `<div class="field task-variation-field" data-variation-field="${key}"><div class="task-field-heading"><label for="pa-${key}">${field.label}</label>
+    <label class="task-variation-toggle"><input type="checkbox" id="pa-vary-${key}" aria-label="Variações de ${field.label}"${values.length ? " checked" : ""}${locked || persisted || (productActivityState.editId && Object.keys(current.variation_axes || {}).length) ? " disabled" : ""}><span>Variações</span></label></div>
+    <input id="pa-${key}" value="${esc(values.length ? values.join(" | ") : current[key] || "")}"${values.length ? " hidden" : ""}>
+    <div class="task-variation-values"${values.length ? "" : " hidden"}>${multiPickerHtml(`pa-variants-${key}`, options, new Set(values), `Selecionar ${field.label.toLocaleLowerCase("pt-BR")}`, false, false, new Set(persisted ? values : []), true)}</div></div>`;
+}
+function taskVariationFormAxes() {
+  return Object.fromEntries(TASK_VARIATION_FIELDS.filter(({ key }) => document.getElementById(`pa-vary-${key}`)?.checked)
+    .map(({ key }) => [key, multiPickerValues(`pa-variants-${key}`)]));
+}
+function wireTaskVariationFields(current) {
+  const update = () => {
+    const axes = taskVariationFormAxes();
+    const preview = document.getElementById("pa-variation-preview");
+    preview.hidden = !Object.keys(axes).length;
+    if (preview.hidden) return;
+    const base = Object.fromEntries(TASK_VARIATION_FIELDS.map(({ key }) => [key, axes[key] ? "" : document.getElementById(`pa-${key}`).value.trim()]));
+    base.activity = document.getElementById("pa-use-structure").checked ? "" : document.getElementById("pa-activity").value.trim();
+    try {
+      const combinations = taskVariationCombinations(axes);
+      preview.innerHTML = `<label>${combinations.length} variação(ões)</label><div class="task-variation-preview-list">${combinations.slice(0, 20).map((values) => `<div>${esc(activityDisplayName({ ...base, ...values }))}</div>`).join("")}${combinations.length > 20 ? `<small>Mais ${combinations.length - 20} variações</small>` : ""}</div>`;
+      const structure = document.getElementById("pa-use-structure");
+      if (!base.activity && !structure.checked && !structure.disabled) { structure.checked = true; structure.dispatchEvent(new Event("change")); }
+    } catch (error) { preview.innerHTML = `<span role="status">${esc(error.message)}</span>`; }
+  };
+  TASK_VARIATION_FIELDS.forEach(({ key }) => {
+    const toggle = document.getElementById(`pa-vary-${key}`), input = document.getElementById(`pa-${key}`);
+    const host = toggle.closest(".field").querySelector(".task-variation-values");
+    input.dataset.singleValue = current[key] || "";
+    const sync = () => {
+      if (toggle.checked) input.value = multiPickerValues(`pa-variants-${key}`).join(" | ");
+      input.dispatchEvent(new Event("input", { bubbles: true })); update();
+    };
+    wireMultiPicker(`pa-variants-${key}`);
+    document.getElementById(`pa-variants-${key}`).addEventListener("multi-picker-change", sync);
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) {
+        input.dataset.singleValue = input.value;
+        if (input.value.trim() && !multiPickerValues(`pa-variants-${key}`).length) {
+          const picker = document.getElementById(`pa-variants-${key}`);
+          picker.outerHTML = multiPickerHtml(picker.id, [{ value: input.value.trim(), label: input.value.trim() }], new Set([input.value.trim()]), "Selecionar valores", false, false, new Set(), true);
+          wireMultiPicker(`pa-variants-${key}`);
+          document.getElementById(`pa-variants-${key}`).addEventListener("multi-picker-change", sync);
+        }
+      } else input.value = input.dataset.singleValue || "";
+      input.hidden = toggle.checked; host.hidden = !toggle.checked; sync();
+    });
+    input.addEventListener("input", update);
+  });
+  document.getElementById("pa-activity").addEventListener("input", update);
+  document.getElementById("pa-use-structure").addEventListener("change", update);
+  update();
 }
 
 function productTemplateDescendantIds(templateId, templates = loadProductActivities(), ids = new Set()) {
@@ -6010,7 +6118,7 @@ function productActivityIdentity(item) {
     return [[row?.group, row?.subgroup, row?.sector, row?.subsector, row?.module, row?.submodule, row?.category, row?.channel, row?.type, row?.activity, row?.recurrence || "once", row?.requires_retroactive ? "retroactive" : "regular"]
       .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")), parent ? identify(parent, next) : row?.parent_template_id || null];
   };
-  return JSON.stringify(identify(item));
+  return JSON.stringify([identify(item), item?.variation_axes || {}]);
 }
 
 function productResultIdentity(item) {
@@ -6230,7 +6338,7 @@ function applyProductWorkspaceTableState(table, tableState) {
   ordered.forEach((row) => {
     table.tBodies[0].appendChild(row);
     row.hidden = !visible.has(row);
-    if (row.classList.contains("pa-row")) row.draggable = !tableState.sortKey && !active.length && !query;
+    if (row.classList.contains("pa-row")) row.draggable = !tableState.sortKey && !active.length && !query && !loadProductActivities().find((item) => item.id === row.dataset.id)?.variation_parent_id;
   });
   table.querySelector(".product-filter-empty")?.remove();
   if (rows.length && !visible.size) {
@@ -6330,14 +6438,14 @@ function renderProductActivities() {
   const productTemplates = loadProductActivities().filter((item) => item.product_id === productActivityState.productId);
   const compareTemplates = (a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || String(a.created_at || "").localeCompare(String(b.created_at || ""));
   const productTemplateIds = new Set(productTemplates.map((item) => item.id));
-  const templates = productTemplates.filter((item) => !item.parent_template_id || !productTemplateIds.has(item.parent_template_id))
+  const templates = productTemplates.filter((item) => !(item.variation_parent_id || item.parent_template_id) || !productTemplateIds.has(item.variation_parent_id || item.parent_template_id))
     .sort(compareTemplates)
-    .flatMap((item) => [item, ...productTemplateSubtasks(item.id, productTemplates).sort(compareTemplates)]);
-  const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" data-parent-id="${esc(item.parent_template_id || "")}" draggable="true">
+    .flatMap((item) => [item, ...productTemplates.filter((child) => (child.variation_parent_id || child.parent_template_id) === item.id).sort(compareTemplates)]);
+  const rows = templates.map((item) => `<tr class="pa-row${item.parent_template_id || item.variation_parent_id ? " pa-subtask-row" : ""}" data-id="${esc(item.id)}" data-parent-id="${esc(item.variation_parent_id || item.parent_template_id || "")}" draggable="${!item.variation_parent_id}">
     <td class="pa-drag" title="Arraste para mudar a ordem">⠿</td>
     <td>${esc(item.group || "—")}</td><td>${esc(item.subgroup || "—")}</td><td>${esc(item.sector || "—")}</td><td>${esc(item.subsector || "—")}</td><td>${esc(item.module || "—")}</td><td>${esc(item.submodule || "—")}</td>
     <td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.type || "—")}</td><td>${esc(RECURRENCE_LABEL[item.recurrence] || "Única")}</td><td>${item.consider_business_days ? "Sim" : "Não"}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td>
-    <td>${item.parent_template_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}</td><td>${esc(item.information || "—")}</td>
+    <td>${item.parent_template_id || item.variation_parent_id ? '<span class="task-subtask-branch">↳</span> ' : ""}${esc(activityDisplayName(item))}${item.variation_parent_id ? '<small class="task-variation-badge">Variação</small>' : Object.keys(item.variation_axes || {}).length ? '<small class="task-variation-badge">Pai de variações</small>' : ""}</td><td>${esc(item.information || "—")}</td>
     <td>${productTemplateSubtasks(item.id, productTemplates).length ? '<span class="muted">Nas subtarefas</span>' : `${normalizeChecklist(item.checklist).length} item(ns)`}</td>
     <td>${esc(loadProductObjectives().find((objective) => objective.id === item.objective_template_id)?.name || "—")}</td>
     <td>${priorityBadge(item.priority)}</td>
@@ -6461,7 +6569,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
     .filter((item) => item.id !== editId)
     .map((item) => ({ value: item.id, label: item.name }));
   const activityDependencyOptions = loadProductActivities()
-    .filter((item) => item.product_id === productActivityState.productId)
+    .filter((item) => item.product_id === productActivityState.productId && !Object.keys(item.variation_axes || {}).length)
     .map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const overlay = document.createElement("div");
   overlay.id = "product-activity-drawer-overlay";
@@ -6656,7 +6764,7 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
     .filter((item) => item.product_id === productActivityState.productId && item.id !== editId)
     .map((item) => ({ value: item.id, label: item.name }));
   const activityDependencyOptions = loadProductActivities()
-    .filter((item) => item.product_id === productActivityState.productId)
+    .filter((item) => item.product_id === productActivityState.productId && !Object.keys(item.variation_axes || {}).length)
     .map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const overlay = document.createElement("div");
   overlay.id = "product-activity-drawer-overlay";
@@ -6814,6 +6922,7 @@ function copiedTemplateGroupId(source, targetRows) {
 }
 function productTemplateRemovalError(ids, rows = loadProductActivities(), tasks = loadProjectTasks()) {
   const removed = new Set(ids);
+  if (rows.some((row) => removed.has(row.id) && row.variation_parent_id) || rows.some((row) => removed.has(row.variation_parent_id))) return "As variações são gerenciadas pelo pai. Preserve a família para manter os vínculos e o histórico.";
   const referenced = tasks.some((task) => removed.has(task.source_template_id))
     || rows.some((row) => !removed.has(row.id) && (removed.has(row.parent_template_id)
       || normalizeIdList(row.dependency_template_ids, row.depends_on_template_id).some((id) => removed.has(id))))
@@ -6827,6 +6936,7 @@ function openReadyActivityPicker() {
   const currentSignatures = new Set(current.map(productActivityIdentity));
   const seen = new Set();
   const available = loadProductActivities().filter((item) => {
+    if (item.variation_parent_id) return false;
     if (item.product_id === productActivityState.productId) return false;
     const signature = productActivityIdentity(item);
     if (seen.has(signature) || currentSignatures.has(signature)) return false;
@@ -6948,7 +7058,7 @@ function openReadyActivityPicker() {
         createdCount += 1;
       }
       if (isLive()) {
-        cache.productActivities = rows;
+        cache.productActivities = rows.some((row) => Object.keys(row.variation_axes || {}).length) ? await fetchTable("productActivities") : rows;
         cache.productObjectives = objectiveRows;
       } else {
         saveProductActivities(rows);
@@ -7002,7 +7112,7 @@ async function persistProductActivityOrder() {
   const changed = [];
   ids.forEach((id, sortOrder) => {
     const item = rows.find((row) => row.id === id);
-    if (!item || Number(item.sort_order || 0) === sortOrder) return;
+    if (!item || item.variation_parent_id || Number(item.sort_order || 0) === sortOrder) return;
     item.sort_order = sortOrder;
     item.updated_at = new Date().toISOString();
     changed.push(item);
@@ -7036,6 +7146,8 @@ function closeProductActivityDrawer() {
 
 async function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTemplateId = null) {
   if (!requireCurrentUserPermission("activityTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Tarefas")) return;
+  const variationParentId = loadProductActivities().find((item) => item.id === editId)?.variation_parent_id;
+  if (variationParentId) return openProductActivityDrawer(variationParentId);
   await ensureTaskReferenceSources();
   closeProductActivityDrawer();
   productActivityState.editId = editId;
@@ -7088,9 +7200,10 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       ? allTemplates.filter((item) => productTemplateGroupKey(item, allTemplates) === productActivityParentGroupId).map((item) => item.product_id)
       : [productActivityState.productId]);
   const hasSubtasks = editing && allTemplates.some((item) => productActivityRelatedIds.includes(item.parent_template_id));
+  const variationLocked = Boolean(requestedParent || hasSubtasks || (editing && loadProjectTasks().some((task) => productActivityRelatedIds.includes(task.source_template_id))));
   productActivityChecklistDraft = normalizeChecklist(current.checklist || requestedParent?.checklist).map((item) => ({ ...item, checked: false }));
   const selectedDependencies = new Set(normalizeIdList(current.dependency_template_ids, current.depends_on_template_id));
-  const dependencyOptions = templates.filter((item) => item.id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
+  const dependencyOptions = templates.filter((item) => item.id !== editId && !Object.keys(item.variation_axes || {}).length && item.variation_parent_id !== editId).map((item) => ({ value: item.id, label: activityDisplayName(item) }));
   const selectedAssignees = assigneePickerSelection(current.default_assignee_ids, current.default_owner_id, current.assign_to_client);
   const selectedJobTitles = new Set(normalizeTextList(current.default_assignee_job_titles));
   const selectedDocuments = new Set(normalizeIdList(current.document_ids));
@@ -7117,12 +7230,12 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
       <div class="field"><label>Subsetor</label><input id="pa-subsector" value="${esc(current.subsector || "")}" placeholder="Subsetor opcional"></div>
-      <div class="field"><label>Categoria</label><input id="pa-category" value="${esc(current.category || "")}"></div>
-      <div class="field"><label>Canal</label><input id="pa-channel" value="${esc(current.channel || "")}"></div>
+      ${taskVariationFieldHtml("category", current, variationLocked)}
+      ${taskVariationFieldHtml("channel", current, variationLocked)}
       <div class="field task-form-wide"><label>Requer no Setup</label>${multiPickerHtml("pa-required-setup", taskSetupOptions(taskSetupRequirements(current)), new Set(taskSetupRequirements(current)), "Selecionar requisitos")}</div>
       <div class="field task-form-wide retroactive-toggle"><label title="Disponível somente em entregas com Retroativo ativo, usando o período anterior ao início da entrega."><input id="pa-retroactive" type="checkbox"${current.requires_retroactive ? " checked" : ""}><span>Retroativo</span></label></div>
-      <div class="field"><label>Módulo</label><input id="pa-module" value="${esc(current.module || "")}" placeholder="Módulo opcional"></div>
-      <div class="field"><label>Submódulo</label><input id="pa-submodule" value="${esc(current.submodule || "")}" placeholder="Submódulo opcional"></div>
+      ${taskVariationFieldHtml("module", current, variationLocked)}
+      ${taskVariationFieldHtml("submodule", current, variationLocked)}
       <div class="task-schedule-row task-schedule-row-wide">
         <div class="field"><label>Recorrência</label><select id="pa-recurrence">${recurrenceOptions}</select></div>
         <div class="field"><label>Prioridade</label><select id="pa-priority">${priorityOptions}</select></div>
@@ -7133,9 +7246,10 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       ${monthlyDeadlineField("pa", current)}
       <div class="task-name-row">
         <div class="field"><label id="pa-activity-label">${productActivityParentGroupId ? "Subtarefa" : "Tarefa"}${useStructure ? "" : " *"}</label><input id="pa-activity" value="${esc(current.activity || "")}" placeholder="Nome da ${productActivityParentGroupId ? "subtarefa" : "tarefa"}"></div>
-        <div class="field"><label>Tipo</label><input id="pa-type" value="${esc(current.type || "")}"></div>
+        ${taskVariationFieldHtml("type", current, variationLocked)}
         <label class="task-use-structure" for="pa-use-structure"><input id="pa-use-structure" type="checkbox"${useStructure ? " checked" : ""}><span>Usar estrutura</span></label>
       </div>
+      <div class="field task-form-wide task-variation-preview" id="pa-variation-preview" hidden></div>
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
@@ -7145,7 +7259,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
       <div class="field"><label>Planilhas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar planilhas")}</div>
     </div>
-    <div class="modal-foot">${editing && !productActivityParentGroupId ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
+    <div class="modal-foot">${editing && !productActivityParentGroupId && !Object.keys(current.variation_axes || {}).length ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   productDrawerHost()?.appendChild(overlay);
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
@@ -7169,6 +7283,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireTaskSetupTab(overlay, "pa", current);
   wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
   wireProductErpDefaults("pa", document.getElementById("pa-products"), () => multiPickerValues("pa-products"), !editId && !cloneSourceId && !requestedParent);
+  wireTaskVariationFields(current);
   renderProductActivityChecklistEditor();
   (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-category") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
 }
@@ -7189,13 +7304,15 @@ function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
 async function saveProductActivity() {
   if (productActivityState.editId ? !requireCurrentUserPermission("activityTemplates", "edit", "Tarefas") : !(currentUserCan("activityTemplates", "create") || currentUserCan("activityTemplates", "clone"))) { if (!productActivityState.editId) toast("Sem permissão para cadastrar tarefas.", true); return; }
   if (productActivitySavePending) return;
+  const variationAxes = taskVariationFormAxes();
+  try { taskVariationCombinations(variationAxes); } catch (error) { toast(error.message, true); return; }
   const useStructure = document.getElementById("pa-use-structure").checked;
   const activity = useStructure ? "" : document.getElementById("pa-activity").value.trim();
   if (!useStructure && !activity) { toast("Informe a tarefa ou marque Usar estrutura.", true); return; }
   if (useStructure && !taskStructureFieldsFilled(["pa-category", "pa-channel", "pa-module", "pa-type"])) { toast(`Preencha ${TASK_STRUCTURE_REQUIRED_LABEL} para usar a estrutura.`, true); return; }
   const rows = loadProductActivities();
   const current = rows.find((item) => item.id === productActivityState.editId);
-  const recordId = current?.id || crypto.randomUUID();
+  const recordId = current?.id || (Object.keys(variationAxes).length ? productActivityDraftGroupId : null) || crypto.randomUUID();
   const dependencyIds = multiPickerValues("pa-dependencies");
   const assignees = assigneePickerValue("pa-assignees");
   const assigneeJobTitles = multiPickerValues("pa-assignee-job-titles");
@@ -7253,6 +7370,10 @@ async function saveProductActivity() {
     template_group_id: productActivityDraftGroupId || crypto.randomUUID(),
     updated_at: new Date().toISOString()
   };
+  if (Object.keys(variationAxes).length || current?.variation_axes) {
+    baseBody.variation_axes = variationAxes;
+    Object.keys(variationAxes).forEach((key) => { baseBody[key] = ""; });
+  }
   const saveButton = document.getElementById("pa-save");
   if (baseBody.requires_retroactive && isGenericOnboardingTask(baseBody)) { toast("O onboarding geral não pode ser retroativo. Cadastre uma tarefa específica para o serviço retroativo.", true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
@@ -7266,7 +7387,8 @@ async function saveProductActivity() {
     const selectedDependencies = dependencyIds.map((id) => rows.find((item) => item.id === id)).filter(Boolean);
     for (const productId of selectedProductIds) {
       const productRows = rows.filter((item) => item.product_id === productId);
-      const existing = related.find((item) => item.product_id === productId) || (current?.product_id === productId ? current : null);
+      const existing = related.find((item) => item.product_id === productId) || (current?.product_id === productId ? current : null)
+        || (Object.keys(variationAxes).length ? productRows.find((item) => item.template_group_id === baseBody.template_group_id && Object.keys(item.variation_axes || {}).length) : null);
       const targetObjective = productId === productActivityState.productId
         ? selectedObjective
         : loadProductObjectives().find((item) => item.product_id === productId && selectedObjective && productResultIdentity(item) === productResultIdentity(selectedObjective));
@@ -7310,7 +7432,7 @@ async function saveProductActivity() {
       }
     }
     if (!isLive() && related.some((item) => !selectedProductIds.includes(item.product_id))) saveProjectTasks(taskRows);
-    if (isLive()) cache.productActivities = rows;
+    if (isLive()) cache.productActivities = rows.some((row) => Object.keys(row.variation_axes || {}).length) ? await fetchTable("productActivities") : rows;
     else saveProductActivities(rows);
     activitySaved = true;
     closeProductActivityDrawer();
@@ -7319,7 +7441,10 @@ async function saveProductActivity() {
     toast(`Tarefa salva em ${selectedProductIds.length} produto(s). Sincronizando com as entregas...`);
     await syncProductActivities();
     refreshActivityCache();
-  } catch (err) { toast(`${activitySaved ? "Tarefa salva, mas houve erro ao sincronizar" : "Erro ao salvar tarefa"} · ${err.message}`, true); }
+  } catch (err) {
+    if (isLive() && Object.keys(variationAxes).length) { try { cache.productActivities = await fetchTable("productActivities"); } catch {} }
+    toast(`${activitySaved ? "Tarefa salva, mas houve erro ao sincronizar" : "Erro ao salvar tarefa"} · ${err.message}`, true);
+  }
   finally {
     productActivitySavePending = false;
     if (saveButton?.isConnected) { saveButton.disabled = false; saveButton.textContent = saveButtonLabel; }
@@ -14079,7 +14204,7 @@ function registrationFlowModel(items, adapter, search = "", allItems = items) {
   }));
   const edges = nodes.flatMap((node) => [
     ...[...node.dependencies].filter((id) => visible.has(id)).map((from) => ({ from, to: node.id, kind: "dependency", label: "Após" })),
-    ...(node.parentId && visible.has(node.parentId) && !node.dependencies.has(node.parentId) ? [{ from: node.parentId, to: node.id, kind: "subtask", label: "Subtarefa" }] : [])
+    ...(node.parentId && visible.has(node.parentId) && !node.dependencies.has(node.parentId) ? [{ from: node.parentId, to: node.id, kind: node.item.variation_parent_id ? "variation" : "subtask", label: node.item.variation_parent_id ? "Variação" : "Subtarefa" }] : [])
   ]);
   const byId = new Map(nodes.map((node) => [node.id, node]));
   // Only the existing Setup rules establish exclusivity; a shared predecessor alone does not.
@@ -14734,7 +14859,7 @@ function renderRegistrationsSection() {
           <td>—</td>
           <td>${esc(childDetails.products)}</td>
           <td>Cadastro</td>
-          <td><span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong></span></td>
+          <td><span class="registration-subtask-name"><b>↳</b><strong>${esc(activityDisplayName(child.item))}</strong>${child.item.variation_parent_id ? '<small class="task-variation-badge">Variação</small>' : ""}</span></td>
           <td>${priorityBadge(child.item.priority)}</td>
           <td class="compact-multi-cell">${stackedCell(childDetails.dependencies)}</td>
           <td>${esc(child.item.information || "—")}</td>
@@ -14779,6 +14904,13 @@ function renderRegistrationsSection() {
       row.querySelector(".table-actions-cell")?.before(cell);
     });
     root.querySelector("tbody td.empty")?.setAttribute("colspan", "31");
+    root.querySelectorAll("tr[data-task-group]").forEach((row) => {
+      const item = groupedById.get(row.dataset.taskGroup)?.item;
+      if (!Object.keys(item?.variation_axes || {}).length) return;
+      row.querySelector(".registration-task-name strong")?.insertAdjacentHTML("afterend", '<small class="task-variation-badge">Pai de variações</small>');
+      const toggle = row.querySelector(".registration-task-toggle");
+      if (toggle) toggle.title = registrationExpandedTaskGroups.has(row.dataset.taskGroup) ? "Recolher variações" : "Expandir variações";
+    });
     if (["mindmap", "flow"].includes(tableState.view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
@@ -14839,7 +14971,8 @@ function renderRegistrationsSection() {
     const collapsed = !registrationExpandedTaskGroups.has(groupId);
     childRows.forEach((row) => { row.hidden = collapsed; });
     button.textContent = collapsed ? "▸" : "▾";
-    button.title = collapsed ? "Expandir subtarefas" : "Recolher subtarefas";
+    const variation = Object.keys(loadProductActivities().find((item) => productTemplateGroupKey(item) === groupId)?.variation_axes || {}).length;
+    button.title = `${collapsed ? "Expandir" : "Recolher"} ${variation ? "variações" : "subtarefas"}`;
   }));
   root.querySelectorAll(".reg-template-open").forEach((button) => button.addEventListener("click", () =>
     root.querySelector(`.registration-task-toggle[data-group="${CSS.escape(button.dataset.group)}"]`)?.click()));
