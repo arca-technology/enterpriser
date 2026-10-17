@@ -14445,6 +14445,35 @@ function loadMindMapHierarchyLibrary() {
   }).catch((error) => { mindMapHierarchyLibraryPromise = null; throw error; });
   return mindMapHierarchyLibraryPromise;
 }
+const radialNodeMeasurements = new WeakMap();
+function radialNodeDiameter(element, canvas) {
+  const content = element.querySelector(".registration-mind-task-main") || element;
+  const signature = content.innerHTML + getComputedStyle(content).font;
+  const previous = radialNodeMeasurements.get(element);
+  if (previous?.signature === signature) return previous.diameter;
+  let diameter = element.matches(".registration-mind-task,.registration-mind-subtasks > button") ? 160
+    : element.matches(".registration-mindmap-root") ? 88 : 104;
+  // Measure intrinsic content separately from the circle's current height and zoom.
+  const measure = content.cloneNode(true);
+  measure.classList.remove("radial-map-node");
+  measure.removeAttribute("id");
+  measure.querySelectorAll("[id]").forEach((child) => child.removeAttribute("id"));
+  measure.setAttribute("aria-hidden", "true"); measure.inert = true;
+  for (const [key, value] of Object.entries({ position: "absolute", left: "0", top: "0", height: "auto", "min-height": "0", "max-height": "none", padding: "0", border: "0", margin: "0", display: "flex", "flex-direction": "column", "align-items": "center", gap: "6px", visibility: "hidden", "pointer-events": "none" })) measure.style.setProperty(key, value, "important");
+  [...measure.children].forEach((child) => { child.style.minWidth = "0"; child.style.maxWidth = "100%"; child.style.flexShrink = "0"; });
+  canvas.appendChild(measure);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      measure.style.setProperty("width", `${diameter * .7}px`, "important");
+      const overflowWidth = measure.scrollWidth > measure.clientWidth + 1 ? measure.scrollWidth : 0;
+      const required = Math.ceil((Math.max(measure.offsetHeight, overflowWidth) + 4) / .7);
+      if (required <= diameter) break;
+      diameter = required;
+    }
+  } finally { measure.remove(); }
+  radialNodeMeasurements.set(element, { signature, diameter });
+  return diameter;
+}
 async function layoutRadialMindMap(shell) {
   const d3 = await loadMindMapHierarchyLibrary();
   if (!shell.isConnected) return;
@@ -14475,14 +14504,7 @@ async function layoutRadialMindMap(shell) {
   nodes.forEach((node) => {
     const element = node.data.element;
     element.classList.add("radial-map-node");
-    const content = element.querySelector(".registration-mind-task-main") || element;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const children = [...content.children].filter((child) => getComputedStyle(child).display !== "none");
-      const needed = children.reduce((height, child) => height + child.offsetHeight, 0) + Math.max(0, children.length - 1) * 6;
-      const diameter = Math.ceil(needed / .7 + 4);
-      if (diameter <= element.offsetWidth) break;
-      element.style.setProperty("--radial-node-size", `${diameter}px`);
-    }
+    element.style.setProperty("--radial-node-size", `${radialNodeDiameter(element, canvas)}px`);
     node.width = element.offsetWidth; node.height = element.offsetHeight;
   });
   const placed = [tree];

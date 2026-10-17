@@ -134,6 +134,28 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       const root=canvas.radialLinks[0]?.source;
       return {width:canvas.offsetWidth,height:canvas.offsetHeight,boxes,firstRing:canvas.radialLinks.filter(link=>link.source===root).map(link=>Math.hypot(link.target.px-root.px,link.target.py-root.py))};
     });
+    const diameters = () => page.locator('.registration-mind-task.radial-map-node').evaluateAll(nodes=>Object.fromEntries(nodes.map(node=>[node.dataset.nodeId,node.offsetWidth])));
+    const originalDiameters=await diameters();
+    assert.ok(Math.max(...Object.values(originalDiameters))<=180,'Short labels must use compact circles');
+    for(const zoom of [.3,.6,1,.3,.6]) {
+      await page.evaluate(async zoom=>{
+        const shell=document.querySelector('.registration-mindmap-shell');
+        shell.querySelector('.registration-mindmap-canvas').style.zoom=zoom;
+        const toggle=shell.querySelector('.registration-mind-toggle.radial-map-node:not(.radial-map-skip)');
+        toggle.click();await layoutRadialMindMap(shell);
+        toggle.click();await layoutRadialMindMap(shell);
+      },zoom);
+      assert.deepEqual(await diameters(),originalDiameters,'Expand/collapse and zoom must not increase node diameters');
+    }
+    for(let i=0;i<3;i++) {
+      await page.evaluate(async()=>{
+        const shell=document.querySelector('.registration-mindmap-shell');
+        const toggle=shell.querySelector('.registration-mind-expand-all');
+        toggle.click();await layoutRadialMindMap(shell);
+        toggle.click();await layoutRadialMindMap(shell);
+      });
+      assert.deepEqual(await diameters(),originalDiameters,'Expand/collapse all must keep the same diameters');
+    }
     assert.ok(Number.isFinite(large.width)&&large.width<6000&&large.height<6000,`31 records must not inflate the entire canvas: ${large.width}x${large.height}, first ring ${large.firstRing}`);
     assert.ok(Math.max(...large.firstRing)<650,'Crowded outer rings must not stretch root connections');
     for(let i=0;i<large.boxes.length;i++) for(let j=i+1;j<large.boxes.length;j++) {
