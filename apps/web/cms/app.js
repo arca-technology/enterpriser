@@ -14466,23 +14466,42 @@ async function layoutRadialMindMap(shell) {
   const min = Math.min(...nodes.map((node) => node.x)), max = Math.max(...nodes.map((node) => node.x));
   const span = Math.max(2, max - min + 2);
   nodes.forEach((node) => { node.angle = (node.x - min + 1) / span * Math.PI * 2 - Math.PI / 2; });
-  const ringSize = Math.max(360, ...nodes.map((node) => Math.hypot(node.data.element.offsetWidth, node.data.element.offsetHeight))) + 36;
-  let step = ringSize;
-  for (let depth = 1; depth <= tree.height; depth++) {
-    const ring = nodes.filter((node) => node.depth === depth).sort((a, b) => a.angle - b.angle);
-    if (ring.length < 2) continue;
-    const gap = Math.min(...ring.map((node, index) => (ring[(index + 1) % ring.length].angle - node.angle + Math.PI * 2) % (Math.PI * 2)));
-    step = Math.max(step, ringSize / (2 * Math.sin(gap / 2) * depth));
-  }
-  const radius = step * tree.height + ringSize / 2 + 16;
-  canvas.style.width = canvas.style.height = `${radius * 2}px`;
+  // Measure cards after their radial styles apply; stretched tree containers are not card sizes.
   nodes.forEach((node) => {
     const element = node.data.element;
-    node.px = radius + Math.cos(node.angle) * node.depth * step;
-    node.py = radius + Math.sin(node.angle) * node.depth * step;
     element.classList.add("radial-map-node");
-    element.style.left = `${node.px - element.offsetWidth / 2}px`;
-    element.style.top = `${node.py - element.offsetHeight / 2}px`;
+    node.width = element.offsetWidth; node.height = element.offsetHeight;
+  });
+  const placed = [tree];
+  tree.px = tree.py = 0;
+  const gap = 24;
+  // Compact each spoke independently instead of stretching every branch for one crowded group.
+  nodes.slice(1).forEach((node) => {
+    let radius = Math.hypot(node.parent.px, node.parent.py) + 140;
+    const forbidden = [];
+    const interval = (direction, center, half) => Math.abs(direction) < 1e-9
+      ? Math.abs(center) < half ? [-Infinity, Infinity] : null
+      : [(center - half) / direction, (center + half) / direction].sort((a, b) => a - b);
+    placed.forEach((other) => {
+      const x = interval(Math.cos(node.angle), other.px, (node.width + other.width) / 2 + gap);
+      const y = interval(Math.sin(node.angle), other.py, (node.height + other.height) / 2 + gap);
+      if (!x || !y) return;
+      const start = Math.max(x[0], y[0]), end = Math.min(x[1], y[1]);
+      if (start < end && end >= radius) forbidden.push([start, end]);
+    });
+    forbidden.sort((a, b) => a[0] - b[0]).forEach(([start, end]) => { if (radius > start - .01 && radius < end + .01) radius = end + 1; });
+    node.px = Math.cos(node.angle) * radius; node.py = Math.sin(node.angle) * radius;
+    placed.push(node);
+  });
+  const left = Math.min(...nodes.map((node) => node.px - node.width / 2)) - 32;
+  const top = Math.min(...nodes.map((node) => node.py - node.height / 2)) - 32;
+  canvas.style.width = `${Math.max(...nodes.map((node) => node.px + node.width / 2)) - left + 32}px`;
+  canvas.style.height = `${Math.max(...nodes.map((node) => node.py + node.height / 2)) - top + 32}px`;
+  nodes.forEach((node) => {
+    const element = node.data.element;
+    node.px -= left; node.py -= top;
+    element.style.left = `${node.px - node.width / 2}px`;
+    element.style.top = `${node.py - node.height / 2}px`;
   });
   canvas.radialLinks = tree.links();
   drawRegistrationMindMapLinks(shell);

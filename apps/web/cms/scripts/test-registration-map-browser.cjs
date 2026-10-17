@@ -114,6 +114,30 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#view-dd [data-view="list"]').click();
     assert.equal(await page.locator('#tools-root table.explicit-list-view').count(),1);
     await page.screenshot({ path:path.join(os.tmpdir(),'map-list-tools-desktop.png') });
+    await page.evaluate(() => {
+      document.getElementById('modal-root').replaceChildren();
+      saveProductObjectives(Array.from({length:31},(_,i)=>({id:`large-${i}`,product_id:'pr1',name:`Objetivo de teste ${i+1}`,category:`Categoria ${i%4+1}`,channel:`Canal ${i%7+1}`})));
+      openMainPmCatalog('objectives'); registrationMindMapLayout='radial';registrationMindMapZoom=.6;
+      registrationTableState().view='mindmap';renderRegistrationsSection();document.body.classList.add('light');
+    });
+    await page.waitForSelector('.registration-mindmap-shell[data-radial-ready="true"]');
+    const large = await page.locator('.registration-mindmap-canvas').evaluate(canvas => {
+      const zoom=Number(canvas.style.zoom)||1;
+      const boxes=[...canvas.querySelectorAll('.radial-map-node')].map(node=>{const r=node.getBoundingClientRect();return {left:r.left/zoom,right:r.right/zoom,top:r.top/zoom,bottom:r.bottom/zoom,text:node.textContent};});
+      const root=canvas.radialLinks[0]?.source;
+      return {width:canvas.offsetWidth,height:canvas.offsetHeight,boxes,firstRing:canvas.radialLinks.filter(link=>link.source===root).map(link=>Math.hypot(link.target.px-root.px,link.target.py-root.py))};
+    });
+    assert.ok(Number.isFinite(large.width)&&large.width<6000&&large.height<6000,`31 records must not inflate the entire canvas: ${large.width}x${large.height}, first ring ${large.firstRing}`);
+    assert.ok(Math.max(...large.firstRing)<650,'Crowded outer rings must not stretch root connections');
+    for(let i=0;i<large.boxes.length;i++) for(let j=i+1;j<large.boxes.length;j++) {
+      const a=large.boxes[i],b=large.boxes[j];assert.ok(a.right<=b.left+1||b.right<=a.left+1||a.bottom<=b.top+1||b.bottom<=a.top+1,`31-record collision: ${a.text} / ${b.text}`);
+    }
+    await page.locator('.registration-mind-fit').click();
+    await page.screenshot({path:path.join(os.tmpdir(),'map-radial-31-desktop.png')});
+    await page.setViewportSize({width:390,height:844});
+    await page.locator('.registration-mind-fit').click();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    await page.screenshot({path:path.join(os.tmpdir(),'map-radial-31-mobile.png')});
     assert.deepEqual(errors,[]); assert.deepEqual(writes,[]);
     console.log('Map/list passed: three catalogs, explicit alternative groups, ordered reversible levels, radial geometry without overlaps, desktop/mobile controls, persisted structure fields, legacy Flow fallback, unchanged source data and no network writes.');
   } finally { await browser.close(); }
