@@ -14327,6 +14327,11 @@ function registrationTaskHierarchy(items, adapter = REGISTRATION_MIND_MAP_TEMPLA
   return { ordered, children, nodeById };
 }
 
+function mindMapNameHtml(name) {
+  return registrationMindMapLayout === "radial"
+    ? String(name || "").split("|").map((part) => part.trim()).filter(Boolean).map((part) => `<span class="radial-title-segment">${esc(part)}</span>`).join("")
+    : esc(name);
+}
 function registrationMindMapTaskHtml(node, hierarchy, orderById, adapter) {
   const dependencyNames = [
     ...[...node.dependencies].map((id) => hierarchy.nodeById.get(id)?.item).filter(Boolean).map((item) => mindMapTitle(adapter, item)),
@@ -14338,10 +14343,10 @@ function registrationMindMapTaskHtml(node, hierarchy, orderById, adapter) {
   return `<article class="registration-mind-task${node.item.status === "done" ? " is-done" : ""}" data-node-id="${esc(node.id)}" data-deps="${depsAttr(node)}">
     <button class="registration-mind-task-main ${adapter.editClass || "is-static"}" type="button" ${adapter.editAttrs(node.item)}${adapter.editClass ? "" : ' tabindex="-1"'}>
       <span class="registration-mind-order">${node.item.structure_type === "alternatives" ? "OU" : node.item.structure_type === "progression" ? esc(node.item.structure_order) : String(order).padStart(2, "0")}</span>
-      <span class="registration-mind-task-copy"><strong>${esc(mindMapTitle(adapter, node.item))}</strong><small>${esc(adapter.subtitle(node))}</small></span>
+      <span class="registration-mind-task-copy"><strong>${mindMapNameHtml(mindMapTitle(adapter, node.item))}</strong><small title="${esc(adapter.subtitle(node))}">${esc(adapter.subtitle(node))}</small></span>
     </button>
     ${dependencyNames.length ? `<div class="registration-mind-dependency"><span>Após</span>${dependencyNames.map((name) => `<b>${esc(name)}</b>`).join("")}</div>` : ""}
-    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${esc(mindMapTitle(adapter, subtask.item))}</strong></button>`).join("")}</div>` : ""}
+    ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${mindMapNameHtml(mindMapTitle(adapter, subtask.item))}</strong></button>`).join("")}</div>` : ""}
   </article>`;
 }
 
@@ -14470,6 +14475,14 @@ async function layoutRadialMindMap(shell) {
   nodes.forEach((node) => {
     const element = node.data.element;
     element.classList.add("radial-map-node");
+    const content = element.querySelector(".registration-mind-task-main") || element;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const children = [...content.children].filter((child) => getComputedStyle(child).display !== "none");
+      const needed = children.reduce((height, child) => height + child.offsetHeight, 0) + Math.max(0, children.length - 1) * 6;
+      const diameter = Math.ceil(needed / .7 + 4);
+      if (diameter <= element.offsetWidth) break;
+      element.style.setProperty("--radial-node-size", `${diameter}px`);
+    }
     node.width = element.offsetWidth; node.height = element.offsetHeight;
   });
   const placed = [tree];
