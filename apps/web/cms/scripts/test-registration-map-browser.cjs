@@ -91,9 +91,10 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     for (const section of ['activities','goals','objectives']) {
       const prefix=section==='activities'?'pa':section==='goals'?'pg':'po';
       await page.evaluate(section => openRegistrationTemplateEditor(section,'pr1','gold'),section);
-      assert.equal(await page.locator(`#${prefix}-structure-type`).inputValue(),'progression');
+      assert.equal(await page.locator(section==='activities'?`#${prefix}-structure-type`:`#${prefix}-structure-type input:checked`).inputValue(),'progression');
       assert.equal(await page.locator(`#${prefix}-structure-order`).inputValue(),'2');
-      await page.locator(`#${prefix}-structure-type`).selectOption('alternatives');
+      if(section==='activities') await page.locator(`#${prefix}-structure-type`).selectOption('alternatives');
+      else await page.locator(`#${prefix}-structure-type input[value="alternatives"]`).check();
       assert.equal(await page.locator(`#${prefix}-structure-order`).isVisible(),false);
       await page.locator(`#${prefix}-structure-group`).fill('Outro grupo');
       await page.locator(`#${prefix}-save`).click();

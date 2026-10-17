@@ -42,7 +42,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         await page.locator('#pg-metric').fill('Pedidos');
         await page.locator('#pg-target').fill('1');
       }
-      assert.equal(await page.locator('.task-variation-toggle input').count(), 2);
+      assert.equal(await page.locator('.task-variation-toggle input').count(), 4);
       await page.locator(`#${prefix}-vary-channel`).check();
       await page.locator(`#${prefix}-variants-channel .multi-picker-control`).click();
       for (const value of ['AMAZON', 'SHOPEE']) await page.locator(`#${prefix}-variants-channel [data-value="${value}"]`).click();
@@ -70,7 +70,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.locator('.registration-task-toggle').click();
       assert.equal(await page.locator('.registration-subtask-row:not([hidden])').count(), 2);
       await page.evaluate(section => openRegistrationTemplateEditor(section, 'pr1', childIds[0]), section);
-      for (const key of ['name','category','channel']) assert.equal(await page.locator(`#${prefix}-${key}`).isDisabled(), true);
+      for (const key of ['name','category','channel','module','submodule']) assert.equal(await page.locator(`#${prefix}-${key}`).isDisabled(), true);
       await page.locator(`#${prefix}-notes`).fill('Informacao exclusiva');
       await page.locator(`#${prefix}-target-days`).fill('5');
       if (section === 'goals') await page.locator('#pg-target').fill('100');

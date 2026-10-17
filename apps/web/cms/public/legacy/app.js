@@ -991,8 +991,10 @@ function requireDataPermission(table, action) {
 const FIELD_REMAP = {
   deals: { amount: "value" },
   activities: { project_id: "delivery_id", group: "group_name", subgroup: "subgroup_name", module: "module_name", submodule: "submodule_name", type: "activity_type" },
-  deliveryObjectives: { project_id: "delivery_id" },
-  deliveryGoals: { project_id: "delivery_id" },
+  deliveryObjectives: { project_id: "delivery_id", module: "module_name", submodule: "submodule_name" },
+  deliveryGoals: { project_id: "delivery_id", module: "module_name", submodule: "submodule_name" },
+  productObjectives: { module: "module_name", submodule: "submodule_name" },
+  productGoals: { module: "module_name", submodule: "submodule_name" },
   productActivities: { group: "group_name", subgroup: "subgroup_name", module: "module_name", submodule: "submodule_name", type: "activity_type" },
   customTables: { columns: "column_definitions", rows: "row_data" }
 }; // chave local -> chave remota
@@ -1806,6 +1808,8 @@ async function syncProductObjectives() {
       const structural = {
         name: template.name,
         completion_criteria: template.completion_criteria || "",
+        module: template.module || "",
+        submodule: template.submodule || "",
         comments: template.comments || "",
         category: template.category || "",
         channel: template.channel || "",
@@ -1894,6 +1898,8 @@ async function syncProductGoals() {
       const structural = {
         name: template.name,
         metric: template.metric,
+        module: template.module || "",
+        submodule: template.submodule || "",
         comparison: template.comparison || "at_least",
         target_value: Number(template.target_value || 0),
         unit: template.unit || "",
@@ -3018,7 +3024,7 @@ const activityDisplayName = (item) => {
   return parts.length ? parts.join(" | ") : "—";
 };
 function resultDisplayName(item) {
-  return [item?.category, item?.channel, item?.name].map((value) => String(value || "").trim()).filter(Boolean).join(" | ") || "—";
+  return [item?.category, item?.channel, item?.module, item?.submodule, item?.name].map((value) => String(value || "").trim()).filter(Boolean).join(" | ") || "—";
 }
 function compareLabels(a, b) {
   return String(a || "").localeCompare(String(b || ""), "pt-BR", { sensitivity: "base", numeric: true });
@@ -3337,6 +3343,8 @@ function columns(tab, c) {
       { k: "status", h: "STATUS", fmt: (v) => `<span class="badge ${taskStatusClass(v || "todo")}">${esc(taskStatusLabel(v || "todo"))}</span>` },
       { k: "category", h: "CATEGORIA" },
       { k: "channel", h: "CANAL" },
+      { k: "module", h: "MÓDULO" },
+      { k: "submodule", h: "SUBMÓDULO" },
       ...(tab === "goals" ? [
         { k: "metric", h: "INDICADOR" },
         { k: "current_value", h: "VALOR ATUAL", num: true, fmt: (v) => Number(v || 0).toLocaleString("pt-BR") },
@@ -6266,18 +6274,24 @@ function productActivityIdentity(item) {
 }
 
 function productResultIdentity(item) {
-  return JSON.stringify([[item?.category, item?.channel, item?.name]
+  return JSON.stringify([[item?.category, item?.channel, item?.module, item?.submodule, item?.name]
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")), item?.variation_axes || {}]);
 }
 
 function isVariationParent(item) { return Boolean(Object.keys(item?.variation_axes || {}).length); }
 const TEMPLATE_STRUCTURE_LABELS = { simple: "Simples", alternatives: "Alternativas", progression: "Progressão" };
-function templateStructureFields(prefix, current, rows) {
+function templateStructureFields(prefix, current, rows, inline = false) {
   const type = current.structure_type || "simple";
   const groups = [...new Set(rows.filter((row) => row.product_id === productActivityState.productId).map((row) => row.structure_group).filter(Boolean))].sort(compareLabels);
-  return `<div class="field task-form-wide template-structure"><label for="${prefix}-structure-type">Estrutura</label><select id="${prefix}-structure-type">${Object.entries(TEMPLATE_STRUCTURE_LABELS).map(([value, label]) => `<option value="${value}"${value === type ? " selected" : ""}>${label}</option>`).join("")}</select>
+  const choices = inline ? `<div class="structure-inline"><span id="${prefix}-structure-label">Estrutura</span><div class="structure-choices" id="${prefix}-structure-type" role="radiogroup" aria-labelledby="${prefix}-structure-label">${Object.entries(TEMPLATE_STRUCTURE_LABELS).map(([value, label]) => `<label><input type="radio" name="${prefix}-structure" value="${value}"${value === type ? " checked" : ""}><span>${label}</span></label>`).join("")}</div></div>`
+    : `<label for="${prefix}-structure-type">Estrutura</label><select id="${prefix}-structure-type">${Object.entries(TEMPLATE_STRUCTURE_LABELS).map(([value, label]) => `<option value="${value}"${value === type ? " selected" : ""}>${label}</option>`).join("")}</select>`;
+  return `<div class="field task-form-wide template-structure">${choices}
     <div class="structure-details"${type === "simple" ? " hidden" : ""}><label for="${prefix}-structure-group">Grupo</label><input id="${prefix}-structure-group" maxlength="120" list="${prefix}-structure-groups" value="${esc(current.structure_group || "")}"><datalist id="${prefix}-structure-groups">${groups.map((group) => `<option value="${esc(group)}">`).join("")}</datalist>
     <div class="structure-level"${type !== "progression" ? " hidden" : ""}><label for="${prefix}-structure-order">Nível</label><input id="${prefix}-structure-order" type="number" min="1" max="10000" step="1" value="${esc(current.structure_order || 1)}"></div></div></div>`;
+}
+function templateStructureType(prefix) {
+  const control = document.getElementById(`${prefix}-structure-type`);
+  return (control?.matches("select") ? control.value : control?.querySelector("input:checked")?.value) || "simple";
 }
 function wireTemplateStructure(prefix, locked = false) {
   const select = document.getElementById(`${prefix}-structure-type`);
@@ -6285,12 +6299,12 @@ function wireTemplateStructure(prefix, locked = false) {
   const root = select.closest(".template-structure");
   root.querySelectorAll("input,select").forEach((input) => { input.disabled = locked; });
   select.addEventListener("change", () => {
-    root.querySelector(".structure-details").hidden = select.value === "simple";
-    root.querySelector(".structure-level").hidden = select.value !== "progression";
+    root.querySelector(".structure-details").hidden = templateStructureType(prefix) === "simple";
+    root.querySelector(".structure-level").hidden = templateStructureType(prefix) !== "progression";
   });
 }
 function templateStructureValues(prefix) {
-  const type = document.getElementById(`${prefix}-structure-type`)?.value || "simple";
+  const type = templateStructureType(prefix);
   const group = document.getElementById(`${prefix}-structure-group`)?.value.trim() || "";
   const order = Number(document.getElementById(`${prefix}-structure-order`)?.value);
   if (type !== "simple" && !group) throw new Error("Informe o grupo da estrutura.");
@@ -6327,18 +6341,18 @@ function expandResultVariations(rows, section) {
   return result;
 }
 function resultVariationFieldHtml(section, prefix, key, current, locked) {
-  const label = key === "category" ? "Categoria" : "Canal";
+  const label = TASK_VARIATION_FIELDS.find((field) => field.key === key).label;
   if (current.variation_parent_id) return `<div class="field"><label for="${prefix}-${key}">${label}</label><input id="${prefix}-${key}" value="${esc(current[key] || "")}" disabled></div>`;
   const values = current.variation_axes?.[key] || [], persisted = isVariationParent(current);
   const rows = section === "goals" ? loadProductGoals() : loadProductObjectives();
-  const options = normalizeTextList([...rows.map((row) => row[key]), ...values, current[key], ...(key === "channel" ? Object.values(DELIVERY_CHANNEL_OPTIONS).flat() : [])])
+  const options = normalizeTextList([...rows.map((row) => row[key]), ...loadProductActivities().map((row) => row[key]), ...values, current[key], ...(key === "channel" ? Object.values(DELIVERY_CHANNEL_OPTIONS).flat() : [])])
     .sort(compareLabels).map((value) => ({ value, label: value }));
   return `<div class="field task-variation-field"><div class="task-field-heading"><label for="${prefix}-${key}">${label}</label><label class="task-variation-toggle"><input id="${prefix}-vary-${key}" type="checkbox" aria-label="Variações de ${label}"${values.length ? " checked" : ""}${locked || persisted ? " disabled" : ""}><span>Variações</span></label></div>
     <input id="${prefix}-${key}" value="${esc(values.length ? values.join(" | ") : current[key] || "")}"${values.length ? " hidden" : ""}>
     <div class="task-variation-values"${values.length ? "" : " hidden"}>${multiPickerHtml(`${prefix}-variants-${key}`, options, new Set(values), "Selecionar valores", false, false, new Set(persisted ? values : []), true)}</div></div>`;
 }
 function resultVariationAxes(prefix) {
-  return Object.fromEntries(["category", "channel"].filter((key) => document.getElementById(`${prefix}-vary-${key}`)?.checked)
+  return Object.fromEntries(["category", "channel", "module", "submodule"].filter((key) => document.getElementById(`${prefix}-vary-${key}`)?.checked)
     .map((key) => [key, multiPickerValues(`${prefix}-variants-${key}`)]));
 }
 function resultVariationFormValues(section, prefix) {
@@ -6360,11 +6374,11 @@ function wireResultVariations(section, prefix, current) {
   const update = () => {
     const axes = resultVariationAxes(prefix); preview.hidden = !Object.keys(axes).length;
     if (preview.hidden) return;
-    const base = { name: document.getElementById(`${prefix}-name`).value.trim(), category: axes.category ? "" : document.getElementById(`${prefix}-category`).value.trim(), channel: axes.channel ? "" : document.getElementById(`${prefix}-channel`).value.trim() };
+    const base = { name: document.getElementById(`${prefix}-name`).value.trim(), ...Object.fromEntries(["category", "channel", "module", "submodule"].map((key) => [key, axes[key] ? "" : document.getElementById(`${prefix}-${key}`).value.trim()])) };
     try { const combinations = taskVariationCombinations(axes); preview.innerHTML = `<label>${combinations.length} variação(ões)</label><div class="task-variation-preview-list">${combinations.slice(0,20).map((values) => `<div>${esc(resultDisplayName({ ...base, ...values }))}</div>`).join("")}</div>`; }
     catch (error) { preview.textContent = error.message; }
   };
-  ["category", "channel"].forEach((key) => {
+  ["category", "channel", "module", "submodule"].forEach((key) => {
     const toggle = document.getElementById(`${prefix}-vary-${key}`), input = document.getElementById(`${prefix}-${key}`), picker = document.getElementById(`${prefix}-variants-${key}`);
     const host = picker.parentElement; input.dataset.singleValue = current[key] || "";
     wireMultiPicker(picker.id);
@@ -6894,11 +6908,11 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
       ${variationParent ? `<div class="field"><label>Objetivo pai</label><input value="${esc(resultDisplayName(variationParent))}" disabled></div>` : ""}
       ${mainTemplateProductField("po", editId, cloneSourceId)}
       ${mainTemplateOriginField()}
+      <div class="result-field-pair">${resultVariationFieldHtml("objectives", "po", "category", current, variationLocked)}${resultVariationFieldHtml("objectives", "po", "channel", current, variationLocked)}</div>
+      <div class="result-field-pair">${resultVariationFieldHtml("objectives", "po", "module", current, variationLocked)}${resultVariationFieldHtml("objectives", "po", "submodule", current, variationLocked)}</div>
       <div class="field"><label>Objetivo *</label><input id="po-name" value="${esc(cloneSource ? `${current.name || "Objetivo"} - Cópia` : current.name || "")}" placeholder="Ex.: Entrar no Full do Mercado Livre"></div>
-      ${resultVariationFieldHtml("objectives", "po", "category", current, variationLocked)}
-      ${resultVariationFieldHtml("objectives", "po", "channel", current, variationLocked)}
       <div class="field task-variation-preview" id="po-variation-preview" hidden></div>
-      ${templateStructureFields("po", current, objectives)}
+      ${templateStructureFields("po", current, objectives, true)}
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
       <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
       <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
@@ -6961,6 +6975,8 @@ async function saveProductObjective() {
     name,
     completion_criteria: document.getElementById("po-criteria").value.trim(),
     comments: document.getElementById("po-comments").value.trim(),
+    module: document.getElementById("po-module").value.trim(),
+    submodule: document.getElementById("po-submodule").value.trim(),
     category,
     channel,
     notes: document.getElementById("po-notes").value.trim(),
@@ -7100,11 +7116,11 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
       ${variationParent ? `<div class="field"><label>Meta pai</label><input value="${esc(resultDisplayName(variationParent))}" disabled></div>` : ""}
       ${mainTemplateProductField("pg", editId, cloneSourceId)}
       ${mainTemplateOriginField()}
+      <div class="result-field-pair">${resultVariationFieldHtml("goals", "pg", "category", current, variationLocked)}${resultVariationFieldHtml("goals", "pg", "channel", current, variationLocked)}</div>
+      <div class="result-field-pair">${resultVariationFieldHtml("goals", "pg", "module", current, variationLocked)}${resultVariationFieldHtml("goals", "pg", "submodule", current, variationLocked)}</div>
       <div class="field"><label>Meta *</label><input id="pg-name" value="${esc(cloneSource ? `${current.name || "Meta"} - Cópia` : current.name || "")}" placeholder="Ex.: Atingir 500 pedidos mensais"></div>
-      ${resultVariationFieldHtml("goals", "pg", "category", current, variationLocked)}
-      ${resultVariationFieldHtml("goals", "pg", "channel", current, variationLocked)}
       <div class="field task-variation-preview" id="pg-variation-preview" hidden></div>
-      ${templateStructureFields("pg", current, goals)}
+      ${templateStructureFields("pg", current, goals, true)}
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
@@ -7173,6 +7189,8 @@ async function saveProductGoal() {
     target_value: Number(targetValue),
     unit: document.getElementById("pg-unit").value.trim(),
     comments: document.getElementById("pg-comments").value.trim(),
+    module: document.getElementById("pg-module").value.trim(),
+    submodule: document.getElementById("pg-submodule").value.trim(),
     category,
     channel,
     notes: document.getElementById("pg-notes").value.trim(),
@@ -7343,6 +7361,7 @@ function openReadyActivityPicker() {
           const objectiveDraft = {
             id: crypto.randomUUID(), product_id: productActivityState.productId,
             name: sourceObjective.name, completion_criteria: sourceObjective.completion_criteria || "",
+            module: sourceObjective.module || "", submodule: sourceObjective.submodule || "",
             category: sourceObjective.category || "", channel: sourceObjective.channel || "", notes: sourceObjective.notes || "", comments: sourceObjective.comments || "",
             default_owner_id: sourceObjective.default_owner_id || null,
             target_days: sourceObjective.target_days ?? null,
@@ -14240,7 +14259,7 @@ const DELIVERY_MIND_MAP_TASK_ADAPTER = {
 };
 
 const mindMapTitle = (adapter, item) => (adapter?.title || activityDisplayName)(item);
-const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }, { key: "channel", empty: "Sem canal" }];
+const MIND_MAP_CATEGORY_LEVELS = [{ key: "category", empty: "Sem categoria" }, { key: "channel", empty: "Sem canal" }, { key: "module", empty: "Sem módulo" }, { key: "submodule", empty: "Sem submódulo" }];
 const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (item.status || "todo"))?.label || "Em aberto";
 const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
@@ -14356,7 +14375,7 @@ function registrationStructuredNodesHtml(nodes, hierarchy, orderById, adapter) {
   nodes.forEach((node) => {
     const item = node.item;
     if (!item.structure_group || !["alternatives", "progression"].includes(item.structure_type)) { entries.push({ nodes: [node] }); return; }
-    const key = JSON.stringify([item.product_id, item.category, item.channel, item.structure_type, item.structure_group.trim().toLocaleLowerCase("pt-BR")]);
+    const key = JSON.stringify([item.product_id, item.category, item.channel, item.module, item.submodule, item.structure_type, item.structure_group.trim().toLocaleLowerCase("pt-BR")]);
     if (!groups.has(key)) { const group = { key, type: item.structure_type, label: item.structure_group, nodes: [] }; groups.set(key, group); entries.push(group); }
     groups.get(key).nodes.push(node);
   });
