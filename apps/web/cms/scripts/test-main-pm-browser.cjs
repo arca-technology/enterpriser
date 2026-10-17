@@ -26,7 +26,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       currentProfile = { id: 'test-profile', status: 'active', role: 'collaborator', permissions: defaultUserPermissions() };
       render();
     });
-    assert.deepEqual(await page.locator('#tabs .nav-label').allTextContents(), ['Pessoas', 'Empresas', 'Interações', 'Negócios', 'Entregas', 'Tarefas', 'Metas', 'Objetivos']);
+    assert.deepEqual(await page.locator('#tabs .nav-label').allTextContents(), ['Pessoas', 'Empresas', 'Interações', 'Negócios', 'Entregas', 'Objetivos', 'Metas', 'Tarefas']);
     assert.equal(await page.locator('#tabs .nav-module-divider').count(), 1);
     await page.evaluate(() => openRegistrationsModal());
     assert.deepEqual(await page.locator('[data-registration-tab]').allTextContents(), ['Produtos', 'Pipeline', 'Usuários', 'Emails']);

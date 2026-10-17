@@ -802,6 +802,7 @@ function wireMainTemplateProduct(prefix, section) {
       wireMultiPicker(id);
     };
     updatePicker(`${prefix}-${section === "goals" ? "goal" : "objective"}-dependencies`, results.filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: item.name })), `Selecionar ${section === "goals" ? "metas" : "objetivos"}`);
+    if (section === "objectives") updatePicker("po-goal-dependencies", loadProductGoals().filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: resultDisplayName(item) })), "Selecionar metas");
     updatePicker(`${prefix}-activity-dependencies`, loadProductActivities().filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: activityDisplayName(item) })), "Selecionar tarefas");
   });
 }
@@ -1866,10 +1867,13 @@ async function syncDeliveryObjectiveDependencies() {
         .filter((item) => item.project_id === objective.project_id && item.source_template_id === templateId)
         .sort(activityOccurrenceSort)
         .map((item) => item.id));
+    const dependencyGoalIds = normalizeIdList(template.dependency_goal_template_ids)
+      .map((templateId) => loadDeliveryGoals().find((item) => item.project_id === objective.project_id && item.source_template_id === templateId)?.id).filter(Boolean);
     const sameObjectives = JSON.stringify(normalizeIdList(objective.dependency_objective_ids)) === JSON.stringify(dependencyObjectiveIds);
     const sameActivities = JSON.stringify(normalizeIdList(objective.dependency_activity_ids)) === JSON.stringify(dependencyActivityIds);
-    if (sameObjectives && sameActivities) continue;
-    const updates = { dependency_objective_ids: dependencyObjectiveIds, dependency_activity_ids: dependencyActivityIds };
+    const sameGoals = JSON.stringify(normalizeIdList(objective.dependency_goal_ids)) === JSON.stringify(dependencyGoalIds);
+    if (sameObjectives && sameActivities && sameGoals) continue;
+    const updates = { dependency_objective_ids: dependencyObjectiveIds, dependency_activity_ids: dependencyActivityIds, dependency_goal_ids: dependencyGoalIds };
     Object.assign(objective, updates, { updated_at: new Date().toISOString() });
     if (isLive()) await updateRow("deliveryObjectives", objective.id, updates);
     changed = true;
@@ -1936,6 +1940,7 @@ async function syncProductGoals() {
     if (isLive()) cache.deliveryGoals = goals;
     else saveDeliveryGoals(goals);
   }
+  await syncDeliveryObjectiveDependencies();
 }
 async function syncDeliveryGoalDependencies() {
   if (!cache) return;
@@ -4123,6 +4128,35 @@ function orderLeadingTableCells(row, cells) {
 }
 
 const tableExpandMemory = new Map();
+const tableHierarchyFilters = new Map();
+function tableHierarchyFilter(scope) {
+  if (!tableHierarchyFilters.has(scope)) tableHierarchyFilters.set(scope, new Set(["parent", "variations"]));
+  return tableHierarchyFilters.get(scope);
+}
+function hierarchyFilterScope(scope) {
+  return /^(registrations|product):/.test(scope) && /:(activities|goals|objectives)$/.test(scope);
+}
+function openHierarchyFilter(anchor, table, scope) {
+  closeFloaters();
+  const panel = document.createElement("div"); panel.id = "hierarchy-filter-dd"; panel.className = "filter-dd";
+  panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", "Filtrar agrupamento");
+  const selected = tableHierarchyFilter(scope), rect = anchor.getBoundingClientRect();
+  panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 248))}px`;
+  panel.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - 190))}px`;
+  panel.innerHTML = `<div class="dd-head">Agrupamento</div><div class="hierarchy-filter-options">${[["parent", "Pai"], ["variations", "Variações"]].map(([value,label]) => `<label><input type="checkbox" value="${value}"${selected.has(value) ? " checked" : ""}>${label}</label>`).join("")}</div>`;
+  document.body.appendChild(panel);
+  panel.addEventListener("change", (event) => {
+    if (event.target.checked) selected.add(event.target.value); else selected.delete(event.target.value);
+    if (scope.startsWith("registrations:")) { registrationTableState().page = 1; applyRegistrationTableState(table); }
+    else applyProductWorkspaceTableState(table, productWorkspaceTableState());
+    table.refreshExpandColumn?.();
+  });
+  const close = () => { panel.remove(); document.removeEventListener("pointerdown", outside); anchor.focus({ preventScroll: true }); };
+  const outside = (event) => { if (!panel.contains(event.target)) { panel.remove(); document.removeEventListener("pointerdown", outside); } };
+  panel.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } });
+  setTimeout(() => { if (panel.isConnected) document.addEventListener("pointerdown", outside); }, 0);
+  panel.querySelector("input")?.focus();
+}
 function tableExpandHeadInner(enabled, allExpanded) {
   const label = !enabled ? "Nada para expandir nesta tabela" : allExpanded ? "Recolher todos" : "Expandir todos";
   return `<button class="table-expand-btn table-expand-all" type="button" title="${label}" aria-label="${label}"${enabled ? "" : " disabled"}>${enabled && allExpanded ? "▾" : "▸"}</button>`;
@@ -4136,6 +4170,17 @@ function wireTableExpandColumn(table, scope) {
   const headRow = table.tHead?.rows?.[0];
   if (!headRow || headRow.querySelector(".expand-head")) return;
   const dataRows = [...table.querySelectorAll("tbody tr")].filter((row) => row.children.length > 1 && !row.querySelector(".empty"));
+  if (hierarchyFilterScope(scope)) {
+    table.classList.add("variation-hierarchy-table");
+    const section = scope.split(":").at(-1);
+    const items = section === "activities" ? loadProductActivities() : section === "goals" ? loadProductGoals() : loadProductObjectives();
+    dataRows.forEach((row) => {
+      const item = items.find((candidate) => candidate.id === row.dataset.id || (row.dataset.taskGroup && productTemplateGroupKey(candidate, items) === row.dataset.taskGroup));
+      row.dataset.variationKind = item?.variation_parent_id ? "variations" : "parent";
+      if (row.dataset.id) row.dataset.expandId ||= row.dataset.id;
+      if (row.dataset.parentId) row.dataset.expandParent ||= row.dataset.parentId;
+    });
+  }
   const childrenOf = (id) => dataRows.filter((row) => row.dataset.expandParent === id);
   const parents = dataRows.filter((row) => row.dataset.expandId && childrenOf(row.dataset.expandId).length);
   if (!tableExpandMemory.has(scope)) tableExpandMemory.set(scope, new Map());
@@ -4153,6 +4198,7 @@ function wireTableExpandColumn(table, scope) {
   table.querySelectorAll("tbody tr .empty").forEach((cell) => { cell.colSpan = Number(cell.colSpan || 1) + 1; });
   const proxyOf = (parent) => parent.querySelector(".registration-task-toggle[data-group]");
   const isExpanded = (parent) => childrenOf(parent.dataset.expandId).some((row) => !row.hidden);
+  const canExpand = (parent) => !hierarchyFilterScope(scope) || (tableHierarchyFilter(scope).has("parent") && childrenOf(parent.dataset.expandId).some((row) => tableHierarchyFilter(scope).has(row.dataset.variationKind || "parent")));
   const paint = (parent) => {
     const button = parent.querySelector(":scope > .expand-cell .table-row-expand");
     if (!button) return;
@@ -4161,12 +4207,17 @@ function wireTableExpandColumn(table, scope) {
     button.title = expanded ? "Recolher" : "Expandir";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-expanded", String(expanded));
+    button.disabled = !canExpand(parent);
   };
-  const paintHead = () => { head.innerHTML = tableExpandHeadInner(parents.length > 0, parents.length > 0 && parents.every(isExpanded)); };
+  const paintHead = () => {
+    const enabled = parents.filter((parent) => !parent.hidden && canExpand(parent));
+    head.innerHTML = tableExpandHeadInner(enabled.length > 0, enabled.length > 0 && enabled.every(isExpanded));
+    if (hierarchyFilterScope(scope)) head.classList.toggle("filtered", tableHierarchyFilter(scope).size !== 2);
+  };
   const setExpanded = (parent, expanded) => {
     const proxy = proxyOf(parent);
     if (proxy) { if (isExpanded(parent) !== expanded) proxy.click(); }
-    else childrenOf(parent.dataset.expandId).forEach((row) => { row.hidden = !expanded; });
+    else childrenOf(parent.dataset.expandId).forEach((row) => { row.hidden = !expanded || (hierarchyFilterScope(scope) && !tableHierarchyFilter(scope).has(row.dataset.variationKind || "parent")); });
     memory.set(parent.dataset.expandId, expanded);
     paint(parent);
   };
@@ -4174,21 +4225,37 @@ function wireTableExpandColumn(table, scope) {
     const id = parent.dataset.expandId;
     if (!proxyOf(parent) && memory.has(id)) childrenOf(id).forEach((row) => { row.hidden = !memory.get(id); });
     const cell = parent.querySelector(":scope > .expand-cell");
-    cell.innerHTML = tableRowExpandInner(isExpanded(parent));
+    const proxy = proxyOf(parent);
+    if (proxy) { proxy.classList.add("table-expand-btn", "table-row-expand"); cell.appendChild(proxy); }
+    else cell.innerHTML = tableRowExpandInner(isExpanded(parent));
     cell.firstChild.addEventListener("click", (event) => {
       event.stopPropagation();
-      setExpanded(parent, !isExpanded(parent));
+      if (!proxy) setExpanded(parent, !isExpanded(parent));
+      else { memory.set(id, isExpanded(parent)); paint(parent); }
       paintHead();
     });
   });
-  paintHead();
+  table.refreshExpandColumn = () => { parents.forEach(paint); paintHead(); };
+  table.refreshExpandColumn();
   head.addEventListener("click", (event) => {
     if (!event.target.closest(".table-expand-all") || !parents.length) return;
     event.stopPropagation();
-    const expand = parents.some((parent) => !isExpanded(parent));
-    parents.forEach((parent) => setExpanded(parent, expand));
+    const eligible = parents.filter((parent) => !parent.hidden && canExpand(parent));
+    const expand = eligible.some((parent) => !isExpanded(parent));
+    eligible.forEach((parent) => setExpanded(parent, expand));
     paintHead();
   });
+  if (hierarchyFilterScope(scope)) {
+    head.tabIndex = 0; head.title = "Agrupamento: filtrar Pai e Variações";
+    table.addEventListener("contextmenu", (event) => {
+      const cell = event.target.closest(".expand-head,.expand-cell");
+      if (!cell || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault(); event.stopPropagation(); openHierarchyFilter(cell, table, scope);
+    });
+    head.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); openHierarchyFilter(head, table, scope); }
+    });
+  }
 }
 
 function renderTableActionsHead(head, count, provider, getIds, clearSelection) {
@@ -6153,8 +6220,8 @@ function productResultIdentity(item) {
 
 function isVariationParent(item) { return Boolean(Object.keys(item?.variation_axes || {}).length); }
 function resultVariationDetailFields(section) {
-  return ["comments", "notes", "target_days", "default_owner_id", "default_assignee_ids", "assign_to_client", "dependency_activity_template_ids",
-    ...(section === "goals" ? ["metric", "comparison", "target_value", "unit", "dependency_goal_template_ids"] : ["completion_criteria", "dependency_objective_template_ids"])];
+  return ["comments", "notes", "target_days", "default_owner_id", "default_assignee_ids", "assign_to_client", "dependency_activity_template_ids", "dependency_goal_template_ids",
+    ...(section === "goals" ? ["metric", "comparison", "target_value", "unit"] : ["completion_criteria", "dependency_objective_template_ids"])];
 }
 function applyResultVariationDetails(row, changes, section) {
   if (!row.variation_parent_id) return { ...row, ...changes };
@@ -6202,6 +6269,7 @@ function resultVariationFormValues(section, prefix) {
   return { comments: document.getElementById(`${prefix}-comments`).value.trim(), notes: document.getElementById(`${prefix}-notes`).value.trim(),
     target_days: days === "" ? null : Number(days), default_owner_id: assignees.ids[0] || null, default_assignee_ids: assignees.ids, assign_to_client: assignees.assignToClient,
     [`dependency_${resultKey}_template_ids`]: multiPickerValues(`${prefix}-${resultKey}-dependencies`), dependency_activity_template_ids: multiPickerValues(`${prefix}-activity-dependencies`),
+    ...(section === "objectives" ? { dependency_goal_template_ids: multiPickerValues("po-goal-dependencies") } : {}),
     ...(section === "goals" ? { metric: document.getElementById(`${prefix}-metric`).value.trim(), comparison: document.getElementById(`${prefix}-comparison`).value,
       target_value: Number(document.getElementById(`${prefix}-target`).value), unit: document.getElementById(`${prefix}-unit`).value.trim() }
       : { completion_criteria: document.getElementById(`${prefix}-criteria`).value.trim() }) };
@@ -6298,9 +6366,9 @@ function openProductActivities(productId, opts = {}) {
   if (!product) return;
   productActivityState = { productId, editId: null, objectiveEditId: null, goalEditId: null, tab: "activities" };
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Configuração do produto">
-    <button class="modal-header-tab active" data-product-tab="activities" role="tab">Tarefas</button>
     <button class="modal-header-tab" data-product-tab="objectives" role="tab">Objetivos</button>
     <button class="modal-header-tab" data-product-tab="goals" role="tab">Metas</button>
+    <button class="modal-header-tab active" data-product-tab="activities" role="tab">Tarefas</button>
   </div>`;
   const returnSection = opts.returnToRegistrations || null;
   shell(`Produto · ${product.name}`, `<div id="product-activities-root"></div>`, {
@@ -6474,17 +6542,28 @@ function applyProductWorkspaceTableState(table, tableState) {
   rows.filter((row) => !visited.has(row)).sort(compare).forEach(append);
   const active = Object.entries(tableState.filters).filter(([, values]) => values?.size);
   const query = tableState.search.trim().toLocaleLowerCase("pt-BR");
-  const visible = new Set(rows.filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
+  const scope = `product:${productActivityState.productId}:${productActivityState.tab}`;
+  const hierarchy = tableHierarchyFilter(scope);
+  const visible = new Set(rows.filter((row) => hierarchy.has(row.dataset.variationKind || "parent") && (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
     && active.every(([key, values]) => values.has(productWorkspaceCellValue(row, key)))));
   // A matching subtask keeps its parent visible as context, never as another match.
   [...visible].forEach((row) => {
     let parent = byId.get(row.dataset.parentId);
     const path = new Set([row]);
-    while (parent && !path.has(parent)) { path.add(parent); visible.add(parent); parent = byId.get(parent.dataset.parentId); }
+    while (parent && !path.has(parent)) { path.add(parent); if (hierarchy.has(parent.dataset.variationKind || "parent")) visible.add(parent); parent = byId.get(parent.dataset.parentId); }
   });
   ordered.forEach((row) => {
     table.tBodies[0].appendChild(row);
     row.hidden = !visible.has(row);
+    if (!row.hidden && hierarchy.has("parent")) {
+      let parentId = row.dataset.parentId;
+      const path = new Set();
+      while (parentId && !path.has(parentId)) {
+        path.add(parentId);
+        if (tableExpandMemory.get(scope)?.get(parentId) === false) row.hidden = true;
+        parentId = byId.get(parentId)?.dataset.parentId;
+      }
+    }
     if (row.classList.contains("pa-row")) row.draggable = !tableState.sortKey && !active.length && !query && !loadProductActivities().find((item) => item.id === row.dataset.id)?.variation_parent_id;
   });
   table.querySelector(".product-filter-empty")?.remove();
@@ -6493,6 +6572,7 @@ function applyProductWorkspaceTableState(table, tableState) {
     empty.className = "product-filter-empty";
     empty.innerHTML = `<td class="empty" colspan="${table.tHead.rows[0].cells.length}">Nenhum registro corresponde aos filtros.</td>`;
   }
+  table.refreshExpandColumn?.();
   const headers = [...table.querySelectorAll("th[data-product-column]")];
   headers.forEach((header) => {
     const selected = tableState.sortKey === header.dataset.productColumn;
@@ -6577,6 +6657,7 @@ function wireProductWorkspaceTable() {
   applyProductWorkspaceTableState(table, tableState);
   wireSecondaryTableSelection(table, `product:${productActivityState.productId}:${productActivityState.tab}`);
   applyProductWorkspaceColumnPreferences(table);
+  applyProductWorkspaceTableState(table, tableState);
 }
 
 function renderProductActivities() {
@@ -6678,6 +6759,7 @@ function renderProductObjectives() {
     const dependencyActivities = normalizeIdList(item.dependency_activity_template_ids)
       .map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName);
     const dependencies = [...dependencyObjectives, ...dependencyActivities];
+    dependencies.push(...normalizeIdList(item.dependency_goal_template_ids).map((id) => loadProductGoals().find((goal) => goal.id === id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`));
     return `<tr data-id="${esc(item.id)}">
       <td><strong>${esc(resultDisplayName(item))}</strong></td>
       <td>${esc(item.completion_criteria || "—")}</td>
@@ -6718,6 +6800,8 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   const objectiveDependencyOptions = objectives
     .filter((item) => item.id !== editId && !isVariationParent(item))
     .map((item) => ({ value: item.id, label: item.name }));
+  const goalDependencyOptions = loadProductGoals().filter((item) => item.product_id === productActivityState.productId && !isVariationParent(item))
+    .map((item) => ({ value: item.id, label: resultDisplayName(item) }));
   const activityDependencyOptions = loadProductActivities()
     .filter((item) => item.product_id === productActivityState.productId && !Object.keys(item.variation_axes || {}).length)
     .map((item) => ({ value: item.id, label: activityDisplayName(item) }));
@@ -6740,6 +6824,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
       <div class="field"><label>Responsáveis padrão</label>${multiPickerHtml("po-assignees", assigneePickerOptions(selectedAssignees), selectedAssignees, "Selecionar responsáveis")}</div>
       <div class="field"><label>Prazo sugerido (dias)</label><input id="po-target-days" type="number" min="0" step="1" value="${esc(current.target_days ?? "")}" placeholder="Ex.: 30"></div>
       <div class="field"><label>Depende de objetivos</label>${multiPickerHtml("po-objective-dependencies", objectiveDependencyOptions, new Set(normalizeIdList(current.dependency_objective_template_ids)), "Selecionar objetivos")}</div>
+      <div class="field"><label>Depende de metas</label>${multiPickerHtml("po-goal-dependencies", goalDependencyOptions, new Set(normalizeIdList(current.dependency_goal_template_ids)), "Selecionar metas")}</div>
       <div class="field"><label>Depende de tarefas</label>${multiPickerHtml("po-activity-dependencies", activityDependencyOptions, new Set(normalizeIdList(current.dependency_activity_template_ids)), "Selecionar tarefas")}</div>
     </div>
     <div class="modal-foot"><button class="btn" id="po-cancel">Cancelar</button><button class="btn primary" id="po-save">${editId ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
@@ -6750,6 +6835,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   document.getElementById("po-save").addEventListener("click", saveProductObjective);
   wireMultiPicker("po-assignees");
   wireMultiPicker("po-objective-dependencies");
+  wireMultiPicker("po-goal-dependencies");
   wireMultiPicker("po-activity-dependencies");
   wireMainTemplateProduct("po", "objectives");
   wireResultVariations("objectives", "po", current);
@@ -6800,6 +6886,7 @@ async function saveProductObjective() {
     default_assignee_ids: assignees.ids,
     assign_to_client: assignees.assignToClient,
     dependency_objective_template_ids: dependencyObjectiveIds,
+    dependency_goal_template_ids: multiPickerValues("po-goal-dependencies"),
     dependency_activity_template_ids: dependencyActivityIds,
     target_days: targetValue === "" ? null : Number(targetValue),
     sort_order: current?.sort_order ?? (Math.max(-1, ...productRows.map((item) => Number(item.sort_order || 0))) + 1),
@@ -8009,9 +8096,9 @@ function openProjectBoard(projectId) {
   projectBoardState = { projectId, view: "dashboard", section: "overview", search: "", page: 1, pageSize: 50, calendarCursor: null, sortKey: null, sortDir: 1, filters: {} };
   const headerCenter = `<div class="modal-header-tabs" role="tablist" aria-label="Conteúdo da entrega">
     <button class="modal-header-tab active" data-project-section="overview" role="tab">Visão geral</button>
-    <button class="modal-header-tab" data-project-section="activities" role="tab">Tarefas</button>
     <button class="modal-header-tab" data-project-section="objectives" role="tab">Objetivos</button>
     <button class="modal-header-tab" data-project-section="goals" role="tab">Metas</button>
+    <button class="modal-header-tab" data-project-section="activities" role="tab">Tarefas</button>
     <button class="modal-header-tab" data-project-section="data" role="tab">Dados</button>
   </div>`;
   shell(`Entrega · ${project.name || "Sem nome"}`, `<div id="project-board-root" class="full-body"></div>`, {
@@ -8280,13 +8367,16 @@ function deliveryObjectiveDependencyState(objective) {
     .map((id) => tasks.find((item) => item.id === id)).filter(Boolean);
   const pendingObjectives = dependencyObjectives.filter((item) => item.status !== "done");
   const pendingActivities = dependencyActivities.filter((item) => item.status !== "done");
-  return { dependencyObjectives, dependencyActivities, pendingObjectives, pendingActivities, blocked: Boolean(pendingObjectives.length || pendingActivities.length) };
+  const dependencyGoals = normalizeIdList(objective.dependency_goal_ids).map((id) => loadDeliveryGoals().find((item) => item.id === id && item.project_id === objective.project_id)).filter(Boolean);
+  const pendingGoals = dependencyGoals.filter((item) => item.status !== "done");
+  return { dependencyObjectives, dependencyActivities, dependencyGoals, pendingObjectives, pendingActivities, pendingGoals, blocked: Boolean(pendingObjectives.length || pendingActivities.length || pendingGoals.length) };
 }
 
 function deliveryObjectiveDependencyLabel(objective) {
   const state = deliveryObjectiveDependencyState(objective);
   return [
     ...state.dependencyObjectives.map(resultDisplayName),
+    ...state.dependencyGoals.map((goal) => `Meta: ${resultDisplayName(goal)}`),
     ...state.dependencyActivities.map(activityDisplayName)
   ].join(", ") || "—";
 }
@@ -8786,7 +8876,7 @@ async function updateDeliveryObjective(objectiveId, patch) {
   if (patch.status && patch.status !== "todo") {
     const dependencyState = deliveryObjectiveDependencyState(objective);
     if (dependencyState.blocked) {
-      const pending = dependencyState.pendingObjectives[0]?.name || activityDisplayName(dependencyState.pendingActivities[0]);
+      const pending = dependencyState.pendingObjectives[0]?.name || dependencyState.pendingGoals[0]?.name || activityDisplayName(dependencyState.pendingActivities[0]);
       toast(`Conclua "${pending}" antes de avançar este objetivo.`, true);
       return false;
     }
@@ -8846,6 +8936,8 @@ async function updateDeliveryGoal(goalId, patch) {
     }
   }
   if (patch.status && patch.status !== "done" && goal.status === "done") {
+    const activeObjective = loadDeliveryObjectives().find((item) => normalizeIdList(item.dependency_goal_ids).includes(goal.id) && item.status !== "todo");
+    if (activeObjective) { toast(`Volte "${activeObjective.name}" para A fazer antes de reabrir esta meta.`, true); return false; }
     const activeDependent = rows.find((item) => normalizeIdList(item.dependency_goal_ids).includes(goal.id) && item.status !== "todo");
     if (activeDependent) {
       toast(`Volte "${activeDependent.name}" para A fazer antes de reabrir esta meta.`, true);
@@ -9517,6 +9609,7 @@ function wireProjectBoard(projectId) {
 }
 
 function closeFloaters() {
+  document.getElementById("hierarchy-filter-dd")?.remove();
   document.getElementById("product-filter-dd")?.remove();
   document.getElementById("product-view-dd")?.remove();
   document.getElementById("filter-dd")?.remove();
@@ -14065,7 +14158,8 @@ const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   groupId: (item) => item.id,
   parent: (item, items) => items.find((candidate) => candidate.id === item.variation_parent_id) || null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
-  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
+  extraDependencyNames: (item) => [...normalizeIdList(item.dependency_goal_template_ids).map((id) => loadProductGoals().find((goal) => goal.id === id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`),
+    ...normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)],
   subtitle: (node) => registrationProductName(node.item.product_id),
   searchText: (item) => [registrationProductName(item.product_id), item.channel, item.completion_criteria, item.comments, item.notes].join(" "),
   editClass: "reg-template-edit",
@@ -14076,6 +14170,7 @@ const REGISTRATION_MIND_MAP_GOAL_ADAPTER = {
   scope: "registration-goals", rootLabel: "Metas", countLabel: "meta(s)", addTitle: "Adicionar meta",
   title: resultDisplayName,
   dependencies: (item) => normalizeIdList(item.dependency_goal_template_ids),
+  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
   subtitle: (node) => `${registrationProductName(node.item.product_id)} · ${node.item.metric || "Sem indicador"}`,
   searchText: (item) => [registrationProductName(item.product_id), item.metric, item.unit, item.comments, item.notes].join(" ")
 };
@@ -14085,7 +14180,8 @@ const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
   groupId: (item) => item.id,
   parent: () => null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_ids),
-  extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName),
+  extraDependencyNames: (item) => [...normalizeIdList(item.dependency_goal_ids).map((id) => loadDeliveryGoals().find((goal) => goal.id === id && goal.project_id === item.project_id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`),
+    ...normalizeIdList(item.dependency_activity_ids).map((id) => operationalProjectTasks(item.project_id).find((task) => task.id === id)).filter(Boolean).map(activityDisplayName)],
   subtitle: (node) => node.item.due_date ? `${mindMapStatusLabel(node.item)} · ${dt(node.item.due_date)}` : mindMapStatusLabel(node.item),
   searchText: (item) => [item.completion_criteria, item.comments, item.notes].join(" "),
   editClass: "",
@@ -15102,6 +15198,7 @@ function renderRegistrationsSection() {
     const rows = items.map((item) => {
       const dependencies = [
         ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
+        ...normalizeIdList(item.dependency_goal_template_ids).map((id) => loadProductGoals().find((goal) => goal.id === id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
       return `<tr><td><strong>${esc(resultDisplayName(item))}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.completion_criteria || "—")}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client)}</td><td class="act table-actions-cell">${tableActionButtons({
@@ -15250,6 +15347,7 @@ function wireRegistrationTable() {
   applyRegistrationColumnPreferences(table);
   applyRegistrationTableState(table);
   wireSecondaryTableSelection(table, `registrations:${registrationsState.section}`);
+  applyRegistrationTableState(table);
 }
 
 function setupRegistrationToolbar(root, table) {
@@ -15414,7 +15512,11 @@ function openRegistrationColumnManager(table) {
 function applyRegistrationTableState(table) {
   const tableState = registrationTableState();
   table.querySelector(".registration-filter-empty")?.remove();
-  const rows = registrationTableRows(table);
+  const allRows = registrationTableRows(table, true);
+  const hierarchy = tableHierarchyFilter(`registrations:${registrationsState.section}`);
+  const pmSection = ["activities", "goals", "objectives"].includes(registrationsState.section);
+  const rows = !pmSection ? registrationTableRows(table) : hierarchy.has("parent") ? registrationTableRows(table)
+    : hierarchy.has("variations") ? allRows.filter((row) => row.dataset.variationKind === "variations") : [];
   const query = String(tableState.search || "").toLocaleLowerCase("pt-BR");
   const filteredRows = rows.filter((row) => (!query || row.textContent.toLocaleLowerCase("pt-BR").includes(query))
     && Object.entries(tableState.filters).every(([key, selected]) => {
@@ -15432,7 +15534,7 @@ function applyRegistrationTableState(table) {
   tableState.page = Math.min(Math.max(1, tableState.page || 1), totalPages);
   const start = (tableState.page - 1) * tableState.pageSize;
   const pageRows = new Set(filteredRows.slice(start, start + tableState.pageSize));
-  rows.forEach((row) => { row.hidden = !pageRows.has(row); });
+  allRows.forEach((row) => { row.hidden = !pageRows.has(row); });
   if (["activities", "goals", "objectives"].includes(registrationsState.section)) {
     rows.forEach((row) => {
       const groupId = row.dataset.taskGroup;
@@ -15441,7 +15543,7 @@ function applyRegistrationTableState(table) {
       if (!childRows.length) return;
       row.after(...childRows);
       const hideChildren = row.hidden || !registrationExpandedTaskGroups.has(groupId);
-      childRows.forEach((childRow) => { childRow.hidden = hideChildren; });
+      childRows.forEach((childRow) => { childRow.hidden = hideChildren || !hierarchy.has(childRow.dataset.variationKind || "parent"); });
     });
   }
   if (rows.length && !filteredRows.length) {
@@ -15457,6 +15559,7 @@ function applyRegistrationTableState(table) {
       header.insertAdjacentHTML("beforeend", `<span class="arrow registration-sort-arrow">${tableState.sortDir > 0 ? "▲" : "▼"}</span>`);
     }
   });
+  table.refreshExpandColumn?.();
   renderRegistrationFilterBadges(table);
   renderRegistrationPagination(table, filteredRows.length, totalPages);
   table._refreshSecondarySelection?.();
