@@ -782,8 +782,13 @@ function productDrawerHost() {
 }
 
 function mainTemplateProductField(prefix, editId, cloneSourceId) {
-  if (!mainPmCatalogActive() || editId || cloneSourceId) return "";
-  return `<div class="field"><label>Produto *</label><select id="${prefix}-product">${[...cache.products].sort((a, b) => compareLabels(a.name, b.name)).map((product) => `<option value="${esc(product.id)}"${product.id === productActivityState.productId ? " selected" : ""}>${esc(product.name)}</option>`).join("")}</select></div>`;
+  const section = prefix === "pg" ? "goals" : "objectives", rows = resultTemplateRows(section);
+  const current = rows.find((item) => item.id === editId);
+  const linked = current ? resultTemplateGroupMembers(current, rows) : [];
+  productActivityState.resultTemplateGroupId = current?.template_group_id || current?.id || crypto.randomUUID();
+  const selected = new Set(linked.length ? linked.map((item) => item.product_id) : [productActivityState.productId]);
+  const options = [...cache.products].sort((a, b) => compareLabels(a.name, b.name)).map((product) => ({ value: product.id, label: product.name }));
+  return `<div class="field"><label>Produtos *</label>${multiPickerHtml(`${prefix}-products`, options, selected, "Selecionar produtos", false, Boolean(current?.variation_parent_id), new Set(linked.map((item) => item.product_id)))}</div>`;
 }
 
 function mainTemplateOriginField() {
@@ -791,20 +796,9 @@ function mainTemplateOriginField() {
 }
 
 function wireMainTemplateProduct(prefix, section) {
-  wireProductErpDefaults(prefix, document.getElementById(`${prefix}-product`), () => [document.getElementById(`${prefix}-product`)?.value], true);
-  document.getElementById(`${prefix}-product`)?.addEventListener("change", (event) => {
-    productActivityState.productId = event.target.value;
-    const results = section === "goals" ? loadProductGoals() : loadProductObjectives();
-    const updatePicker = (id, options, placeholder) => {
-      const root = document.getElementById(id);
-      const selected = new Set(multiPickerValues(id).filter((value) => options.some((option) => option.value === value)));
-      root.outerHTML = multiPickerHtml(id, options, selected, placeholder);
-      wireMultiPicker(id);
-    };
-    updatePicker(`${prefix}-${section === "goals" ? "goal" : "objective"}-dependencies`, results.filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: item.name })), `Selecionar ${section === "goals" ? "metas" : "objetivos"}`);
-    if (section === "objectives") updatePicker("po-goal-dependencies", loadProductGoals().filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: resultDisplayName(item) })), "Selecionar metas");
-    updatePicker(`${prefix}-activity-dependencies`, loadProductActivities().filter((item) => item.product_id === event.target.value && !isVariationParent(item)).map((item) => ({ value: item.id, label: activityDisplayName(item) })), "Selecionar tarefas");
-  });
+  wireMultiPicker(`${prefix}-products`);
+  const editing = section === "goals" ? productActivityState.goalEditId : productActivityState.objectiveEditId;
+  wireProductErpDefaults(prefix, document.getElementById(`${prefix}-products`), () => multiPickerValues(`${prefix}-products`), !editing);
 }
 const SINGULAR = { contacts: "pessoa", companies: "empresa", conversations: "conversa", deals: "negócio", products: "produto", projects: "entrega" };
 const PERMISSION_ACTIONS = [
@@ -6278,6 +6272,186 @@ function productResultIdentity(item) {
     .map((value) => String(value || "").trim().toLocaleLowerCase("pt-BR")), item?.variation_axes || {}]);
 }
 
+function resultTemplateRows(section) {
+  return section === "goals" ? loadProductGoals() : loadProductObjectives();
+}
+
+function resultTemplateGroupMembers(item, rows) {
+  if (item.variation_parent_id) return [item];
+  const key = item.template_group_id || item.id;
+  return rows.filter((row) => !row.variation_parent_id && (row.template_group_id || row.id) === key);
+}
+
+function resultTemplateCatalogRows(rows) {
+  const seen = new Set(), parents = new Set();
+  const roots = rows.filter((row) => {
+    if (row.variation_parent_id) return false;
+    const group = row.template_group_id || row.id;
+    if (seen.has(group)) return false;
+    seen.add(group); parents.add(row.id); return true;
+  });
+  return [...roots, ...rows.filter((row) => parents.has(row.variation_parent_id))];
+}
+
+function resultTemplateProductNames(item, rows) {
+  const parent = rows.find((row) => row.id === item.variation_parent_id);
+  return [...new Set(resultTemplateGroupMembers(parent || item, rows).map((row) => registrationProductName(row.product_id)))].sort(compareLabels).join(", ");
+}
+
+function resultTemplateMapGroup(item, rows) {
+  const parent = rows.find((row) => row.id === item.variation_parent_id);
+  return parent ? `${parent.template_group_id || parent.id}:${taskVariationKey(item.variation_values)}` : item.template_group_id || item.id;
+}
+
+function resultDependencyTarget(id, rows, productId, identity) {
+  const source = rows.find((row) => row.id === id);
+  if (!source) throw new Error("Uma dependência não foi encontrada. Atualize o cadastro antes de vincular.");
+  if (source.product_id === productId) return id;
+  const parent = rows.find((row) => row.id === source.variation_parent_id);
+  const group = parent?.template_group_id || parent?.id || source.template_group_id || source.id;
+  const targets = rows.filter((row) => row.product_id === productId && !isVariationParent(row));
+  const linked = targets.filter((row) => {
+    const targetParent = rows.find((entry) => entry.id === row.variation_parent_id);
+    return (targetParent?.template_group_id || targetParent?.id || row.template_group_id || row.id) === group
+      && Boolean(source.variation_parent_id) === Boolean(row.variation_parent_id)
+      && (!parent || taskVariationKey(row.variation_values) === taskVariationKey(source.variation_values));
+  });
+  const matches = linked.length ? linked : targets.filter((row) => identity(row) === identity(source));
+  if (matches.length !== 1) throw new Error(`Vincule primeiro a dependência “${source.name || source.activity}” ao produto ${registrationProductName(productId)}. Nenhum vínculo foi salvo.`);
+  return matches[0].id;
+}
+
+function remapResultDependencies(body, productId) {
+  const next = { ...body };
+  for (const [key, rows, identity] of [
+    ["dependency_objective_template_ids", loadProductObjectives(), productResultIdentity],
+    ["dependency_goal_template_ids", loadProductGoals(), productResultIdentity],
+    ["dependency_activity_template_ids", loadProductActivities(), productActivityIdentity]
+  ]) if (Object.hasOwn(next, key)) next[key] = normalizeIdList(next[key]).map((id) => resultDependencyTarget(id, rows, productId, identity));
+  return next;
+}
+
+function resultTemplateLinkEntry(section, source, body, productId, existing, groupId) {
+  const rows = resultTemplateRows(section), now = new Date().toISOString();
+  const id = existing?.id || (productId === source?.product_id ? source.id : crypto.randomUUID());
+  const changes = remapResultDependencies({ ...body, updated_at: now }, productId);
+  if (!source?.variation_parent_id) Object.assign(changes, {
+    product_id: productId, template_group_id: groupId,
+    sort_order: existing?.sort_order ?? Math.max(-1, ...rows.filter((row) => row.product_id === productId).map((row) => Number(row.sort_order || 0))) + 1
+  });
+  const variantDetails = existing || !source ? [] : rows.filter((row) => row.variation_parent_id === source.id).map((child) => ({
+    values: child.variation_values,
+    changes: remapResultDependencies(Object.fromEntries(resultVariationDetailFields(section).filter((key) => (child.variation_override_fields || []).includes(key)).map((key) => [key, child[key]])), productId)
+  })).filter((detail) => Object.keys(detail.changes).length);
+  return { id, body: changes, variantDetails };
+}
+
+function validateResultTemplateLinks(section, entries) {
+  const rows = resultTemplateRows(section), replaced = new Set(entries.map((entry) => entry.id));
+  const seen = new Set(rows.filter((row) => !replaced.has(row.id) && !replaced.has(row.variation_parent_id)).map((row) => `${row.product_id}:${productResultIdentity(row)}`));
+  for (const entry of entries) {
+    const current = rows.find((row) => row.id === entry.id), body = { ...current, ...entry.body, id: entry.id };
+    const candidates = [body, ...(isVariationParent(body) ? taskVariationCombinations(body.variation_axes).map((values) => ({ ...body, ...values, variation_axes: {} })) : [])];
+    for (const candidate of candidates) {
+      const key = `${candidate.product_id}:${productResultIdentity(candidate)}`;
+      if (seen.has(key)) throw new Error(`Já existe este cadastro em ${registrationProductName(candidate.product_id)}. Nenhum vínculo foi salvo.`);
+      seen.add(key);
+    }
+    const dependencies = section === "goals" ? body.dependency_goal_template_ids : body.dependency_objective_template_ids;
+    if ((section === "goals" ? createsGoalDependencyCycle : createsObjectiveDependencyCycle)(rows, entry.id, normalizeIdList(dependencies))) throw new Error("Essa dependência criaria um ciclo. Nenhum vínculo foi salvo.");
+  }
+}
+
+async function persistResultTemplateLinks(section, entries) {
+  const table = section === "goals" ? "productGoals" : "productObjectives", rows = resultTemplateRows(section);
+  const permission = PM_TEMPLATE_MODULE[section];
+  if (entries.some((entry) => rows.some((row) => row.id === entry.id) ? !currentUserCan(permission, "edit") : !(currentUserCan(permission, "create") || currentUserCan(permission, "clone")))) throw new Error("Sem permissão para salvar estes vínculos.");
+  validateResultTemplateLinks(section, entries);
+  if (isLive()) {
+    await api("rpc/save_result_template_links", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      p_section: section, p_records: entries.map((entry) => ({ id: entry.id, body: toRemoteBody(table, entry.body),
+        variant_details: entry.variantDetails.map((detail) => ({ values: detail.values, changes: toRemoteBody(table, detail.changes) })) }))
+    }) });
+    entries.forEach((entry) => logUserActivity(rows.some((row) => row.id === entry.id) ? activityUpdateVerb(table, entry.body) : "Criou", table, entry.id, activityRecordLabel(table, entry.id, entry.body)));
+    cache[table] = await fetchTable(table);
+    return;
+  }
+  let next = rows.map((row) => ({ ...row }));
+  for (const entry of entries) {
+    const index = next.findIndex((row) => row.id === entry.id);
+    if (index >= 0) next[index] = applyResultVariationDetails(next[index], entry.body, section);
+    else next.push({ id: entry.id, created_at: new Date().toISOString(), ...entry.body });
+  }
+  next = expandResultVariations(next, section);
+  for (const entry of entries) for (const detail of entry.variantDetails) {
+    const index = next.findIndex((row) => row.variation_parent_id === entry.id && taskVariationKey(row.variation_values) === taskVariationKey(detail.values));
+    if (index < 0) throw new Error("Variação não encontrada. Nenhum vínculo foi salvo.");
+    next[index] = applyResultVariationDetails(next[index], detail.changes, section);
+  }
+  if (section === "goals") saveProductGoals(next); else saveProductObjectives(next);
+}
+
+function resultTemplateSaveEntries(section, prefix, current, changes) {
+  const products = multiPickerValues(`${prefix}-products`), rows = resultTemplateRows(section);
+  if (!products.length) throw new Error("Selecione pelo menos um produto.");
+  const linked = current ? resultTemplateGroupMembers(current, rows) : [];
+  if (linked.some((item) => !products.includes(item.product_id))) throw new Error("Preserve os produtos já vinculados para manter as execuções e dependências.");
+  const group = current?.template_group_id || current?.id || productActivityState.resultTemplateGroupId;
+  return products.map((productId) => {
+    const existing = linked.find((row) => row.product_id === productId);
+    const draft = current || { id: productActivityState.resultVariationDraftId, product_id: productActivityState.productId };
+    return resultTemplateLinkEntry(section, draft, changes, productId, existing, group);
+  });
+}
+
+function openReadyResultPicker(section) {
+  const isGoal = section === "goals", label = isGoal ? "metas" : "objetivos";
+  if (!requireCurrentUserPermission(PM_TEMPLATE_MODULE[section], "create", label)) return;
+  closeProductActivityDrawer();
+  const productId = productActivityState.productId, rows = resultTemplateRows(section);
+  const existing = new Set(rows.filter((row) => row.product_id === productId).map(productResultIdentity)), seen = new Set();
+  const available = rows.filter((row) => {
+    const key = productResultIdentity(row);
+    if (row.product_id === productId || row.variation_parent_id || existing.has(key) || seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  const selected = new Set(), overlay = document.createElement("div");
+  overlay.id = "product-activity-drawer-overlay"; overlay.className = "activity-form-overlay";
+  overlay.innerHTML = `<aside class="activity-form-drawer ready-activity-drawer"><h3>Vincular ${label}<button class="modal-close-x" id="ready-result-close" title="Fechar">✕</button></h3>
+    <div class="ready-activity-search"><input id="ready-result-search" placeholder="Buscar ${label}..."></div><div class="ready-activity-list" id="ready-result-list"></div>
+    <div class="modal-foot"><button class="btn" id="ready-result-cancel">Cancelar</button><button class="btn primary" id="ready-result-add">Vincular selecionados</button></div></aside>`;
+  productDrawerHost()?.appendChild(overlay);
+  const list = overlay.querySelector("#ready-result-list"), button = overlay.querySelector("#ready-result-add");
+  const draw = () => {
+    const query = overlay.querySelector("#ready-result-search").value.trim().toLocaleLowerCase("pt-BR");
+    list.innerHTML = available.filter((item) => `${resultDisplayName(item)} ${registrationProductName(item.product_id)}`.toLocaleLowerCase("pt-BR").includes(query)).map((item) => `<label class="ready-activity-item"><input type="checkbox" value="${esc(item.id)}"${selected.has(item.id) ? " checked" : ""}><span><strong>${esc(resultDisplayName(item))}</strong><small>${esc(registrationProductName(item.product_id))}${isVariationParent(item) ? " · Com variações" : ""}</small></span></label>`).join("") || '<div class="empty">Nenhum cadastro disponível para vincular.</div>';
+    list.querySelectorAll("input").forEach((input) => input.addEventListener("change", () => { if (input.checked) selected.add(input.value); else selected.delete(input.value); }));
+  };
+  draw(); overlay.querySelector("#ready-result-search").addEventListener("input", draw);
+  overlay.querySelector("#ready-result-close").onclick = closeProductActivityDrawer;
+  overlay.querySelector("#ready-result-cancel").onclick = closeProductActivityDrawer;
+  button.onclick = async () => {
+    if (button.disabled) return;
+    if (!selected.size) { toast(`Selecione pelo menos um cadastro.`, true); return; }
+    button.disabled = true;
+    let saved = false;
+    try {
+      if (isLive()) cache[isGoal ? "productGoals" : "productObjectives"] = await fetchTable(isGoal ? "productGoals" : "productObjectives");
+      const latest = resultTemplateRows(section), entries = [...selected].map((id) => {
+        const source = latest.find((row) => row.id === id);
+        if (!source) throw new Error("O cadastro selecionado não está mais disponível.");
+        const { id: ignoredId, created_at, updated_at, variation_parent_id, variation_values, variation_override_fields, ...body } = source;
+        return resultTemplateLinkEntry(section, source, { ...body, variation_axes: source.variation_axes || {} }, productId, null, source.template_group_id || source.id);
+      });
+      await persistResultTemplateLinks(section, entries); saved = true;
+      closeProductActivityDrawer(); renderProductWorkspace(); toast(`${selected.size} cadastro(s) vinculado(s).`);
+      if (isGoal) { await syncProductGoals(); await syncDeliveryGoalDependencies(); }
+      else { await syncProductObjectives(); await syncProductActivities(); refreshActivityCache(); }
+    } catch (error) { toast(`${saved ? "Vínculos salvos, mas houve erro ao sincronizar" : "Erro ao vincular"} · ${error.message}`, true); }
+    finally { if (button.isConnected) button.disabled = false; }
+  };
+}
+
 function isVariationParent(item) { return Boolean(Object.keys(item?.variation_axes || {}).length); }
 const TEMPLATE_STRUCTURE_LABELS = { simple: "Simples", alternatives: "Alternativas", progression: "Progressão" };
 function templateStructureFields(prefix, current, rows, inline = false) {
@@ -6406,14 +6580,10 @@ function resultVariationSaveBody(section, prefix, current, body, rows) {
   taskVariationCombinations(axes);
   if (Object.keys(axes).length || current?.variation_axes) body.variation_axes = axes;
   Object.keys(axes).forEach((key) => { body[key] = ""; });
-  const familyId = current?.id || productActivityState.resultVariationDraftId;
-  const candidates = Object.keys(axes).length ? taskVariationCombinations(axes).map((values) => ({ ...body, ...values, variation_axes: {} })) : [body];
-  if (rows.some((row) => row.id !== familyId && row.variation_parent_id !== familyId && row.product_id === body.product_id
-    && candidates.some((candidate) => productResultIdentity(candidate) === productResultIdentity(row)))) throw new Error("Já existe um cadastro com a mesma categoria, canal e nome neste produto. Nenhum registro foi convertido.");
   return body;
 }
 
-function addResultClassificationColumns(root, items, product = false) {
+function addResultClassificationColumns(root, items, product = false, allItems = items) {
   const table = root.querySelector("table");
   if (!table) return;
   const fields = product ? ["category", "channel", "module", "submodule"] : ["module", "submodule"];
@@ -6429,6 +6599,7 @@ function addResultClassificationColumns(root, items, product = false) {
     if (empty) { empty.colSpan = table.tHead.rows[0].cells.length; return; }
     const id = row.dataset.id || row.querySelector(".reg-template-edit")?.dataset.id || items[rowIndex]?.id;
     const item = byId.get(id);
+    if (item && !product) row.cells[1].textContent = resultTemplateProductNames(item, allItems);
     if (item) row.cells[index].insertAdjacentHTML("afterend", fields.map((field) => `<td>${esc(item[field] || "—")}</td>`).join(""));
   });
 }
@@ -6523,7 +6694,7 @@ function productWorkspaceTableState() {
 function setupProductWorkspaceToolbar(root, table, tableState) {
   const toolbar = root.querySelector(".modal-toolbar");
   const count = toolbar.querySelector(".muted");
-  const action = toolbar.querySelector("#pa-ready,#po-new,#pg-new");
+  const actions = [...toolbar.querySelectorAll("#pa-ready,#po-new,#pg-new,#po-ready,#pg-ready")];
   toolbar.classList.add("registration-toolbar", "product-workspace-toolbar");
   toolbar.innerHTML = `<div class="registration-toolbar-left"></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search product-workspace-search" aria-label="Buscar ${esc(MODULE_COUNT_LABEL[productActivityState.tab].toLocaleLowerCase("pt-BR"))} do produto" placeholder="Buscar..." value="${esc(tableState.search)}"></div>
@@ -6531,7 +6702,7 @@ function setupProductWorkspaceToolbar(root, table, tableState) {
       <button class="btn view-menu-trigger active product-view-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Modo de visualização">${viewTriggerInner(tableState.view)}</button>
       <button class="view" type="button" disabled title="Matriz (indisponível nos cadastros)" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}</div>`;
   if (count) { count.classList.add("product-record-count"); toolbar.querySelector(".registration-toolbar-left").appendChild(count); }
-  if (action) toolbar.querySelector(".registration-toolbar-center").appendChild(action);
+  actions.forEach((action) => toolbar.querySelector(".registration-toolbar-center").appendChild(action));
   toolbar.querySelector(".product-workspace-search").addEventListener("input", (event) => {
     tableState.search = event.target.value;
     applyProductWorkspaceTableState(table, tableState);
@@ -6896,12 +7067,13 @@ function renderProductObjectives() {
       })}</td>
     </tr>`;
   }).join("");
-  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${objectives.length} objetivo(s) do produto</span><button class="btn primary" id="po-new">+ Objetivo</button></div>
+  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${objectives.length} objetivo(s) do produto</span><button class="btn primary" id="po-ready">Vincular objetivos</button><button class="btn" id="po-new">+ Objetivo</button></div>
     <div class="product-activity-list"><table><thead><tr>
       <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th class="compact-multi-cell">Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
   addResultClassificationColumns(root, objectives, true);
   decorateResultVariationRows(root, objectives, true);
+  document.getElementById("po-ready").addEventListener("click", () => openReadyResultPicker("objectives"));
   document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
   document.querySelectorAll(".po-clone").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(null, button.dataset.id)));
@@ -7019,27 +7191,24 @@ async function saveProductObjective() {
     updated_at: new Date().toISOString()
   };
   const saveButton = document.getElementById("po-save");
-  let changes;
-  try { Object.assign(body, templateStructureValues("po")); changes = resultVariationSaveBody("objectives", "po", current, body, rows); } catch (error) { toast(error.message, true); return; }
+  let entries;
+  try {
+    Object.assign(body, templateStructureValues("po"));
+    const changes = resultVariationSaveBody("objectives", "po", current, body, rows);
+    entries = resultTemplateSaveEntries("objectives", "po", current, changes);
+    validateResultTemplateLinks("objectives", entries);
+  } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let objectiveSaved = false;
   productObjectiveSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
-    if (current) {
-      const saved = isLive() ? await updateRow("productObjectives", current.id, changes) : applyResultVariationDetails(current, changes, "objectives");
-      Object.assign(current, saved);
-    } else {
-      const draft = { id: recordId, ...changes, created_at: new Date().toISOString() };
-      rows.push(isLive() ? await createRow("productObjectives", draft) : draft);
-    }
-    if (isLive()) cache.productObjectives = rows.some(isVariationParent) ? await fetchTable("productObjectives") : rows;
-    else saveProductObjectives(rows);
+    await persistResultTemplateLinks("objectives", entries);
     objectiveSaved = true;
     closeProductActivityDrawer();
     if (document.getElementById("registrations-root")) renderRegistrationsSection();
     else renderProductObjectives();
-    toast("Objetivo do produto salvo.");
+    toast(`Objetivo salvo em ${entries.length} produto(s).`);
     await syncProductObjectives();
     await syncProductActivities();
     refreshActivityCache();
@@ -7105,12 +7274,13 @@ function renderProductGoals() {
       })}</td>
     </tr>`;
   }).join("");
-  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${goals.length} meta(s) do produto</span><button class="btn primary" id="pg-new">+ Meta</button></div>
+  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${goals.length} meta(s) do produto</span><button class="btn primary" id="pg-ready">Vincular metas</button><button class="btn" id="pg-new">+ Meta</button></div>
     <div class="product-activity-list"><table><thead><tr>
     <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th>Prazo sugerido</th><th class="compact-multi-cell">Responsável padrão</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   addResultClassificationColumns(root, goals, true);
   decorateResultVariationRows(root, goals, true);
+  document.getElementById("pg-ready").addEventListener("click", () => openReadyResultPicker("goals"));
   document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
   document.querySelectorAll(".pg-clone").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(null, button.dataset.id)));
@@ -7233,27 +7403,24 @@ async function saveProductGoal() {
     updated_at: new Date().toISOString()
   };
   const saveButton = document.getElementById("pg-save");
-  let changes;
-  try { Object.assign(body, templateStructureValues("pg")); changes = resultVariationSaveBody("goals", "pg", current, body, rows); } catch (error) { toast(error.message, true); return; }
+  let entries;
+  try {
+    Object.assign(body, templateStructureValues("pg"));
+    const changes = resultVariationSaveBody("goals", "pg", current, body, rows);
+    entries = resultTemplateSaveEntries("goals", "pg", current, changes);
+    validateResultTemplateLinks("goals", entries);
+  } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let goalSaved = false;
   productGoalSavePending = true;
   if (saveButton) { saveButton.disabled = true; saveButton.textContent = "Salvando..."; }
   try {
-    if (current) {
-      const saved = isLive() ? await updateRow("productGoals", current.id, changes) : applyResultVariationDetails(current, changes, "goals");
-      Object.assign(current, saved);
-    } else {
-      const draft = { id: recordId, ...changes, created_at: new Date().toISOString() };
-      rows.push(isLive() ? await createRow("productGoals", draft) : draft);
-    }
-    if (isLive()) cache.productGoals = rows.some(isVariationParent) ? await fetchTable("productGoals") : rows;
-    else saveProductGoals(rows);
+    await persistResultTemplateLinks("goals", entries);
     goalSaved = true;
     closeProductActivityDrawer();
     if (document.getElementById("registrations-root")) renderRegistrationsSection();
     else renderProductGoals();
-    toast("Meta do produto salva.");
+    toast(`Meta salva em ${entries.length} produto(s).`);
     await syncProductGoals();
     await syncDeliveryGoalDependencies();
   } catch (err) { toast(`${goalSaved ? "Meta salva, mas houve erro ao sincronizar" : "Erro ao salvar meta"} · ${err.message}`, true); }
@@ -14305,12 +14472,12 @@ const mindMapStatusLabel = (item) => TASK_STATUS.find((entry) => entry.id === (i
 const REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER = {
   scope: "registration-objectives", levels: MIND_MAP_CATEGORY_LEVELS, rootLabel: "Objetivos", countLabel: "objetivo(s)", addTitle: "Adicionar objetivo",
   title: resultDisplayName,
-  groupId: (item) => item.id,
+  groupId: (item) => resultTemplateMapGroup(item, loadProductObjectives()),
   parent: (item, items) => items.find((candidate) => candidate.id === item.variation_parent_id) || null,
   dependencies: (item) => normalizeIdList(item.dependency_objective_template_ids),
   extraDependencyNames: (item) => [...normalizeIdList(item.dependency_goal_template_ids).map((id) => loadProductGoals().find((goal) => goal.id === id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`),
     ...normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)],
-  subtitle: (node) => registrationProductName(node.item.product_id),
+  subtitle: (node) => resultTemplateProductNames(node.item, loadProductObjectives()),
   searchText: (item) => [registrationProductName(item.product_id), item.channel, item.completion_criteria, item.comments, item.notes].join(" "),
   editClass: "reg-template-edit",
   editAttrs: (item) => `data-id="${esc(item.id)}" data-product="${esc(item.product_id)}"`
@@ -14319,9 +14486,10 @@ const REGISTRATION_MIND_MAP_GOAL_ADAPTER = {
   ...REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER,
   scope: "registration-goals", rootLabel: "Metas", countLabel: "meta(s)", addTitle: "Adicionar meta",
   title: resultDisplayName,
+  groupId: (item) => resultTemplateMapGroup(item, loadProductGoals()),
   dependencies: (item) => normalizeIdList(item.dependency_goal_template_ids),
   extraDependencyNames: (item) => normalizeIdList(item.dependency_activity_template_ids).map((id) => loadProductActivities().find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName),
-  subtitle: (node) => `${registrationProductName(node.item.product_id)} · ${node.item.metric || "Sem indicador"}`,
+  subtitle: (node) => `${resultTemplateProductNames(node.item, loadProductGoals())} · ${node.item.metric || "Sem indicador"}`,
   searchText: (item) => [registrationProductName(item.product_id), item.metric, item.unit, item.comments, item.notes].join(" ")
 };
 const DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER = {
@@ -15499,11 +15667,11 @@ function renderRegistrationsSection() {
     if (["mindmap", "flow"].includes(tableState.view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "activities"));
     }
   } else if (section === "goals") {
-    const items = loadProductGoals();
+    const source = loadProductGoals(), items = resultTemplateCatalogRows(source);
     const activities = loadProductActivities();
     const rows = items.map((item) => {
       const dependencies = [
-        ...normalizeIdList(item.dependency_goal_template_ids).map((id) => items.find((goal) => goal.id === id)?.name),
+        ...normalizeIdList(item.dependency_goal_template_ids).map((id) => source.find((goal) => goal.id === id)?.name),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
       return `<tr><td><strong>${esc(resultDisplayName(item))}</strong></td><td>${esc(registrationProductName(item.product_id))}</td><td>${esc(item.category || "—")}</td><td>${esc(item.channel || "—")}</td><td>${esc(item.metric || "—")}</td><td>${esc(`${GOAL_COMPARISON_LABEL[item.comparison] || "No mínimo"} ${Number(item.target_value || 0).toLocaleString("pt-BR")} ${item.unit || ""}`.trim())}</td><td>${esc(item.comments || "—")}</td><td>${esc(item.notes || "—")}</td><td class="compact-multi-cell">${stackedCell(dependencies)}</td><td>${item.target_days == null ? "—" : `${esc(item.target_days)} dia(s)`}</td><td class="compact-multi-cell">${assigneeCellHtml(item.default_assignee_ids, item.default_owner_id, item.assign_to_client)}</td><td class="act table-actions-cell">${tableActionButtons({
@@ -15512,14 +15680,14 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
-    addResultClassificationColumns(root, items);
-    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
+    addResultClassificationColumns(root, items, false, source);
+    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, source, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
   } else {
-    const items = loadProductObjectives();
+    const source = loadProductObjectives(), items = resultTemplateCatalogRows(source);
     const activities = loadProductActivities();
     const rows = items.map((item) => {
       const dependencies = [
-        ...normalizeIdList(item.dependency_objective_template_ids).map((id) => items.find((objective) => objective.id === id)?.name),
+        ...normalizeIdList(item.dependency_objective_template_ids).map((id) => source.find((objective) => objective.id === id)?.name),
         ...normalizeIdList(item.dependency_goal_template_ids).map((id) => loadProductGoals().find((goal) => goal.id === id)).filter(Boolean).map((goal) => `Meta: ${resultDisplayName(goal)}`),
         ...normalizeIdList(item.dependency_activity_template_ids).map((id) => activities.find((activity) => activity.id === id)).filter(Boolean).map(activityDisplayName)
       ].filter(Boolean);
@@ -15529,14 +15697,14 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
-    addResultClassificationColumns(root, items);
-    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
+    addResultClassificationColumns(root, items, false, source);
+    if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, source, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
   if (["goals", "objectives"].includes(section)) {
     const items = section === "goals" ? loadProductGoals() : loadProductObjectives();
     decorateResultVariationRows(root, items);
     const count = root.querySelector(".modal-toolbar .muted");
-    if (count) count.textContent = `${items.filter((item) => !item.variation_parent_id).length} ${MODULE_COUNT_LABEL[section]}`;
+    if (count) count.textContent = `${resultTemplateCatalogRows(items).filter((item) => !item.variation_parent_id).length} ${MODULE_COUNT_LABEL[section]}`;
   }
   document.getElementById("registration-add")?.addEventListener("click", () => {
     if (section === "activities") {

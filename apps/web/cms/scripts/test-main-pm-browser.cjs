@@ -64,7 +64,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await page.locator('#task-delivery-picker').count(), 0);
       assert.equal(await page.locator('#registration-product-picker').count(), 0);
       await page.locator(`#${prefix}-name`).fill(`Cadastro principal ${section}`);
-      await page.locator(`#${prefix}-product`).selectOption('pr2');
+      const products = await page.evaluate(prefix => multiPickerValues(`${prefix}-products`), prefix);
+      await page.locator(`#${prefix}-products .multi-picker-control`).click();
+      for (const product of products.filter(id => id !== 'pr2')) await page.locator(`#${prefix}-products .multi-picker-option[data-value="${product}"]`).click();
+      if (!products.includes('pr2')) await page.locator(`#${prefix}-products .multi-picker-option[data-value="pr2"]`).click();
+      await page.locator(`#${prefix}-name`).click();
       assert.equal(await page.locator(`#${prefix}-name`).inputValue(), `Cadastro principal ${section}`);
       if (section === 'goals') { await page.locator('#pg-metric').fill('Pedidos'); await page.locator('#pg-target').fill('10'); }
       await page.locator(`#${prefix}-target-days`).fill('7');

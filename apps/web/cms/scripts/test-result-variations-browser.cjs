@@ -92,7 +92,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         return { child: [child.name,child.notes,child.target_days,section === 'goals' ? child.target_value : child.completion_criteria],
           sibling: [sibling.notes,sibling.target_days], ids: rows.filter(row => row.variation_parent_id === familyId).map(row => row.id).sort(),
           history: JSON.stringify(executions.map(row => [row.id,row.status,row.current_value,row.schedule_manual ? row.due_date : null])) === executionHistory,
-          nested: hierarchy.children.get(familyId)?.length };
+          nested: hierarchy.children.get(adapter.groupId(rows.find(row => row.id === familyId)))?.length };
       }, section);
       assert.deepEqual(saved.child, ['Primeira venda revisada','Informacao exclusiva',5,section === 'goals' ? 100 : 'Criterio exclusivo']);
       assert.deepEqual(saved.sibling, ['Novo padrao',20]);
