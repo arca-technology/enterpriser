@@ -1910,6 +1910,12 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
   body.navigation-collapsed .sidebar-module-overlay{left:64px;width:calc(100% - 64px)}
   .modal.sidebar-module{width:100%;height:100%}
   .modal.sidebar-module>h3{display:none}
+  .ui-confirm-overlay{z-index:10020!important;align-items:center;justify-content:center;background:rgba(0,0,0,.45)}
+  .modal.ui-confirm-dialog{width:min(420px,calc(100vw - 32px));height:auto;max-height:calc(100dvh - 32px);border-radius:8px}
+  .ui-confirm-body{padding:20px;line-height:1.5;overflow-wrap:anywhere}
+  .product-workspace-back{flex-shrink:0}
+  .product-workspace-back svg{display:block;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2}
+  .product-workspace-toolbar .registration-toolbar-left>strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   body.navigation-sidebar{--navigation-panel-offset:208px}
   body.navigation-collapsed{--navigation-panel-offset:64px}
   body.navigation-sidebar .overlay.side{left:var(--navigation-panel-offset);width:calc(100% - var(--navigation-panel-offset));justify-content:flex-start}

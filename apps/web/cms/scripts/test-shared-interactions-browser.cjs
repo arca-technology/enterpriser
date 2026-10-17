@@ -43,11 +43,11 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('.ui-error-banner').isVisible(), true);
     await page.locator('input[data-k="name"]').fill('Unsaved person');
     assert.equal(await page.locator('input[data-k="name"]').getAttribute('aria-invalid'), null);
-    page.once('dialog', (dialog) => dialog.dismiss());
     await page.keyboard.press('Escape');
+    await page.locator('#ui-confirm-cancel').click();
     assert.equal(await page.locator('input[data-k="name"]').inputValue(), 'Unsaved person');
-    page.once('dialog', (dialog) => dialog.accept());
     await page.locator('#cancel').click();
+    await page.locator('#ui-confirm-accept').click();
     assert.equal(await page.locator('#modal-root .modal').count(), 0);
     assert.equal(await page.locator('#main').evaluate((el) => !!el.closest('[inert]')), false);
     assert.equal(await page.locator('#new').evaluate((el) => el === document.activeElement), true);
@@ -74,8 +74,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('#custom-table-filter-dd').count(), 0, JSON.stringify(await page.evaluate(() => [...document.querySelectorAll(UI_FLOATERS)].map(el => ({id:el.id, visible:!!el.getClientRects().length, inert:!!el.closest('[inert]')})))));
     assert.equal(await page.locator('.custom-table-editor-modal').count(), 1);
     await page.locator('#custom-table-name').fill('Keep this draft');
-    page.once('dialog', (dialog) => dialog.dismiss());
     await page.keyboard.press('Escape');
+    await page.locator('#ui-confirm-cancel').click();
     assert.equal(await page.locator('#custom-table-name').inputValue(), 'Keep this draft');
     await page.evaluate(() => closeModal());
 
@@ -107,8 +107,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: path.join(os.tmpdir(), 'shared-ui-document-mobile.png') });
-    page.once('dialog', (dialog) => dialog.dismiss());
     await page.locator('#tool-document-cancel').click();
+    await page.locator('#ui-confirm-cancel').click();
     assert.equal(await page.locator('.document-editor-modal').count(), 1);
     await page.evaluate(() => closeModal());
     await page.evaluate(() => toast('A persistent global error', true));
@@ -132,8 +132,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       openProjectBoard(cache.projects[0].id); document.querySelector('[data-project-section="data"]').click();
     });
     await page.locator('.business-channel-revenue').first().fill('1500');
-    page.once('dialog', (dialog) => dialog.dismiss());
     await page.locator('[data-project-section="activities"]').evaluate((button) => button.click());
+    await page.locator('#ui-confirm-cancel').click();
     assert.equal(await page.locator('.business-channel-revenue').first().inputValue(), '1500');
     await page.locator('#project-data-save').click();
     assert.equal(await page.locator('.project-data-module').getAttribute('data-ui-dirty'), null);

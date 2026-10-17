@@ -71,8 +71,8 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       await page.screenshot({ path: path.join(os.tmpdir(), `interaction-edit-${mode}.png`) });
       await page.mouse.click(900, 850);
       assert.equal(await page.locator('.modal.side-panel').count(), 1);
-      page.once('dialog', (dialog) => dialog.accept());
       await page.keyboard.press('Escape');
+      await page.locator('#ui-confirm-accept').click();
       assert.equal(await page.locator('.modal.side-panel').count(), 0);
     }
     await page.setViewportSize({ width: 390, height: 844 });

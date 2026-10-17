@@ -98,7 +98,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         return { dependencies: resultTemplateRows(section).find(row => row.id === entry.id).dependency_activity_template_ids,
           missing, unchanged: before === JSON.stringify(resultTemplateRows(section)) };
       }, section);
-      assert.deepEqual(mapping.dependencies, ['dependency-target']); assert.ok(mapping.missing.includes('Vincule primeiro')); assert.equal(mapping.unchanged, true);
+      assert.deepEqual(mapping.dependencies, ['dependency-target']); assert.ok(mapping.missing.includes('ainda não vinculada')); assert.equal(mapping.unchanged, true);
       for (const width of [390, 360]) {
         await page.setViewportSize({ width, height: 844 });
         await page.evaluate(() => renderProductWorkspace());

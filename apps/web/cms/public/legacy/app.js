@@ -148,7 +148,7 @@ function renderAccountSwitcher(root, canSwitch = () => true, onLeave = () => {})
     <form id="account-add-form" class="form"><div class="field full"><label for="account-email">Adicionar conta nesta sessão</label><input id="account-email" type="email" autocomplete="username" required></div><div class="field full"><label for="account-password">Senha</label><input id="account-password" type="password" autocomplete="current-password" required></div><button class="btn primary" type="submit" id="account-add">Adicionar e alternar</button></form><p id="account-error" role="alert" hidden></p></div>`;
   let busy = false;
   const run = async (fn) => {
-    if (busy || !canSwitch()) return;
+    if (busy || !canSwitch(() => run(fn))) return;
     busy = true;
     const controls = [...(root.closest(".modal") || root).querySelectorAll("input,button")].map((element) => [element, element.disabled]);
     controls.forEach(([element]) => { element.disabled = true; });
@@ -2921,16 +2921,18 @@ function syncMobileNavigation() {
   const bar = document.getElementById("mobile-navigation");
   if (!bar) return;
   const delivery = Boolean(document.getElementById("project-board-root"));
+  const product = document.body.classList.contains("sidebar-product-open");
+  const currentTab = product ? productActivityState.tab : state.tab;
   document.getElementById("mobile-presentation").disabled = state.view !== "table";
   const caption = document.getElementById("mobile-module-caption");
-  if (caption) caption.textContent = document.querySelector(`#tabs [data-tab="${state.tab}"] .nav-label`)?.textContent || (state.tab === "home" ? "Visão geral" : "");
+  if (caption) caption.textContent = document.querySelector(`#tabs [data-tab="${currentTab}"] .nav-label`)?.textContent || (currentTab === "home" ? "Visão geral" : "");
   let visibleIndex = 0;
   bar.querySelectorAll("[data-mobile-tab]").forEach((button) => {
     const source = document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`);
     button.hidden = !source || source.hidden;
     button.classList.toggle("mobile-page-start", !button.hidden && visibleIndex++ % 4 === 0);
     button.disabled = Boolean(source?.disabled) || (delivery && button.dataset.mobileTab !== "projects");
-    const active = delivery ? button.dataset.mobileTab === "projects" : state.tab === button.dataset.mobileTab;
+    const active = delivery ? button.dataset.mobileTab === "projects" : currentTab === button.dataset.mobileTab;
     button.classList.toggle("active", active);
     if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
     const label = source?.querySelector('.nav-label')?.textContent || source?.title || "";
@@ -2940,7 +2942,7 @@ function syncMobileNavigation() {
   const more = document.getElementById("mobile-more");
   const moreMarkup = `<span class="mobile-more-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.more || "⋯"}</span><span>Mais</span>`;
   if (more && more.innerHTML !== moreMarkup) more.innerHTML = moreMarkup;
-  const activeKey = delivery ? "delivery" : state.tab;
+  const activeKey = delivery ? "delivery" : product ? `product:${productActivityState.productId}:${currentTab}` : state.tab;
   if (bar.dataset.activeModule !== activeKey) {
     bar.dataset.activeModule = activeKey;
     revealMobileModule();
@@ -3991,7 +3993,7 @@ function openSidebarSubmodules(button, hover = false) {
     if (!requireCurrentUserPermission(item.permission, "view", item.label)) return;
     closeMobileNavigation();
     if (action === "projects") {
-      if (item.id === "back") { if (confirmUiDiscard(document.querySelector('.project-data-module'))) closeModal(); }
+      if (item.id === "back") { if (confirmUiDiscard(document.querySelector('.project-data-module'), closeModal)) closeModal(); }
       else document.querySelector(`.sidebar-module [data-project-section="${item.id}"]`)?.click();
     }
     else if (action === "registrations") openRegistrationsModal(item.id);
@@ -6256,7 +6258,9 @@ function productTemplateDescendantIds(templateId, templates = loadProductActivit
 }
 
 function productActivityIdentity(item) {
-  const rows = loadProductActivities();
+  return productActivityIdentityWithRows(item, loadProductActivities());
+}
+function productActivityIdentityWithRows(item, rows) {
   const identify = (row, path = new Set()) => {
     if (path.has(row?.id)) return ["cycle", row.id];
     const next = new Set(path).add(row?.id);
@@ -6317,31 +6321,101 @@ function resultDependencyTarget(id, rows, productId, identity) {
       && (!parent || taskVariationKey(row.variation_values) === taskVariationKey(source.variation_values));
   });
   const matches = linked.length ? linked : targets.filter((row) => identity(row) === identity(source));
-  if (matches.length !== 1) throw new Error(`Vincule primeiro a dependência “${source.name || source.activity}” ao produto ${registrationProductName(productId)}. Nenhum vínculo foi salvo.`);
+  if (matches.length !== 1) {
+    const error = new Error(matches.length ? `Há mais de uma dependência correspondente em ${registrationProductName(productId)}. Revise os cadastros.` : `Dependência “${source.name || source.activity}” ainda não vinculada a ${registrationProductName(productId)}.`);
+    error.code = matches.length ? "AMBIGUOUS_TEMPLATE" : "MISSING_TEMPLATE_LINK";
+    throw error;
+  }
   return matches[0].id;
 }
 
-function remapResultDependencies(body, productId) {
+function remapResultDependencies(body, productId, includeMissing = false) {
   const next = { ...body };
   for (const [key, rows, identity] of [
     ["dependency_objective_template_ids", loadProductObjectives(), productResultIdentity],
     ["dependency_goal_template_ids", loadProductGoals(), productResultIdentity],
     ["dependency_activity_template_ids", loadProductActivities(), productActivityIdentity]
-  ]) if (Object.hasOwn(next, key)) next[key] = normalizeIdList(next[key]).map((id) => resultDependencyTarget(id, rows, productId, identity));
+  ]) if (Object.hasOwn(next, key)) next[key] = normalizeIdList(next[key]).map((id) => {
+    try { return resultDependencyTarget(id, rows, productId, identity); }
+    catch (error) { if (includeMissing && error.code === "MISSING_TEMPLATE_LINK") return id; throw error; }
+  });
   return next;
+}
+
+function stageResultDependencyLinks(section, entries) {
+  const data = structuredClone({ activities: loadProductActivities(), goals: loadProductGoals(), objectives: loadProductObjectives() });
+  const remap = (body, productId, path) => {
+    const next = { ...body };
+    for (const [key, kind] of [["dependency_template_ids", "activities"], ["dependency_activity_template_ids", "activities"], ["dependency_goal_template_ids", "goals"], ["dependency_objective_template_ids", "objectives"]]) {
+      if (Object.hasOwn(next, key)) next[key] = normalizeIdList(next[key]).map((id) => ensure(kind, id, productId, path));
+    }
+    if (Object.hasOwn(next, "depends_on_template_id")) next.depends_on_template_id = next.dependency_template_ids?.[0] || (next.depends_on_template_id ? ensure("activities", next.depends_on_template_id, productId, path) : null);
+    if (Object.hasOwn(next, "objective_template_id")) {
+      const source = data.objectives.find((row) => row.id === next.objective_template_id);
+      next.objective_template_id = source ? data.objectives.find((row) => row.product_id === productId && !isVariationParent(row) && productResultIdentity(row) === productResultIdentity(source))?.id || null : null;
+    }
+    return next;
+  };
+  const ensure = (kind, sourceId, productId, path = new Set()) => {
+    const rows = data[kind], source = rows.find((row) => row.id === sourceId);
+    if (!source) throw new Error("Uma dependência não foi encontrada. Atualize os cadastros.");
+    if (source.product_id === productId) return source.id;
+    if (source.variation_parent_id) {
+      const parentId = ensure(kind, source.variation_parent_id, productId, path);
+      const child = data[kind].find((row) => row.variation_parent_id === parentId && taskVariationKey(row.variation_values) === taskVariationKey(source.variation_values));
+      if (!child) throw new Error("A variação necessária não foi encontrada no produto.");
+      return child.id;
+    }
+    const group = source.template_group_id || source.id;
+    const identity = kind === "activities" ? (row) => productActivityIdentityWithRows(row, data.activities) : productResultIdentity;
+    const targets = rows.filter((row) => row.product_id === productId && !row.variation_parent_id);
+    const linked = targets.filter((row) => (row.template_group_id || row.id) === group);
+    const matches = linked.length ? linked : targets.filter((row) => identity(row) === identity(source));
+    if (matches.length > 1) throw new Error("Há cadastros ambíguos no produto. Nenhum vínculo foi salvo.");
+    if (matches.length) return matches[0].id;
+    const token = `${kind}:${sourceId}:${productId}`;
+    if (path.has(token) || path.size >= 64) throw new Error("As dependências contêm um ciclo ou uma hierarquia muito extensa.");
+    if (!currentUserCan(PM_TEMPLATE_MODULE[kind], "create")) throw new Error(`Sem permissão para vincular a dependência “${source.name || source.activity}”.`);
+    const nextPath = new Set(path).add(token), now = new Date().toISOString();
+    const draft = remap({ ...source, id: crypto.randomUUID(), product_id: productId, template_group_id: group,
+      created_at: now, updated_at: now, variation_override_fields: [],
+      sort_order: Math.max(-1, ...rows.filter((row) => row.product_id === productId).map((row) => Number(row.sort_order || 0))) + 1 }, productId, nextPath);
+    if (kind === "activities") {
+      draft.parent_template_id = source.parent_template_id ? ensure(kind, source.parent_template_id, productId, nextPath) : null;
+      const objective = source.objective_template_id && data.objectives.find((row) => row.id === source.objective_template_id);
+      draft.objective_template_id = objective ? data.objectives.find((row) => row.product_id === productId && !isVariationParent(row) && productResultIdentity(row) === productResultIdentity(objective))?.id || null : null;
+    }
+    data[kind].push(draft);
+    data[kind] = kind === "activities" ? expandTaskVariations(data[kind]) : expandResultVariations(data[kind], kind);
+    for (const child of rows.filter((row) => row.variation_parent_id === source.id)) {
+      const target = data[kind].find((row) => row.variation_parent_id === draft.id && taskVariationKey(row.variation_values) === taskVariationKey(child.variation_values));
+      const allowed = kind === "activities" ? TASK_VARIATION_DETAIL_FIELDS : resultVariationDetailFields(kind);
+      const fields = (child.variation_override_fields || []).filter((key) => allowed.includes(key));
+      if (target && fields.length) Object.assign(target, remap(Object.fromEntries(fields.map((key) => [key, child[key]])), productId, nextPath), { variation_override_fields: fields });
+    }
+    if (kind === "activities") for (const child of rows.filter((row) => row.parent_template_id === source.id)) {
+      if (!nextPath.has(`${kind}:${child.id}:${productId}`)) ensure(kind, child.id, productId, nextPath);
+    }
+    return draft.id;
+  };
+  const planned = entries.map((entry) => {
+    const existing = data[section].find((row) => row.id === entry.id), productId = entry.body.product_id || existing?.product_id;
+    return { ...entry, body: remap(entry.body, productId, new Set()), variantDetails: entry.variantDetails.map((detail) => ({ ...detail, changes: remap(detail.changes, productId, new Set()) })) };
+  });
+  return { data, entries: planned };
 }
 
 function resultTemplateLinkEntry(section, source, body, productId, existing, groupId) {
   const rows = resultTemplateRows(section), now = new Date().toISOString();
   const id = existing?.id || (productId === source?.product_id ? source.id : crypto.randomUUID());
-  const changes = remapResultDependencies({ ...body, updated_at: now }, productId);
+  const changes = remapResultDependencies({ ...body, updated_at: now }, productId, true);
   if (!source?.variation_parent_id) Object.assign(changes, {
     product_id: productId, template_group_id: groupId,
     sort_order: existing?.sort_order ?? Math.max(-1, ...rows.filter((row) => row.product_id === productId).map((row) => Number(row.sort_order || 0))) + 1
   });
   const variantDetails = existing || !source ? [] : rows.filter((row) => row.variation_parent_id === source.id).map((child) => ({
     values: child.variation_values,
-    changes: remapResultDependencies(Object.fromEntries(resultVariationDetailFields(section).filter((key) => (child.variation_override_fields || []).includes(key)).map((key) => [key, child[key]])), productId)
+    changes: remapResultDependencies(Object.fromEntries(resultVariationDetailFields(section).filter((key) => (child.variation_override_fields || []).includes(key)).map((key) => [key, child[key]])), productId, true)
   })).filter((detail) => Object.keys(detail.changes).length);
   return { id, body: changes, variantDetails };
 }
@@ -6367,16 +6441,18 @@ async function persistResultTemplateLinks(section, entries) {
   const permission = PM_TEMPLATE_MODULE[section];
   if (entries.some((entry) => rows.some((row) => row.id === entry.id) ? !currentUserCan(permission, "edit") : !(currentUserCan(permission, "create") || currentUserCan(permission, "clone")))) throw new Error("Sem permissão para salvar estes vínculos.");
   validateResultTemplateLinks(section, entries);
+  const staged = stageResultDependencyLinks(section, entries);
   if (isLive()) {
     await api("rpc/save_result_template_links", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       p_section: section, p_records: entries.map((entry) => ({ id: entry.id, body: toRemoteBody(table, entry.body),
         variant_details: entry.variantDetails.map((detail) => ({ values: detail.values, changes: toRemoteBody(table, detail.changes) })) }))
     }) });
     entries.forEach((entry) => logUserActivity(rows.some((row) => row.id === entry.id) ? activityUpdateVerb(table, entry.body) : "Criou", table, entry.id, activityRecordLabel(table, entry.id, entry.body)));
-    cache[table] = await fetchTable(table);
+    for (const name of ["productActivities", "productGoals", "productObjectives"]) cache[name] = await fetchTable(name);
     return;
   }
-  let next = rows.map((row) => ({ ...row }));
+  entries = staged.entries;
+  let next = staged.data[section];
   for (const entry of entries) {
     const index = next.findIndex((row) => row.id === entry.id);
     if (index >= 0) next[index] = applyResultVariationDetails(next[index], entry.body, section);
@@ -6388,7 +6464,8 @@ async function persistResultTemplateLinks(section, entries) {
     if (index < 0) throw new Error("Variação não encontrada. Nenhum vínculo foi salvo.");
     next[index] = applyResultVariationDetails(next[index], detail.changes, section);
   }
-  if (section === "goals") saveProductGoals(next); else saveProductObjectives(next);
+  staged.data[section] = next;
+  saveProductActivities(staged.data.activities); saveProductGoals(staged.data.goals); saveProductObjectives(staged.data.objectives);
 }
 
 function resultTemplateSaveEntries(section, prefix, current, changes) {
@@ -6663,6 +6740,7 @@ function openProductActivities(productId, opts = {}) {
   shell(`Produto · ${product.name}`, `<div id="product-activities-root"></div>`, {
     cls: "full",
     headerCenter,
+    navigationModule: "product",
     onClose: returnSection ? () => openRegistrationsModal(returnSection) : null
   });
   document.querySelectorAll("[data-product-tab]").forEach((button) => button.addEventListener("click", () => {
@@ -6670,6 +6748,7 @@ function openProductActivities(productId, opts = {}) {
     productActivityState.tab = button.dataset.productTab;
     document.querySelectorAll("[data-product-tab]").forEach((tab) => tab.classList.toggle("active", tab === button));
     renderProductWorkspace();
+    syncSidebarModuleNavigation();
   }));
   renderProductWorkspace();
 }
@@ -6702,6 +6781,13 @@ function setupProductWorkspaceToolbar(root, table, tableState) {
       <button class="btn view-menu-trigger active product-view-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Modo de visualização">${viewTriggerInner(tableState.view)}</button>
       <button class="view" type="button" disabled title="Matriz (indisponível nos cadastros)" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}</div>`;
   if (count) { count.classList.add("product-record-count"); toolbar.querySelector(".registration-toolbar-left").appendChild(count); }
+  if (navigationPreference.mode === "sidebar") {
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "btn product-workspace-back"; back.title = "Voltar aos produtos"; back.setAttribute("aria-label", back.title);
+    back.innerHTML = window.CRM_NAV_ICONS?.chevronLeft || "←";
+    back.onclick = () => openRegistrationsModal("products");
+    toolbar.querySelector(".registration-toolbar-left").prepend(back, Object.assign(document.createElement("strong"), { textContent: cache.productById[productActivityState.productId]?.name || "Produto" }));
+  }
   actions.forEach((action) => toolbar.querySelector(".registration-toolbar-center").appendChild(action));
   toolbar.querySelector(".product-workspace-search").addEventListener("input", (event) => {
     tableState.search = event.target.value;
@@ -8411,7 +8497,7 @@ function openProjectBoard(projectId) {
     titleHtml: '<span class="registration-brand">ENTERPRISER <b>• CMS</b></span>'
   });
   document.querySelectorAll("[data-project-section]").forEach((button) => button.addEventListener("click", () => {
-    if (!confirmUiDiscard(document.querySelector(".project-data-module"))) return;
+    if (!confirmUiDiscard(document.querySelector(".project-data-module"), () => button.click())) return;
     closeMobileNavigation();
     projectBoardState.section = button.dataset.projectSection;
     projectBoardState.view = projectBoardState.section === "overview" ? "dashboard" : "table";
@@ -12027,12 +12113,35 @@ function syncUiDialogIsolation() {
   }
 }
 
-function confirmUiDiscard(root) {
+const uiDiscardPending = new WeakSet();
+function confirmSystemAction(message, options = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay ui-confirm-overlay";
+    overlay.innerHTML = `<div class="modal ui-confirm-dialog"><h3>${esc(options.title || "Confirmar ação")}</h3><div class="ui-confirm-body">${esc(message)}</div><div class="modal-foot"><button class="btn" id="ui-confirm-cancel" type="button">${esc(options.cancelLabel || "Cancelar")}</button><button class="btn danger" id="ui-confirm-accept" type="button">${esc(options.confirmLabel || "Confirmar")}</button></div></div>`;
+    const finish = (accepted) => { overlay.remove(); resolve(accepted); };
+    overlay.querySelector("#ui-confirm-cancel").onclick = () => finish(false);
+    overlay.querySelector("#ui-confirm-accept").onclick = () => finish(true);
+    overlay.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); finish(false); } });
+    document.getElementById("modal-root").appendChild(overlay);
+    prepareUiDialog(overlay.firstElementChild);
+    overlay.querySelector("#ui-confirm-cancel").focus();
+  });
+}
+
+function confirmUiDiscard(root, onConfirm = null) {
   if (!root || (!root.matches('[data-ui-dirty="true"]') && !root.querySelector('[data-ui-dirty="true"]'))) return true;
-  if (!window.confirm('Há alterações não salvas. Deseja descartá-las e sair?')) return false;
-  root.removeAttribute('data-ui-dirty');
-  root.querySelectorAll('[data-ui-dirty]').forEach((element) => element.removeAttribute('data-ui-dirty'));
-  return true;
+  if (!uiDiscardPending.has(root)) {
+    uiDiscardPending.add(root);
+    confirmSystemAction("Há alterações não salvas. Deseja descartá-las e sair?", { title: "Descartar alterações?", confirmLabel: "Descartar", cancelLabel: "Continuar editando" }).then((accepted) => {
+      uiDiscardPending.delete(root);
+      if (!accepted || !root.isConnected) return;
+      root.removeAttribute('data-ui-dirty');
+      root.querySelectorAll('[data-ui-dirty]').forEach((element) => element.removeAttribute('data-ui-dirty'));
+      onConfirm?.();
+    });
+  }
+  return false;
 }
 
 function friendlyUiError(message) {
@@ -12053,7 +12162,8 @@ function showUiError(dialog, message, control = null) {
   banner.innerHTML = `<strong>Não foi possível concluir</strong><span>${esc(friendlyUiError(message))}</span><button type="button" class="ui-message-close" aria-label="Dispensar aviso">×</button>`;
   if (friendlyUiError(message) !== String(message)) banner.insertAdjacentHTML('beforeend', `<details><summary>Detalhes técnicos</summary><pre>${esc(message)}</pre></details>`);
   const container = dialog.querySelector('.form,.document-editor,.custom-table-editor,.panel-list') || dialog;
-  container.prepend(banner);
+  if (container === dialog && dialog.querySelector("h3")) dialog.querySelector("h3").after(banner);
+  else container.prepend(banner);
   banner.querySelector('button').addEventListener('click', () => banner.remove());
   if (control) {
     control.setAttribute('aria-invalid', 'true');
@@ -12108,7 +12218,7 @@ function installSharedUiInteractions() {
     if (!button) return;
     const dialog = button.closest('.modal,.activity-form-drawer') || (button.id === 'shell-close' ? document.querySelector('.sidebar-module') : null);
     if (dialog && (button.matches('.modal-close-x') || /(^|-)cancel(-|$)/.test(button.id))) {
-      if (!confirmUiDiscard(dialog)) { event.preventDefault(); event.stopImmediatePropagation(); }
+      if (!confirmUiDiscard(dialog, () => button.click())) { event.preventDefault(); event.stopImmediatePropagation(); }
     }
     if (dialog && button.matches('[data-orientation],[data-slide-format],.document-group-up,.document-group-down,[id^="document-add-"],#document-clone-page,#document-block-up,#document-block-down,#document-block-delete,#document-delete-page,#document-delete-slide,#custom-table-add-row,#custom-table-add-column,#custom-table-add-sheet,.custom-table-sheet-rename,.custom-table-sheet-delete')) {
       dialog.dataset.uiDirty = 'true';
@@ -12162,7 +12272,7 @@ function escCloseHandler(e) {
     e.preventDefault(); e.stopImmediatePropagation(); return;
   }
   const current = [...document.querySelectorAll('#modal-root .modal,#modal-root .activity-form-drawer')].at(-1);
-  if (!confirmUiDiscard(current)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+  if (!confirmUiDiscard(current, () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })))) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   const registrationFilter = document.getElementById("registration-filter-dd");
   if (registrationFilter) { registrationFilter.remove(); e.preventDefault(); e.stopImmediatePropagation(); return; }
   const drawerOverlay = [...document.querySelectorAll(".activity-form-overlay")].at(-1);
@@ -12202,6 +12312,7 @@ function syncSidebarModuleNavigation() {
   document.getElementById("sidebar-module-context")?.remove();
   document.body.classList.toggle("sidebar-module-open", Boolean(moduleId));
   document.body.classList.toggle("sidebar-delivery-open", moduleId === "projects");
+  document.body.classList.toggle("sidebar-product-open", moduleId === "product");
   document.querySelectorAll('#app-sidebar [data-delivery-disabled]').forEach((button) => { button.disabled = false; delete button.dataset.deliveryDisabled; });
   const deliveryButton = document.querySelector('#tabs [data-tab="projects"]');
   if (moduleId === "projects") {
@@ -12217,7 +12328,13 @@ function syncSidebarModuleNavigation() {
     deliveryButton?.removeAttribute("aria-expanded");
   }
   document.querySelectorAll("#app-sidebar .foot-btn").forEach((button) => button.classList.toggle("sidebar-current", button.dataset.action === moduleId));
-  document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", moduleId === button.dataset.tab || (!moduleId && button.dataset.tab === state.tab)));
+  if (moduleId === "product") {
+    document.querySelectorAll('#app-sidebar .tab,#app-sidebar .foot-btn,#app-sidebar .actions .ico,#app-sidebar .brand-home').forEach((button) => {
+      const enabled = ["objectives", "goals", "activities"].includes(button.dataset.tab) && currentUserCan(PM_TEMPLATE_MODULE[button.dataset.tab], "view");
+      if (!enabled && !button.disabled) { button.dataset.deliveryDisabled = "true"; button.disabled = true; }
+    });
+  }
+  document.querySelectorAll("#tabs .tab").forEach((button) => button.classList.toggle("active", moduleId === "product" ? button.dataset.tab === productActivityState.tab : moduleId === button.dataset.tab || (!moduleId && button.dataset.tab === state.tab)));
   queueSidebarFit();
 }
 function closeSidebarModuleView() {
@@ -13447,7 +13564,7 @@ function openSettings() {
     document.getElementById("save").hidden = accounts;
     document.getElementById("settings-cancel").textContent = accounts ? "Fechar" : "Cancelar";
     const panel = document.getElementById("settings-accounts-panel");
-    if (accounts && !panel.firstElementChild) renderAccountSwitcher(panel, () => !saving && !processing && confirmUiDiscard(document.getElementById("settings-profile-panel")), cleanup);
+    if (accounts && !panel.firstElementChild) renderAccountSwitcher(panel, (retry) => !saving && !processing && confirmUiDiscard(document.getElementById("settings-profile-panel"), retry), cleanup);
   };
   settingsTabs.forEach((tab, index) => {
     tab.addEventListener("click", () => selectSettingsTab(tab));
@@ -21184,6 +21301,10 @@ document.querySelectorAll("#tabs .tab").forEach((t) => {
   t.innerHTML = `<span class="nav-icon" aria-hidden="true">${window.CRM_NAV_ICONS?.[t.dataset.tab] || ""}</span><span class="nav-label">${esc(name)}</span>`;
   t.addEventListener("click", () => {
     if (t.disabled) return;
+    if (document.body.classList.contains("sidebar-product-open")) {
+      document.querySelector(`.sidebar-module [data-product-tab="${t.dataset.tab}"]`)?.click();
+      return;
+    }
     if (!mainModuleCan(t.dataset.tab, "view")) return;
     if (t.dataset.tab === "projects" && document.body.classList.contains("sidebar-delivery-open")) { openSidebarSubmodules(t); return; }
     closeSidebarModuleView();

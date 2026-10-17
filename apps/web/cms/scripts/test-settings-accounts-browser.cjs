@@ -73,14 +73,12 @@ const session = (id) => ({ user: { id }, access_token: `fixture-${id}`, refresh_
     assert.equal(await page.locator('#settings-nickname').inputValue(), 'Perfil em preenchimento');
     await page.locator('#settings-profile-tab').focus(); await page.keyboard.press('ArrowRight');
     assert.equal(await page.locator('#settings-accounts-tab').getAttribute('aria-selected'), 'true');
-    const dismiss = (dialog) => dialog.dismiss();
-    page.on('dialog', dismiss);
     await page.locator('[data-account-use="user"]').click();
+    await page.locator('#ui-confirm-cancel').click();
     assert.equal(await page.evaluate(() => currentProfile.role), 'admin');
     assert.equal(requests.filter((request) => request.path === '/auth/v1/token').length, 0, 'Declining discard must not initiate authentication');
-    page.off('dialog', dismiss);
-    page.once('dialog', (dialog) => dialog.accept());
     await page.locator('[data-account-use="user"]').click();
+    await page.locator('#ui-confirm-accept').click();
     await page.waitForFunction(() => currentProfile.role === 'collaborator');
     assert.equal(await page.locator('#settings-profile-panel').count(), 0);
     await page.evaluate(() => openSettings()); await page.locator('#settings-accounts-tab').click();
