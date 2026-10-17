@@ -4337,15 +4337,16 @@ function templateBulkProvider(section) {
       const targets = new Map();
       ids.forEach((id) => {
         const selected = rows.find((row) => row.id === id);
-        const item = section === "activities" && selected?.variation_parent_id ? rows.find((row) => row.id === selected.variation_parent_id) : selected;
+        const item = selected;
         if (!item) return;
         const linked = section === "activities" ? rows.filter((row) => productTemplateGroupKey(row, rows) === productTemplateGroupKey(item, rows)) : [item];
         linked.forEach((row) => targets.set(row.id, row));
       });
       if (section === "activities" && [...targets.values()].some((row) => Object.keys(patch).some((key) => row.variation_axes?.[key]))) throw new Error("Edite os valores de variação na tarefa pai, não pela edição em massa.");
+      if (section === "activities" && [...targets.values()].some((row) => row.variation_parent_id && Object.keys(patch).some((key) => !TASK_VARIATION_DETAIL_FIELDS.includes(key)))) throw new Error("A estrutura da variação deve ser alterada na tarefa pai.");
       for (const row of targets.values()) {
         const changes = { ...patch, updated_at: new Date().toISOString() };
-        const saved = isLive() ? await updateRow(config.table, row.id, changes) : { ...row, ...changes };
+        const saved = isLive() ? await updateRow(config.table, row.id, changes) : taskVariationApplyDetails(row, changes);
         Object.assign(row, saved);
       }
       if (isLive()) cache[config.cacheKey] = section === "activities" && rows.some((row) => Object.keys(row.variation_axes || {}).length) ? await fetchTable("productActivities") : rows;
@@ -6000,6 +6001,24 @@ function productTemplateParent(template, templates = loadProductActivities()) {
 const TASK_VARIATION_FIELDS = [{ key: "category", label: "Categoria" }, { key: "channel", label: "Canal" },
   { key: "module", label: "Módulo" }, { key: "submodule", label: "Submódulo" }, { key: "type", label: "Tipo" }];
 const MAX_TASK_VARIATIONS = 200;
+const TASK_VARIATION_DETAIL_FIELDS = ["information", "recurrence", "deadline_window", "priority", "target_days", "start_after_days",
+  "consider_business_days", "checklist", "default_owner_id", "default_assignee_ids", "default_assignee_job_titles", "assign_to_client",
+  "objective_template_id", "dependency_template_ids", "depends_on_template_id", "document_ids", "custom_table_ids", "required_setup",
+  "required_setup_configuration", "required_product_types", "requires_retroactive"];
+function taskVariationDetailValue(value) {
+  if (Array.isArray(value)) return value.map(taskVariationDetailValue);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, taskVariationDetailValue(value[key])]));
+  return value ?? null;
+}
+function taskVariationDetailChanged(first, second) {
+  return JSON.stringify(taskVariationDetailValue(first)) !== JSON.stringify(taskVariationDetailValue(second));
+}
+function taskVariationApplyDetails(row, changes) {
+  if (!row.variation_parent_id) return { ...row, ...changes };
+  const fields = TASK_VARIATION_DETAIL_FIELDS.filter((key) => Object.hasOwn(changes, key));
+  return { ...row, ...Object.fromEntries(fields.map((key) => [key, changes[key]])), updated_at: changes.updated_at || row.updated_at,
+    variation_override_fields: [...new Set([...(row.variation_override_fields || []), ...fields.filter((key) => taskVariationDetailChanged(row[key], changes[key]))])] };
+}
 function taskVariationCombinations(axes = {}) {
   if (!axes || Array.isArray(axes) || typeof axes !== "object" || Object.keys(axes).some((key) => !TASK_VARIATION_FIELDS.some((field) => field.key === key))) throw new Error("Campos de variação inválidos.");
   let combinations = [{}];
@@ -6035,6 +6054,8 @@ function expandTaskVariations(rows) {
         child.required_setup = normalizeTextList([...(parent.required_setup || []).filter((value) => !channelAxes.has(value.trim().toLocaleLowerCase("pt-BR"))), values.channel]);
         child.required_setup_configuration = Object.fromEntries(Object.entries(parent.required_setup_configuration || {}).filter(([key]) => !channelAxes.has(key.toLocaleLowerCase("pt-BR")) || key.toLocaleLowerCase("pt-BR") === values.channel.toLocaleLowerCase("pt-BR")));
       }
+      child.variation_override_fields = previous?.variation_override_fields || [];
+      for (const key of child.variation_override_fields.filter((key) => TASK_VARIATION_DETAIL_FIELDS.includes(key))) child[key] = previous[key];
       if (previous) Object.assign(previous, child);
       else { existing.push(child); result.push(child); }
     });
@@ -6043,6 +6064,7 @@ function expandTaskVariations(rows) {
 }
 function taskVariationFieldHtml(key, current, locked = false) {
   const field = TASK_VARIATION_FIELDS.find((entry) => entry.key === key);
+  if (current.variation_parent_id) return `<div class="field"><label for="pa-${key}">${field.label}</label><input id="pa-${key}" value="${esc(current[key] || "")}" disabled></div>`;
   const values = current.variation_axes?.[key] || [];
   const persisted = productActivityState.editId && values.length;
   const options = normalizeTextList([...(loadProductActivities().map((row) => row[key])), ...values, current[key],
@@ -7146,8 +7168,6 @@ function closeProductActivityDrawer() {
 
 async function openProductActivityDrawer(editId = null, cloneSourceId = null, parentTemplateId = null) {
   if (!requireCurrentUserPermission("activityTemplates", cloneSourceId ? "clone" : editId ? "edit" : "create", "Tarefas")) return;
-  const variationParentId = loadProductActivities().find((item) => item.id === editId)?.variation_parent_id;
-  if (variationParentId) return openProductActivityDrawer(variationParentId);
   await ensureTaskReferenceSources();
   closeProductActivityDrawer();
   productActivityState.editId = editId;
@@ -7155,7 +7175,8 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   const templates = allTemplates.filter((item) => item.product_id === productActivityState.productId);
   const editing = templates.find((item) => item.id === editId) || null;
   const cloneSource = templates.find((item) => item.id === cloneSourceId) || null;
-  const current = editing || (cloneSource ? { ...cloneSource, id: null, activity: cloneSource.activity ? `${cloneSource.activity} (cópia)` : "" } : {});
+  const current = editing || (cloneSource ? { ...cloneSource, id: null, variation_parent_id: null, variation_values: {}, variation_override_fields: [], activity: cloneSource.activity ? `${cloneSource.activity} (cópia)` : "" } : {});
+  const variationParent = editing?.variation_parent_id ? allTemplates.find((item) => item.id === editing.variation_parent_id) : null;
   const useStructure = Boolean((editing || cloneSource) && !String(current.activity || "").trim());
   const requestedParent = allTemplates.find((item) => item.id === (editing?.parent_template_id || cloneSource?.parent_template_id || parentTemplateId)) || null;
   if (requestedParent?.parent_template_id) {
@@ -7221,11 +7242,12 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   overlay.id = "product-activity-drawer-overlay";
   overlay.className = "activity-form-overlay";
   overlay.innerHTML = `<aside class="activity-form-drawer task-form-drawer">
-    <h3>${current.id ? (productActivityParentGroupId ? "Editar subtarefa" : "Editar tarefa") : cloneSource ? "Clonar tarefa" : productActivityParentGroupId ? "Nova subtarefa" : "Nova tarefa"}<button class="modal-close-x" id="pa-close" title="Fechar">✕</button></h3>
+    <h3>${current.id ? (variationParent ? "Editar variação" : productActivityParentGroupId ? "Editar subtarefa" : "Editar tarefa") : cloneSource ? "Clonar tarefa" : productActivityParentGroupId ? "Nova subtarefa" : "Nova tarefa"}<button class="modal-close-x" id="pa-close" title="Fechar">✕</button></h3>
     <div class="form product-activity-form task-form-grid">
+      ${variationParent ? `<div class="field task-form-wide"><label>Tarefa pai</label><input value="${esc(activityDisplayName(variationParent))}" disabled></div>` : ""}
       ${requestedParent ? `<div class="field task-form-wide"><label>Tarefa principal</label><input value="${esc(activityDisplayName(requestedParent))}" disabled></div>` : ""}
       ${mainTemplateOriginField()}
-      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(requestedParent || (editing && productTemplateGroupAmbiguous(editing, allTemplates))))}</div>
+      <div class="field task-form-wide"><label>Produtos *</label>${multiPickerHtml("pa-products", productOptions, selectedProductIds, "Selecionar produtos", false, Boolean(variationParent || requestedParent || (editing && productTemplateGroupAmbiguous(editing, allTemplates))))}</div>
       <div class="field"><label>Grupo</label><select id="pa-group">${taskSelectOptions(TASK_GROUP_OPTIONS, current.group, "Sem grupo")}</select></div>
       <div class="field"><label>Subgrupo</label><select id="pa-subgroup">${taskSelectOptions(TASK_GROUP_SUBGROUP_OPTIONS[canonicalTaskChoice(current.group, TASK_GROUP_OPTIONS)] || [], current.subgroup, "Sem subgrupo")}</select></div>
       <div class="field"><label>Setor</label><select id="pa-sector">${taskSelectOptions(TASK_SECTOR_OPTIONS, current.sector, "Sem setor")}</select></div>
@@ -7259,7 +7281,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
       <div class="field"><label>Planilhas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar planilhas")}</div>
     </div>
-    <div class="modal-foot">${editing && !productActivityParentGroupId && !Object.keys(current.variation_axes || {}).length ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
+    <div class="modal-foot">${editing && !variationParent && !productActivityParentGroupId && !Object.keys(current.variation_axes || {}).length ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   productDrawerHost()?.appendChild(overlay);
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
@@ -7283,9 +7305,36 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   wireTaskSetupTab(overlay, "pa", current);
   wireTaskStructureToggle("pa-use-structure", "pa-activity", "pa-activity-label", ["pa-category", "pa-channel", "pa-module", "pa-type"]);
   wireProductErpDefaults("pa", document.getElementById("pa-products"), () => multiPickerValues("pa-products"), !editId && !cloneSourceId && !requestedParent);
-  wireTaskVariationFields(current);
+  if (variationParent) {
+    ["group", "subgroup", "sector", "subsector", "category", "channel", "module", "submodule", "type", "activity", "use-structure"].forEach((key) => {
+      document.getElementById(`pa-${key}`).disabled = true;
+    });
+  } else wireTaskVariationFields(current);
   renderProductActivityChecklistEditor();
+  productActivityState.variationDetailSnapshot = variationParent ? taskVariationFormDetails() : null;
   (document.getElementById("pa-activity")?.disabled ? document.getElementById("pa-category") : document.getElementById("pa-activity"))?.focus({ preventScroll: true });
+}
+
+function taskVariationFormDetails() {
+  const assignees = assigneePickerValue("pa-assignees");
+  const dependencies = multiPickerValues("pa-dependencies");
+  return {
+    information: document.getElementById("pa-information").value.trim(),
+    recurrence: document.getElementById("pa-recurrence").value || "once",
+    deadline_window: document.getElementById("pa-recurrence").value === "monthly" ? document.getElementById("pa-deadline-window").value : "date",
+    priority: document.getElementById("pa-priority").value || "normal",
+    target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
+    start_after_days: document.getElementById("pa-start-after").value === "" ? null : Number(document.getElementById("pa-start-after").value),
+    consider_business_days: document.getElementById("pa-business-days").checked,
+    checklist: productActivityChecklistDraft.map((item) => ({ id: item.id || crypto.randomUUID(), text: item.text.trim(), checked: false })).filter((item) => item.text),
+    default_owner_id: assignees.ids[0] || null, default_assignee_ids: assignees.ids, assign_to_client: assignees.assignToClient,
+    default_assignee_job_titles: multiPickerValues("pa-assignee-job-titles"),
+    objective_template_id: document.getElementById("pa-objective").value || null,
+    dependency_template_ids: dependencies, depends_on_template_id: dependencies[0] || null,
+    document_ids: multiPickerValues("pa-documents"), custom_table_ids: multiPickerValues("pa-tables"),
+    required_setup: multiPickerValues("pa-required-setup"), required_setup_configuration: setupEditorValue("pa"),
+    required_product_types: setupProductTypes(multiPickerValues("pa-product-types")), requires_retroactive: document.getElementById("pa-retroactive").checked
+  };
 }
 
 function createsTemplateDependencyCycle(rows, currentId, dependencyIds) {
@@ -7314,8 +7363,8 @@ async function saveProductActivity() {
   const current = rows.find((item) => item.id === productActivityState.editId);
   const recordId = current?.id || (Object.keys(variationAxes).length ? productActivityDraftGroupId : null) || crypto.randomUUID();
   const dependencyIds = multiPickerValues("pa-dependencies");
-  const assignees = assigneePickerValue("pa-assignees");
-  const assigneeJobTitles = multiPickerValues("pa-assignee-job-titles");
+  const detailValues = taskVariationFormDetails();
+  const changedDetails = current?.variation_parent_id ? TASK_VARIATION_DETAIL_FIELDS.filter((key) => taskVariationDetailChanged(detailValues[key], productActivityState.variationDetailSnapshot?.[key])) : null;
   const selectedProductIds = multiPickerValues("pa-products");
   if (!selectedProductIds.length) { toast("Selecione pelo menos um produto.", true); return; }
   if (current && productTemplateGroupAmbiguous(current, rows) && (selectedProductIds.length !== 1 || selectedProductIds[0] !== current.product_id)) {
@@ -7345,28 +7394,9 @@ async function saveProductActivity() {
     submodule: document.getElementById("pa-submodule").value.trim(),
     category: document.getElementById("pa-category").value.trim(),
     channel: document.getElementById("pa-channel").value.trim(),
-    required_setup: multiPickerValues("pa-required-setup"),
-    required_setup_configuration: setupEditorValue("pa"),
-    required_product_types: setupProductTypes(multiPickerValues("pa-product-types")),
-    requires_retroactive: document.getElementById("pa-retroactive").checked,
     type: document.getElementById("pa-type").value.trim(),
-    recurrence: document.getElementById("pa-recurrence").value || "once",
-    deadline_window: document.getElementById("pa-recurrence").value === "monthly" ? document.getElementById("pa-deadline-window").value : "date",
-    priority: document.getElementById("pa-priority").value || "normal",
-    target_days: document.getElementById("pa-target-days").value === "" ? null : Number(document.getElementById("pa-target-days").value),
-    start_after_days: document.getElementById("pa-start-after").value === "" ? null : Number(document.getElementById("pa-start-after").value),
-    consider_business_days: document.getElementById("pa-business-days").checked,
     activity,
-    information: document.getElementById("pa-information").value.trim(),
-    document_ids: multiPickerValues("pa-documents"),
-    custom_table_ids: multiPickerValues("pa-tables"),
-    checklist: productActivityChecklistDraft
-      .map((item) => ({ id: item.id || crypto.randomUUID(), text: item.text.trim(), checked: false }))
-      .filter((item) => item.text),
-    default_owner_id: assignees.ids[0] || null,
-    default_assignee_ids: assignees.ids,
-    default_assignee_job_titles: assigneeJobTitles,
-    assign_to_client: assignees.assignToClient,
+    ...detailValues,
     template_group_id: productActivityDraftGroupId || crypto.randomUUID(),
     updated_at: new Date().toISOString()
   };
@@ -7406,7 +7436,8 @@ async function saveProductActivity() {
         sort_order: existing?.sort_order ?? (Math.max(-1, ...productRows.map((item) => Number(item.sort_order || 0))) + 1)
       };
       if (existing) {
-        const saved = isLive() ? await updateRow("productActivities", existing.id, body) : { ...existing, ...body };
+        const changes = current?.variation_parent_id ? { ...Object.fromEntries(changedDetails.map((key) => [key, body[key]])), updated_at: body.updated_at } : body;
+        const saved = isLive() ? await updateRow("productActivities", existing.id, changes) : taskVariationApplyDetails(existing, changes);
         Object.assign(existing, saved);
       } else {
         const draft = { id: productId === productActivityState.productId ? recordId : crypto.randomUUID(), ...body, created_at: new Date().toISOString() };

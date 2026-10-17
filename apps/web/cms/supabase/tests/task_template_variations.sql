@@ -37,5 +37,33 @@ begin
   update public.product_activity_templates set variation_axes='{"channel":["BLING","OLIST","INTER"]}' where id=family;
   if (select count(*) from public.product_activity_templates where variation_parent_id=family) <> 3 then raise exception 'Adding variations failed'; end if;
   if (select count(*) from public.task_variation_combinations('{"channel":["BLING","OLIST"],"type":["Importação","Exportação"]}')) <> 4 then raise exception 'Cross product failed'; end if;
+  update public.product_activity_templates set information='Informação da filha',target_days=5,
+    default_assignee_job_titles=array['Analista de operações'],checklist='[{"text":"Conferência exclusiva"}]'
+    where id=child_ids[1];
+  select * into child from public.product_activity_templates where id=child_ids[1];
+  if not child.variation_override_fields @> array['information','target_days','default_assignee_job_titles','checklist'] then
+    raise exception 'Customized fields were not tracked';
+  end if;
+  update public.product_activity_templates set information='Informação do pai',target_days=12,
+    default_assignee_job_titles=array['Gerente de operações'],activity='Nome herdado',activity_type='Conciliação' where id=family;
+  select * into child from public.product_activity_templates where id=child_ids[1];
+  if child.information <> 'Informação da filha' or child.target_days <> 5 or child.activity <> 'Nome herdado'
+    or child.activity_type <> 'Conciliação' or child.default_assignee_job_titles <> array['Analista de operações']
+    or child.checklist <> '[{"text":"Conferência exclusiva"}]'::jsonb then raise exception 'Customized child details were overwritten'; end if;
+  if not exists(select 1 from public.product_activity_templates where id=child_ids[2] and information='Informação do pai'
+    and target_days=12 and default_assignee_job_titles=array['Gerente de operações']) then raise exception 'Unmodified sibling stopped inheriting'; end if;
+  update public.product_activity_templates set information='',target_days=null where id=child_ids[1];
+  update public.product_activity_templates set information='Outro padrão',target_days=20 where id=family;
+  if exists(select 1 from public.product_activity_templates where id=child_ids[1] and (information<>'' or target_days is not null)) then
+    raise exception 'Explicit clearing was not preserved'; end if;
+  begin
+    update public.product_activity_templates set channel='OMIE' where id=child_ids[1];
+    raise exception 'UNEXPECTED_ALLOWED';
+  exception when others then if sqlerrm='UNEXPECTED_ALLOWED' then raise; end if; end;
+  begin
+    update public.product_activity_templates set variation_override_fields='{}' where id=child_ids[1];
+    raise exception 'UNEXPECTED_ALLOWED';
+  exception when others then if sqlerrm='UNEXPECTED_ALLOWED' then raise; end if; end;
+  if saved_task is distinct from (select a from public.activities a where id=task_id) then raise exception 'Execution history changed by child edits'; end if;
 end $test$;
 rollback;

@@ -95,8 +95,50 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.evaluate(() => loadProjectTasks().filter(row => row.source_template_id !== 'legacy').every(row => activityDisplayName(row).endsWith('Conciliacao'))), true);
     await page.evaluate(() => openProductActivityDrawer(childIds[0]));
     await page.waitForSelector('#pa-type');
-    assert.equal(await page.evaluate(() => productActivityState.editId === familyId), true, 'Child opens its authoritative parent');
-    await page.locator('#pa-cancel').click();
+    assert.equal(await page.evaluate(() => productActivityState.editId === childIds[0]), true, 'Child opens its own editor');
+    for (const key of ['group', 'subgroup', 'sector', 'subsector', 'category', 'channel', 'module', 'submodule', 'type', 'activity', 'use-structure']) {
+      assert.equal(await page.locator(`#pa-${key}`).isDisabled(), true, `${key} belongs to parent`);
+    }
+    assert.equal(await page.locator('.task-variation-toggle').count(), 0);
+    assert.equal(await page.locator('#pa-add-subtask').count(), 0);
+    await page.locator('#pa-information').fill('Instrucao exclusiva desta variacao');
+    await page.locator('#pa-target-days').fill('5');
+    await page.locator('#pa-checklist-add').click();
+    await page.locator('#pa-checklist input').fill('Conferencia exclusiva');
+    await page.screenshot({ path: path.join(os.tmpdir(), 'task-variation-child-mobile.png') });
+    await page.locator('#pa-save').click();
+    await page.waitForFunction(() => !productActivitySavePending);
+    const childSaved = await page.evaluate(() => {
+      const child = loadProductActivities().find(row => row.id === childIds[0]);
+      return { information: child.information, days: child.target_days, checklist: child.checklist.map(item => item.text), overrides: [...child.variation_override_fields].sort() };
+    });
+    assert.deepEqual(childSaved, { information: 'Instrucao exclusiva desta variacao', days: 5, checklist: ['Conferencia exclusiva'], overrides: ['checklist', 'information', 'target_days'] });
+    await page.evaluate(() => openProductActivityDrawer(familyId));
+    await page.locator('#pa-type').fill('Revisao');
+    await page.locator('#pa-information').fill('Nova instrucao do pai');
+    await page.locator('#pa-target-days').fill('12');
+    await page.locator('#pa-save').click();
+    await page.waitForFunction(() => !productActivitySavePending);
+    const inheritance = await page.evaluate(() => {
+      const rows = loadProductActivities(), child = rows.find(row => row.id === childIds[0]), sibling = rows.find(row => row.id === childIds[1]);
+      const historicalFields = task => [task.id, task.status, task.notes, task.actual_start_date, task.actual_end_date];
+      const completedSchedule = task => task.status === 'done' ? [task.id, task.planned_start_date, task.planned_end_date, task.due_date] : null;
+      return { child: [child.information, child.target_days, child.type, child.checklist[0]?.text], sibling: [sibling.information, sibling.target_days, sibling.type],
+        history: JSON.stringify(loadProjectTasks().map(historicalFields)) === JSON.stringify(JSON.parse(executionSnapshot).map(historicalFields)),
+        completedDates: JSON.stringify(loadProjectTasks().map(completedSchedule)) === JSON.stringify(JSON.parse(executionSnapshot).map(completedSchedule)),
+        ids: rows.filter(row => row.variation_parent_id === familyId).map(row => row.id).sort() };
+    });
+    assert.deepEqual(inheritance.child, ['Instrucao exclusiva desta variacao', 5, 'Revisao', 'Conferencia exclusiva']);
+    assert.deepEqual(inheritance.sibling, ['Nova instrucao do pai', 12, 'Revisao']);
+    assert.equal(inheritance.history, true);
+    assert.equal(inheritance.completedDates, true);
+    assert.deepEqual(inheritance.ids, await page.evaluate(() => childIds));
+    await page.evaluate(async () => {
+      await templateBulkProvider('activities').apply([childIds[0]], { target_days: 9 });
+    });
+    assert.equal(await page.evaluate(() => loadProductActivities().find(row => row.id === familyId).target_days), 12, 'Child bulk edit must not edit parent');
+    assert.equal(await page.evaluate(() => loadProductActivities().find(row => row.id === childIds[0]).target_days), 9);
+    await assert.rejects(page.evaluate(() => templateBulkProvider('activities').apply([childIds[0]], { channel: 'OMIE' })), /estrutura/);
     await page.setViewportSize({ width: 1440, height: 1000 });
     const familyRow = page.locator('#registrations-root tr[data-task-group]').filter({ hasText: 'Pai de variacoes' });
     await page.evaluate(() => {
@@ -117,6 +159,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     });
     assert.deepEqual(checks, { count: 8, children: 8, duplicate: true, limit: true, empty: true, removing: true });
     assert.deepEqual(errors, []); assert.deepEqual(writes, []);
-    console.log('Task variations passed: 5 toggles, selectable/custom values, preview, structural names, Cartesian combinations, stable child IDs, inherited edits, product/Setup scope, no parent executions, history and legacy preservation, catalog grouping, mobile and safety limits.');
+    console.log('Task variations passed: combinations, child editor, locked parent structure, independent details, bulk edit isolation, selective inheritance, stable IDs, product/Setup scope, execution history, catalog grouping, mobile and safety limits.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
