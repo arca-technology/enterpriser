@@ -51,7 +51,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
         assert.ok(execution);
         await page.locator('#pm-mode-button').click();
         assert.equal(await page.locator('#main .registration-toolbar-title').innerText(), label);
-        for (const view of ['table', 'mindmap', 'flow']) {
+        for (const view of ['table', 'list', 'mindmap']) {
           await page.locator('#registration-view-menu-btn').click();
           await page.locator(`#registration-view-dd [data-view="${view}"]`).click();
           for (const width of [390, 360]) {
@@ -83,6 +83,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     }
     assert.equal(await page.evaluate(() => JSON.stringify([loadProductActivities(), loadProductGoals(), loadProductObjectives(), loadProjectTasks()]) === recordSnapshot), true);
     assert.deepEqual(errors, []); assert.deepEqual(writes, []);
-    console.log('PM mobile toolbars passed: Tarefas, Metas and Objetivos; real execution/catalog switch; top/sidebar preferences; table/map/flow; 360/390px touch; visible titles/counts/actions; equal toolbar heights; columns and zero data writes.');
+    console.log('PM mobile toolbars passed: Tarefas, Metas and Objetivos; real execution/catalog switch; top/sidebar preferences; table/list/map; 360/390px touch; visible titles/counts/actions; equal toolbar heights; columns and zero data writes.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

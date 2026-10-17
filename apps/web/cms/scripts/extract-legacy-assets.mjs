@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { UserRound, UsersRound, Building2, MessagesSquare, BriefcaseBusiness, Package, ListChecks, Logs, CircleHelp, Database, Wrench, Globe, History, GitBranch, Target, Flag, Folder, Mail, Workflow, FileText, Table2, EllipsisVertical, ChevronRight, ChevronLeft, ChartNoAxesGantt, SlidersHorizontal, Zap, ZoomIn, ZoomOut, Scan, Maximize, MoveHorizontal, MoveVertical } from "lucide";
 import { faFacebook, faInstagram, faLinkedin, faReddit, faTiktok, faYoutube, faWhatsapp } from "@fortawesome/free-brands-svg-icons";
+import { Network, CircleDot, List } from "lucide";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const html = await readFile(path.join(root, "index.html"), "utf8");
@@ -29,12 +30,15 @@ await mkdir(path.join(root, "public", "legacy"), { recursive: true });
 for (const directory of [path.join(root, "vendor"), path.join(root, "public", "legacy", "vendor")]) {
   await mkdir(directory, { recursive: true });
   for (const file of ["dagre.min.js", "dagre.min.js.LEGAL.txt"]) await copyFile(path.join(root, "node_modules", "@dagrejs", "dagre", "dist", file), path.join(directory, file));
+  await copyFile(path.join(root, "node_modules", "d3-hierarchy", "dist", "d3-hierarchy.min.js"), path.join(directory, "d3-hierarchy.min.js"));
+  await copyFile(path.join(root, "node_modules", "d3-hierarchy", "LICENSE"), path.join(directory, "d3-hierarchy.LICENSE"));
 }
 const iconNodes = { contacts: UsersRound, companies: Building2, conversations: MessagesSquare, deals: BriefcaseBusiness, projects: Package, activities: ListChecks,
   log: Logs, help: CircleHelp, registrations: Database, tools: Wrench, social: Globe, updates: History,
   products: Package, pipelines: GitBranch, users: UsersRound, goals: Target, objectives: Flag,
   files: Folder, emails: Mail, processes: Workflow, documents: FileText, tables: Table2, cms: BriefcaseBusiness, more: EllipsisVertical, chevronRight: ChevronRight,
   chevronLeft: ChevronLeft, timeline: ChartNoAxesGantt, filter: SlidersHorizontal, person: UserRound, automation: Zap, sms: MessagesSquare,
+  mapOrganogram: Network, mapRadial: CircleDot, list: List,
   flow: Workflow, flowZoomIn: ZoomIn, flowZoomOut: ZoomOut, flowFit: Scan, flowFullscreen: Maximize, flowHorizontal: MoveHorizontal, flowVertical: MoveVertical };
 const escapeAttribute = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 const navigationIcons = Object.fromEntries(Object.entries(iconNodes).map(([key, nodes]) => [key,

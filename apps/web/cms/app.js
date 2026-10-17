@@ -2726,6 +2726,58 @@ function wireRecordPrimaryCells(table) {
   decorateMobileTable(table, index);
 }
 
+function applyListPresentation(table, active) {
+  if (!table?.tHead) return;
+  table.classList.toggle("explicit-list-view", active);
+  const previousColumn = table.parentElement.querySelector(":scope > .list-view-controls select")?.value;
+  table.parentElement.querySelector(":scope > .list-view-controls")?.remove();
+  if (!active) return;
+  const headers = [...table.tHead.rows[0].cells];
+  const controls = document.createElement("div"); controls.className = "list-view-controls";
+  const selectable = table.tHead.querySelector('input[type="checkbox"]');
+  controls.innerHTML = `${selectable ? `<input class="list-select-all" type="checkbox" aria-label="Selecionar todos"${selectable.checked ? " checked" : ""}>` : ""}<select aria-label="Coluna para ordenar ou filtrar"><option value="">Ordenar por</option>${headers.map((head, index) => head.textContent.trim() && !head.matches(".select-head,.expand-head,.table-actions-head") ? `<option value="${index}">${esc(head.textContent.trim())}</option>` : "").join("")}</select><button type="button" class="ico list-sort-direction" title="Inverter classificação" aria-label="Inverter classificação" disabled>${viewIcon("schedule")}</button><button type="button" class="ico list-column-filter" title="Filtrar coluna selecionada" aria-label="Filtrar coluna selecionada" disabled>${window.CRM_NAV_ICONS?.filter || ""}</button>`;
+  table.before(controls);
+  controls.querySelector(".list-select-all")?.addEventListener("change", (event) => { if (event.target.checked !== selectable.checked) selectable.click(); });
+  const select = controls.querySelector("select");
+  select.value = previousColumn || String(headers.findIndex((head) => /[▲▼]/.test(head.textContent)));
+  if (select.selectedIndex < 0) select.selectedIndex = 0;
+  controls.querySelectorAll("button").forEach((button) => { button.disabled = !select.value; });
+  if (table.closest("#social-root")) controls.querySelector(".list-column-filter").hidden = true;
+  select.addEventListener("change", () => {
+    controls.querySelectorAll("button").forEach((button) => { button.disabled = select.value === ""; });
+    if (select.value !== "") headers[Number(select.value)].click();
+  });
+  controls.querySelector(".list-sort-direction").onclick = () => headers[Number(select.value)].click();
+  controls.querySelector(".list-column-filter").onclick = () => headers[Number(select.value)].dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+  if (!table.querySelector(".mobile-record-title")) {
+    const primary = headers.findIndex((head) => /^(NOME|NOME COMPLETO|PESSOA|CLIENTE|EMPRESA|CONVERSA|NEGÓCIO|ENTREGA|TAREFA|META|OBJETIVO|PRODUTO|TÍTULO|USUÁRIO|ARQUIVO|DOCUMENTO|PROCESSO|PLANILHA)$/i.test(head.textContent.trim()));
+    decorateMobileTable(table, primary >= 0 ? primary : headers.findIndex((head) => head.textContent.trim() && !head.matches(".select-head,.expand-head,.table-actions-head")));
+  }
+}
+function wireSimpleListView(root, scope) {
+  const button = root.querySelector(".view-menu-trigger");
+  const table = root.querySelector("table");
+  if (!button || !table) return;
+  const key = `list-view:${scope}`;
+  const active = tableListViews.get(key) || "table";
+  applyListPresentation(table, active === "list");
+  button.innerHTML = viewTriggerInner(active);
+  button.title = `Modo de visualização: ${VIEW_LABELS[active]}`;
+  button.onclick = () => {
+    closeFloaters();
+    const panel = document.createElement("div"); panel.id = "view-dd"; panel.className = "view-dd";
+    const rect = button.getBoundingClientRect();
+    panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 198))}px`; panel.style.top = `${rect.bottom + 5}px`;
+    panel.innerHTML = ["table", "list"].map((id) => `<button class="view-option" data-view="${id}">${viewIcon(id)}<span>${VIEW_LABELS[id]}</span></button>`).join("");
+    panel.querySelectorAll("[data-view]").forEach((option) => option.onclick = () => {
+      tableListViews.set(key, option.dataset.view); panel.remove(); wireSimpleListView(root, scope);
+    });
+    document.body.appendChild(panel);
+    const outside = (event) => { if (!panel.contains(event.target) && !button.contains(event.target)) { panel.remove(); document.removeEventListener("mousedown", outside); } };
+    document.addEventListener("mousedown", outside);
+  };
+}
+const tableListViews = new Map();
 function decorateMobileTable(table, primaryIndex) {
   if (!table?.tHead || primaryIndex < 0) return;
   table.classList.add("mobile-adaptive-table");
@@ -6219,6 +6271,32 @@ function productResultIdentity(item) {
 }
 
 function isVariationParent(item) { return Boolean(Object.keys(item?.variation_axes || {}).length); }
+const TEMPLATE_STRUCTURE_LABELS = { simple: "Simples", alternatives: "Alternativas", progression: "Progressão" };
+function templateStructureFields(prefix, current, rows) {
+  const type = current.structure_type || "simple";
+  const groups = [...new Set(rows.filter((row) => row.product_id === productActivityState.productId).map((row) => row.structure_group).filter(Boolean))].sort(compareLabels);
+  return `<div class="field task-form-wide template-structure"><label for="${prefix}-structure-type">Estrutura</label><select id="${prefix}-structure-type">${Object.entries(TEMPLATE_STRUCTURE_LABELS).map(([value, label]) => `<option value="${value}"${value === type ? " selected" : ""}>${label}</option>`).join("")}</select>
+    <div class="structure-details"${type === "simple" ? " hidden" : ""}><label for="${prefix}-structure-group">Grupo</label><input id="${prefix}-structure-group" maxlength="120" list="${prefix}-structure-groups" value="${esc(current.structure_group || "")}"><datalist id="${prefix}-structure-groups">${groups.map((group) => `<option value="${esc(group)}">`).join("")}</datalist>
+    <div class="structure-level"${type !== "progression" ? " hidden" : ""}><label for="${prefix}-structure-order">Nível</label><input id="${prefix}-structure-order" type="number" min="1" max="10000" step="1" value="${esc(current.structure_order || 1)}"></div></div></div>`;
+}
+function wireTemplateStructure(prefix, locked = false) {
+  const select = document.getElementById(`${prefix}-structure-type`);
+  if (!select) return;
+  const root = select.closest(".template-structure");
+  root.querySelectorAll("input,select").forEach((input) => { input.disabled = locked; });
+  select.addEventListener("change", () => {
+    root.querySelector(".structure-details").hidden = select.value === "simple";
+    root.querySelector(".structure-level").hidden = select.value !== "progression";
+  });
+}
+function templateStructureValues(prefix) {
+  const type = document.getElementById(`${prefix}-structure-type`)?.value || "simple";
+  const group = document.getElementById(`${prefix}-structure-group`)?.value.trim() || "";
+  const order = Number(document.getElementById(`${prefix}-structure-order`)?.value);
+  if (type !== "simple" && !group) throw new Error("Informe o grupo da estrutura.");
+  if (type === "progression" && (!Number.isInteger(order) || order < 1 || order > 10000)) throw new Error("Informe um nível inteiro entre 1 e 10000.");
+  return { structure_type: type, structure_group: type === "simple" ? "" : group, structure_order: type === "progression" ? order : 0 };
+}
 function resultVariationDetailFields(section) {
   return ["comments", "notes", "target_days", "default_owner_id", "default_assignee_ids", "assign_to_client", "dependency_activity_template_ids", "dependency_goal_template_ids",
     ...(section === "goals" ? ["metric", "comparison", "target_value", "unit"] : ["completion_criteria", "dependency_objective_template_ids"])];
@@ -6397,7 +6475,8 @@ function productWorkspaceTableState() {
   if (!productWorkspaceTableStates.has(scope)) productWorkspaceTableStates.set(scope, { sortKey: null, sortDir: 1, filters: {}, search: "", view: "table" });
   const tableState = productWorkspaceTableStates.get(scope);
   tableState.search ??= "";
-  tableState.view = ["mindmap", "flow"].includes(tableState.view) ? tableState.view : "table";
+  if (tableState.view === "flow") tableState.view = "mindmap";
+  tableState.view = ["mindmap", "list"].includes(tableState.view) ? tableState.view : "table";
   return tableState;
 }
 
@@ -6434,7 +6513,7 @@ function setupProductWorkspaceToolbar(root, table, tableState) {
     panel.id = "product-view-dd"; panel.className = "view-dd"; panel.setAttribute("role", "menu");
     panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 198))}px`;
     panel.style.top = `${rect.bottom + 5}px`;
-    panel.innerHTML = ["table", "mindmap", "flow"].map((view) => `<button class="view-option${view === tableState.view ? " active" : ""}" type="button" role="menuitemradio" aria-checked="${view === tableState.view}" data-view="${view}"><span class="view-option-icon">${viewIcon(view)}</span><span>${VIEW_LABELS[view]}</span></button>`).join("");
+    panel.innerHTML = ["table", "list", "mindmap"].map((view) => `<button class="view-option${view === tableState.view ? " active" : ""}" type="button" role="menuitemradio" aria-checked="${view === tableState.view}" data-view="${view}"><span class="view-option-icon">${viewIcon(view)}</span><span>${VIEW_LABELS[view]}</span></button>`).join("");
     document.body.appendChild(panel);
     panel.uiReturnFocus = button;
     button.setAttribute("aria-expanded", "true");
@@ -6481,6 +6560,7 @@ function applyProductWorkspaceColumnPreferences(table) {
 }
 
 function renderProductWorkspacePresentation(root, table, tableState) {
+  applyListPresentation(table, tableState.view === "list");
   const mindmap = ["mindmap", "flow"].includes(tableState.view);
   table.closest(".product-activity-list").hidden = mindmap;
   const trigger = root.querySelector(".product-view-menu-btn");
@@ -6818,6 +6898,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
       ${resultVariationFieldHtml("objectives", "po", "category", current, variationLocked)}
       ${resultVariationFieldHtml("objectives", "po", "channel", current, variationLocked)}
       <div class="field task-variation-preview" id="po-variation-preview" hidden></div>
+      ${templateStructureFields("po", current, objectives)}
       <div class="field"><label>Critério de conclusão</label><textarea id="po-criteria" rows="5" placeholder="Como saberemos que este objetivo foi alcançado?">${esc(current.completion_criteria || "")}</textarea></div>
       <div class="field"><label>Comentários</label><textarea id="po-comments" rows="4" placeholder="Contexto do objetivo">${esc(current.comments || "")}</textarea></div>
       <div class="field"><label>Observações</label><textarea id="po-notes" rows="3" placeholder="Observações do objetivo">${esc(current.notes || "")}</textarea></div>
@@ -6839,6 +6920,7 @@ function openProductObjectiveDrawer(editId = null, cloneSourceId = null) {
   wireMultiPicker("po-activity-dependencies");
   wireMainTemplateProduct("po", "objectives");
   wireResultVariations("objectives", "po", current);
+  wireTemplateStructure("po", Boolean(variationParent));
   document.getElementById("po-name")?.focus();
 }
 
@@ -6894,7 +6976,7 @@ async function saveProductObjective() {
   };
   const saveButton = document.getElementById("po-save");
   let changes;
-  try { changes = resultVariationSaveBody("objectives", "po", current, body, rows); } catch (error) { toast(error.message, true); return; }
+  try { Object.assign(body, templateStructureValues("po")); changes = resultVariationSaveBody("objectives", "po", current, body, rows); } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let objectiveSaved = false;
   productObjectiveSavePending = true;
@@ -7022,6 +7104,7 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
       ${resultVariationFieldHtml("goals", "pg", "category", current, variationLocked)}
       ${resultVariationFieldHtml("goals", "pg", "channel", current, variationLocked)}
       <div class="field task-variation-preview" id="pg-variation-preview" hidden></div>
+      ${templateStructureFields("pg", current, goals)}
       <div class="field"><label>Indicador *</label><input id="pg-metric" value="${esc(current.metric || "")}" placeholder="Ex.: Pedidos por mês"></div>
       <div class="field"><label>Condição</label><select id="pg-comparison">${comparisonOptions}</select></div>
       <div class="field"><label>Valor-alvo *</label><input id="pg-target" type="number" step="any" value="${esc(current.target_value ?? "")}" placeholder="Ex.: 500"></div>
@@ -7044,6 +7127,7 @@ function openProductGoalDrawer(editId = null, cloneSourceId = null) {
   wireMultiPicker("pg-activity-dependencies");
   wireMainTemplateProduct("pg", "goals");
   wireResultVariations("goals", "pg", current);
+  wireTemplateStructure("pg", Boolean(variationParent));
   document.getElementById("pg-name")?.focus();
 }
 
@@ -7103,7 +7187,7 @@ async function saveProductGoal() {
   };
   const saveButton = document.getElementById("pg-save");
   let changes;
-  try { changes = resultVariationSaveBody("goals", "pg", current, body, rows); } catch (error) { toast(error.message, true); return; }
+  try { Object.assign(body, templateStructureValues("pg")); changes = resultVariationSaveBody("goals", "pg", current, body, rows); } catch (error) { toast(error.message, true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let goalSaved = false;
   productGoalSavePending = true;
@@ -7496,6 +7580,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
         <label class="task-use-structure" for="pa-use-structure"><input id="pa-use-structure" type="checkbox"${useStructure ? " checked" : ""}><span>Usar estrutura</span></label>
       </div>
       <div class="field task-form-wide task-variation-preview" id="pa-variation-preview" hidden></div>
+      ${templateStructureFields("pa", current, allTemplates)}
       <div class="field task-form-wide"><label>Informação</label><textarea id="pa-information" rows="3" placeholder="Instruções, contexto ou informações importantes">${esc(current.information || "")}</textarea></div>
       <div class="field task-form-wide"><label>Checklist</label>${hasSubtasks ? '<div class="panel-list">O checklist desta tarefa fica nas subtarefas.</div>' : '<div class="checklist-editor" id="pa-checklist"></div><button class="btn checklist-add" id="pa-checklist-add" type="button">+ Item</button>'}</div>
       <div class="field"><label>Objetivo</label><select id="pa-objective">${objectiveOptions}</select></div>
@@ -7512,6 +7597,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
   document.getElementById("pa-cancel").addEventListener("click", closeProductActivityDrawer);
   document.getElementById("pa-save").addEventListener("click", saveProductActivity);
   wireMonthlyDeadline("pa");
+  wireTemplateStructure("pa", Boolean(variationParent));
   wireMultiPicker("pa-required-setup");
   document.getElementById("pa-add-subtask")?.addEventListener("click", () => openProductActivityDrawer(null, null, editing.id));
   document.getElementById("pa-checklist-add")?.addEventListener("click", () => {
@@ -7629,6 +7715,7 @@ async function saveProductActivity() {
     Object.keys(variationAxes).forEach((key) => { baseBody[key] = ""; });
   }
   const saveButton = document.getElementById("pa-save");
+  try { Object.assign(baseBody, templateStructureValues("pa")); } catch (error) { toast(error.message, true); return; }
   if (baseBody.requires_retroactive && isGenericOnboardingTask(baseBody)) { toast("O onboarding geral não pode ser retroativo. Cadastre uma tarefa específica para o serviço retroativo.", true); return; }
   const saveButtonLabel = saveButton?.textContent || "Salvar";
   let activitySaved = false;
@@ -8787,7 +8874,7 @@ function projectToolbarHtml(client, product, total) {
   return `<div class="project-head project-data-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title" title="${esc(projectName)}">${esc(projectName)}</span></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search" id="project-search" placeholder="Buscar..." value="${esc(projectBoardState.search || "")}">${projectBoardState.section === "activities" ? '<button class="btn primary plus" id="project-add-task" title="Adicionar tarefa">+</button>' : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${projectBoardState.view === "table" ? "" : " disabled"}>⊞</button>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn project-cols-btn" type="button" title="Selecionar colunas"${["table", "list"].includes(projectBoardState.view) ? "" : " disabled"}>⊞</button>
       <button class="btn view-menu-trigger${primaryModes.has(projectBoardState.view) ? " active" : ""}" id="project-view-menu-btn" type="button" title="Modo de visualização: ${esc(activePrimaryLabel)}">${viewTriggerInner(activePrimaryMode)}</button>
       <button class="view" type="button" title="Matriz (temporariamente desabilitada)" aria-label="Matriz" disabled>${viewButtonInner("matrix")}</button>
       <button class="view" type="button" title="Dashboard disponível na aba Visão geral" aria-label="Dashboard" disabled>${viewButtonInner("dashboard")}</button>
@@ -8833,7 +8920,7 @@ function renderProjectBoard(projectId) {
   const view = projectBoardState.view || "table";
   let body = "";
   if (projectBoardState.section === "activities") {
-    body = view === "table" ? renderTaskTable(rows)
+    body = ["table", "list"].includes(view) ? renderTaskTable(rows)
       : ["matrix", "kanban"].includes(view) ? renderTaskMatrix(rows)
       : view === "calendar" ? renderProjectTaskCalendar(rows)
       : view === "gantt" ? renderProjectTaskGantt(rows)
@@ -8841,21 +8928,22 @@ function renderProjectBoard(projectId) {
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_TASK_ADAPTER, "", `delivery:${projectId}`).html
       : renderTaskDashboard(rows);
   } else if (projectBoardState.section === "objectives") {
-    body = view === "table" ? renderDeliveryObjectives(projectId, allTasks, rows)
+    body = ["table", "list"].includes(view) ? renderDeliveryObjectives(projectId, allTasks, rows)
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_OBJECTIVE_ADAPTER, "", `delivery-objectives:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "objectives", allTasks)
       : renderDeliverySectionDashboard(rows, "objectives", allTasks);
   } else {
-    body = view === "table" ? renderDeliveryGoals(projectId, rows)
+    body = ["table", "list"].includes(view) ? renderDeliveryGoals(projectId, rows)
       : view === "mindmap" ? registrationMindMapShellHtml(rows, DELIVERY_MIND_MAP_GOAL_ADAPTER, "", `delivery-goals:${projectId}`).html
       : view === "matrix" ? renderDeliveryStatusMatrix(rows, "goals")
       : renderDeliverySectionDashboard(rows, "goals", allTasks);
   }
-  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${["table", "mindmap"].includes(view) ? projectFilterStripHtml() : ""}${body}</div>`;
+  root.innerHTML = `<div class="project-board">${projectToolbarHtml(client, product, rows.length)}${["table", "list", "mindmap"].includes(view) ? projectFilterStripHtml() : ""}${body}</div>`;
   const table = root.querySelector("table");
-  if (table && view === "table") wireProjectTableColumns(table);
-  if (projectBoardState.section === "objectives" && view === "table") wireDeliveryObjectives(projectId);
-  if (projectBoardState.section === "goals" && view === "table") wireDeliveryGoals(projectId);
+  if (table && ["table", "list"].includes(view)) wireProjectTableColumns(table);
+  applyListPresentation(table, view === "list");
+  if (projectBoardState.section === "objectives" && ["table", "list"].includes(view)) wireDeliveryObjectives(projectId);
+  if (projectBoardState.section === "goals" && ["table", "list"].includes(view)) wireDeliveryGoals(projectId);
   wireProjectBoard(projectId);
   if (view === "schedule") {
     const items = rows.map((task) => scheduleItem("activities", task, cache));
@@ -9118,7 +9206,7 @@ function openProjectViewMenu() {
   panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 198))}px`;
   panel.style.top = `${rect.bottom + 5}px`;
   panel.innerHTML = PROJECT_VIEW_MODES.map((mode) => {
-    const available = mode.id === "table" || projectBoardState.section === "activities" || (mode.id === "mindmap" && ["objectives", "goals"].includes(projectBoardState.section));
+    const available = ["table", "list"].includes(mode.id) || projectBoardState.section === "activities" || (mode.id === "mindmap" && ["objectives", "goals"].includes(projectBoardState.section));
     return `<button class="view-option${projectBoardState.view === mode.id ? " active" : ""}" data-view="${mode.id}"${available ? "" : " disabled"}>
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${projectBoardState.view === mode.id ? "✓" : ""}</span>
   </button>`;
@@ -9625,6 +9713,7 @@ function closeFloaters() {
 
 const VIEW_MODES = [
   { id: "table", label: "Tabela", icon: "▦" },
+  { id: "list", label: "Lista", icon: "☷" },
   { id: "kanban", label: "Quadro", icon: "▥", tabs: ["deals", "activities"] },
   { id: "calendar", label: "Calendário", icon: "□", tabs: ["deals", "projects", "activities", "goals", "objectives"] },
   { id: "gantt", label: "Gantt", icon: "▤", tabs: ["deals", "projects", "activities", "goals", "objectives"] },
@@ -9641,11 +9730,11 @@ const VIEW_ICON_PATHS = {
   matrix: '<circle cx="5" cy="5" r="1.6"/><circle cx="10" cy="5" r="1.6"/><circle cx="15" cy="5" r="1.6"/><circle cx="5" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="15" cy="10" r="1.6"/><circle cx="5" cy="15" r="1.6"/><circle cx="10" cy="15" r="1.6"/><circle cx="15" cy="15" r="1.6"/>',
   dashboard: '<path d="M3 16.5h14M5.5 16.5V10M10 16.5V4.5M14.5 16.5V8"/>'
 };
-const viewIcon = (id) => id === "flow" ? (window.CRM_NAV_ICONS?.flow || window.CRM_NAV_ICONS?.processes || "").replace("<svg ", '<svg class="view-svg" ') : `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
-const VIEW_LABELS = { table: "Tabela", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", schedule: "Cronograma", mindmap: "Mapa mental", flow: "Fluxo", matrix: "Matriz", dashboard: "Dashboard" };
+const viewIcon = (id) => ["flow", "list"].includes(id) ? (window.CRM_NAV_ICONS?.[id] || window.CRM_NAV_ICONS?.processes || "").replace("<svg ", '<svg class="view-svg" ') : `<svg class="view-svg" viewBox="0 0 20 20" aria-hidden="true">${VIEW_ICON_PATHS[id] || VIEW_ICON_PATHS.table}</svg>`;
+const VIEW_LABELS = { table: "Tabela", list: "Lista", kanban: "Quadro", calendar: "Calendário", gantt: "Gantt", schedule: "Cronograma", mindmap: "Mapa", matrix: "Matriz", dashboard: "Dashboard" };
 const viewButtonInner = (id) => `${viewIcon(id)}<span class="view-label">${VIEW_LABELS[id] || ""}</span>`;
 const viewTriggerInner = (id) => `<span class="view-menu-icon">${viewIcon(id)}</span><span class="view-label">${VIEW_LABELS[id] || "Tabela"}</span><span class="chevron">▾</span>`;
-const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa mental", icon: "⌘" }];
+const PROJECT_VIEW_MODES = [...VIEW_MODES, { id: "mindmap", label: "Mapa", icon: "⌘" }];
 
 function viewModeAvailable(mode, tab = state.tab) {
   return !mode.tabs || mode.tabs.includes(tab);
@@ -11616,6 +11705,7 @@ function render() {
   else if (state.view === "gantt") renderGantt(cache);
   else if (state.view === "schedule") renderSchedule(cache);
   else renderTable(cache);
+  if (!isHome && !catalog) applyListPresentation(document.querySelector("#main table"), state.view === "list");
 
   if (isHome) {
     document.getElementById("count").textContent = "Visão geral";
@@ -13265,7 +13355,7 @@ const HELP_TOOLBAR_SLOTS = [["reg-products", "Produtos"], ["reg-pipelines", "Pip
 const HELP_TABLE_SECTION = { title: "Tabela, filtros e ações", cards: [["Buscar e ordenar", "A busca central filtra na hora; clique no título da coluna para ordenar."], ["Filtrar", "<b>Ctrl+clique</b> no título da coluna (ou <b>toque longo</b> no tablet). Colunas de número têm condição (entre, maior, menor, igual) e colunas de data filtram por período: calendário de início e fim com atalhos (hoje, semana, mês, selecionar mês). Os filtros ativos aparecem na faixa acima da tabela."], ["⊞ Colunas", "Mostra, oculta e reordena colunas arrastando. A escolha fica salva."], ["Edição em massa", "Marque as linhas: AÇÕES vira ✎ (editar um campo em todos) e ✕ (limpar seleção)."], ["⬆⬇ Dados", "Exporta CSV com as colunas visíveis ou com todas. Importa planilha (CSV, XLS ou XLSX) com as colunas do próprio módulo: baixe a <b>planilha modelo</b>, preencha e confira a prévia antes de importar."]] };
 const HELP_SCHEDULE_SECTION = { title: "Cronograma e período", lead: "Cronograma mostra quais entregas e atividades acontecem no período escolhido. Gantt mantém a visão detalhada do planejamento e do progresso. Apenas visualizar, filtrar e expandir não altera datas ou status.",
   cards: [["Intervalo e escala", "De e Até limitam os registros. Este mês, Próximos 30 dias, Este trimestre e Todo o período preenchem as datas; Hoje volta ao mês atual. Escala em Dias, Semanas ou Meses só muda o detalhe visual, não o filtro. Setas percorrem meses/trimestres nos respectivos atalhos, ou intervalos com a mesma duração no modo personalizado."], ["Entregas que atravessam o período", "Uma entrega de julho a dezembro continua aparecendo ao consultar outubro. Basta o intervalo dela coincidir com pelo menos um dia selecionado. A barra pode aparecer recortada nas extremidades, mas as datas reais continuam indicadas à esquerda."], ["Status e atraso", "Amarelo indica Em aberto, azul Em andamento/Ativo, verde Atendido/Encerrado e cinza Cancelado/Inativo. Atrasado é um aviso separado; não muda a cor do status. Atendidas, encerradas e canceladas não são tratadas como atrasadas."], ["Responsáveis e clientes", "Filtros permite escolher status, cliente, responsável, somente atrasados e incluir registros sem prazo. Agrupe por cliente, produto ou responsáveis. Limpar filtros preserva o intervalo de datas. Os filtros do cronograma não alteram os filtros das outras visualizações."], ["Sem prazo e janelas", "Registros sem datas ficam no grupo Sem prazo definido, se habilitado. Um prazo pontual aparece como losango. Tarefas com janela mensal ou Semana 1 a 4 ocupam o intervalo inteiro; não recebem um dia de vencimento arbitrário."], ["Entregas e celular", "Expanda uma entrega para consultar suas tarefas, objetivos e metas no mesmo período. Clique no nome ou na barra para abrir os detalhes. No celular, Agenda é a apresentação inicial; Linha do tempo permanece disponível. As escolhas são mantidas por módulo nesta sessão, sem mudar os dados."]] };
-const HELP_MIND_MAP_SECTION = { title: "Mapa mental", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
+const HELP_MIND_MAP_SECTION = { title: "Mapa", lead: "O mapa é o reflexo das colunas categorizadas: tarefas por <b>Categoria › Canal › Módulo › Submódulo</b>; metas e objetivos por <b>Categoria › Canal</b>. Níveis vazios não criam ramo.",
   cards: [["Controles", "⊟/⊞ recolhe ou expande tudo, ⇆/⇅ alterna horizontal e vertical, ✋ arrasta por cima dos cards e ⛶ abre em tela cheia (Esc sai)."], ["Zoom", "Ctrl + rolar, botão do mouse pressionado + rolar ou pinça com dois dedos. Clique no percentual para voltar a 100%."], ["Filtros", "Os filtros da tabela valem para o mapa e aparecem também ali."], ["Dependências", "Linhas tracejadas ligam tarefas dependentes. Clique em um card para editar."]] };
 const HELP_TASK_DATES_SECTION = { title: "Datas previstas e reais", lead: "<b>Previsto é o planejamento; real é o que aconteceu.</b> Começar o período não significa que a tarefa já começou ou que está atrasada.",
   cards: [["Início previsto", "Data planejada para começar. Nas tarefas mensais por período, é a abertura da janela: 01/09/2026 permite realizar a atividade ao longo de setembro."],
@@ -13301,8 +13391,8 @@ const HELP_PAGES = {
         cards: [["Instalar como aplicativo", "No Chrome use <b>⋮ → Instalar app</b>; no iPad/iPhone use <b>Compartilhar → Adicionar à Tela de Início</b>. O app (ícone <b>E</b> azul) abre em tela cheia e sempre na versão mais recente."], ["Web e extensão", "PLATFORM_TEXT"]] },
       { title: "Cabeçalho e rodapé", cards: [["↻ Atualizar", "Ao lado do sino. Pisca e mostra quantas alterações outros usuários fizeram; clique para trazer os dados novos sem recarregar a página. Comentários chegam sozinhos no painel aberto."], ["Atividades", "Histórico de quem criou, editou, concluiu, iniciou, reabriu, cancelou ou excluiu algo. Administradores veem todos; os demais, só as próprias."], ["Chat", "Conversa interna entre colaboradores e administradores ativos."], ["Integrações", "Canais ativos e em desenvolvimento, usernames das redes e importação do Google Contatos."], ["Notificações, Configurações e Sair", "Avisos do sistema, identificação usada nas conversas, conexão com o banco e encerramento da sessão."]] },
       { title: "Tabelas e visualizações", lead: "Todas as tabelas seguem a mesma barra: <b>≡ Agrupar · ⊞ Colunas · Visualização ▾ · Matriz · Dashboard · ⬆⬇ Dados</b>. O que não se aplica fica desativado.",
-        cards: [...HELP_TABLE_SECTION.cards, ["▸ Expandir", "A coluna após a seleção abre subtarefas e grupos; o ▸ do cabeçalho expande ou recolhe tudo."], ["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa mental, Matriz e Dashboard, conforme o módulo. Em telas menores os botões viram ícones."]] },
-      { title: "Tablet e celular", steps: ["Instale o app pela tela inicial para usar em tela cheia.", "Segure o dedo no título da coluna para filtrar.", "Faça pinça para dar zoom no mapa mental e no fluxo BPMN."] },
+        cards: [...HELP_TABLE_SECTION.cards, ["▸ Expandir", "A coluna após a seleção abre subtarefas e grupos; o ▸ do cabeçalho expande ou recolhe tudo."], ["Visualizações", "Tabela, Quadro, Calendário, Gantt, Mapa, Matriz e Dashboard, conforme o módulo. Em telas menores os botões viram ícones."]] },
+      { title: "Tablet e celular", steps: ["Instale o app pela tela inicial para usar em tela cheia.", "Segure o dedo no título da coluna para filtrar.", "Faça pinça para dar zoom no mapa e no fluxo BPMN."] },
       { title: "Administração", cards: [["LOG", "Somente administradores, no rodapé. Chamadas ao banco desta sessão (método, recurso, status, tempo e erro) e erros de todos os usuários, com busca e filtro \"Só erros\"."], ["Atualizações", "Resumo das novidades da versão, no rodapé."]],
         tips: ["Se algo não aparecer depois de uma atualização, recarregue a página (Ctrl+Shift+R) ou feche e abra o app instalado."] }
     ] },
@@ -13395,10 +13485,10 @@ const HELP_PAGES = {
     ] },
   "reg-goals": { kicker: "Cadastro", title: "Metas", path: ["Metas", "Cadastro"],
     lead: "Modelos de meta com indicador, comparação, valor-alvo, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. <b>Atingimento</b> mede o resultado: 40 SKUs de um alvo de 100 representam 40%, mesmo que as tarefas estejam concluídas. Prazo sugerido soma dias ao início da entrega e acompanha alterações do modelo nos itens pendentes. Ao editar o prazo diretamente na entrega, a data passa a ser manual; limpar esse campo retoma o prazo do cadastro. Metas atendidas e canceladas preservam suas datas.",
-    sections: [{ title: "Defina uma medida de sucesso", lead: "Meta é um resultado mensurável, não uma ação. Exemplo: chegar a 500 SKUs ativos. Defina o indicador, a unidade, o valor-alvo e a comparação; acompanhe o valor atual na entrega do cliente.", cards: [["No mínimo", "O valor atual precisa alcançar ou superar o alvo. Exemplo: faturamento de pelo menos R$ 50 mil."], ["No máximo", "O resultado deve permanecer no limite ou abaixo dele. Exemplo: até 5 reclamações."], ["Exato", "O resultado esperado é o valor definido. Use quando atingir exatamente aquela quantidade faz sentido."], ["Modelo e resultado real", "O cadastro define a meta padrão do produto. Cada entrega acompanha os valores do seu cliente; o valor de um cliente não deve ser registrado no modelo."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+    sections: [{ title: "Defina uma medida de sucesso", lead: "Meta é um resultado mensurável, não uma ação. Exemplo: chegar a 500 SKUs ativos. Defina o indicador, a unidade, o valor-alvo e a comparação; acompanhe o valor atual na entrega do cliente.", cards: [["No mínimo", "O valor atual precisa alcançar ou superar o alvo. Exemplo: faturamento de pelo menos R$ 50 mil."], ["No máximo", "O resultado deve permanecer no limite ou abaixo dele. Exemplo: até 5 reclamações."], ["Exato", "O resultado esperado é o valor definido. Use quando atingir exatamente aquela quantidade faz sentido."], ["Modelo e resultado real", "O cadastro define a meta padrão do produto. Cada entrega acompanha os valores do seu cliente; o valor de um cliente não deve ser registrado no modelo."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "reg-objectives": { kicker: "Cadastro", title: "Objetivos", path: ["Objetivos", "Cadastro"],
     lead: "Modelos de objetivo com critério de conclusão, Categoria, Canal, Observações, prazo sugerido, responsável e dependências. O prazo sugerido soma dias ao início da entrega e acompanha alterações do cadastro nos objetivos pendentes. Uma data preenchida diretamente na entrega é manual; limpar o campo retoma o prazo do modelo. Objetivos atendidos e cancelados preservam suas datas.",
-    sections: [{ title: "Defina o resultado esperado", lead: "Objetivo descreve o que se quer alcançar. Tarefa é o trabalho necessário; meta mede o resultado. Exemplo: objetivo = organizar o financeiro; tarefas = configurar contas e conciliar movimentos; meta = atingir a quantidade-alvo de movimentos conciliados.", cards: [["Critério de conclusão", "Descreva como reconhecer que o objetivo foi alcançado, com um resultado verificável, não apenas uma intenção."], ["Tarefas vinculadas", "O progresso do objetivo vem das tarefas associadas. Confira os vínculos antes de usar o percentual como evidência de conclusão."], ["Dependências", "Indicam resultados ou trabalhos anteriores necessários. Use para organizar a sequência, não apenas para agrupar itens com nomes semelhantes."], ["Modelo e cliente", "O cadastro é o objetivo padrão do produto. Dentro da entrega, acompanhe o resultado específico do cliente."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa mental", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
+    sections: [{ title: "Defina o resultado esperado", lead: "Objetivo descreve o que se quer alcançar. Tarefa é o trabalho necessário; meta mede o resultado. Exemplo: objetivo = organizar o financeiro; tarefas = configurar contas e conciliar movimentos; meta = atingir a quantidade-alvo de movimentos conciliados.", cards: [["Critério de conclusão", "Descreva como reconhecer que o objetivo foi alcançado, com um resultado verificável, não apenas uma intenção."], ["Tarefas vinculadas", "O progresso do objetivo vem das tarefas associadas. Confira os vínculos antes de usar o percentual como evidência de conclusão."], ["Dependências", "Indicam resultados ou trabalhos anteriores necessários. Use para organizar a sequência, não apenas para agrupar itens com nomes semelhantes."], ["Modelo e cliente", "O cadastro é o objetivo padrão do produto. Dentro da entrega, acompanhe o resultado específico do cliente."]] }, { title: "Visualizações", cards: [["Tabela", "Cadastro e filtros dos modelos."], ["Mapa", "Separa por Categoria › Canal."], ["Dashboard", "Fica dentro da entrega (ícone de olho), com os dados reais de cada cliente."]] }] },
   "tool-files": { kicker: "Ferramentas", title: "Arquivos", path: ["Rodapé", "Ferramentas", "Arquivos"],
     lead: "Catálogo de arquivos por empresa com status, cliente, até cinco níveis de setor, referência ou link do arquivo e data.",
     sections: [{ title: "Cadastrar", steps: ["Clique no <b>+</b>.", "Escolha empresa e cliente.", "Classifique nos setores 1 a 5.", "Informe a referência ou o link e salve."] }] },
@@ -14247,12 +14337,29 @@ function registrationMindMapTaskHtml(node, hierarchy, orderById, adapter) {
   const depsAttr = (entry) => esc([...entry.dependencies].join(","));
   return `<article class="registration-mind-task${node.item.status === "done" ? " is-done" : ""}" data-node-id="${esc(node.id)}" data-deps="${depsAttr(node)}">
     <button class="registration-mind-task-main ${adapter.editClass || "is-static"}" type="button" ${adapter.editAttrs(node.item)}${adapter.editClass ? "" : ' tabindex="-1"'}>
-      <span class="registration-mind-order">${String(order).padStart(2, "0")}</span>
+      <span class="registration-mind-order">${node.item.structure_type === "alternatives" ? "OU" : node.item.structure_type === "progression" ? esc(node.item.structure_order) : String(order).padStart(2, "0")}</span>
       <span class="registration-mind-task-copy"><strong>${esc(mindMapTitle(adapter, node.item))}</strong><small>${esc(adapter.subtitle(node))}</small></span>
     </button>
     ${dependencyNames.length ? `<div class="registration-mind-dependency"><span>Após</span>${dependencyNames.map((name) => `<b>${esc(name)}</b>`).join("")}</div>` : ""}
     ${subtasks.length ? `<div class="registration-mind-subtasks">${subtasks.map((subtask, index) => `<button class="${adapter.editClass}" type="button" ${adapter.editAttrs(subtask.item)} data-node-id="${esc(subtask.id)}" data-deps="${depsAttr(subtask)}"><span>${order}.${index + 1}</span><strong>${esc(mindMapTitle(adapter, subtask.item))}</strong></button>`).join("")}</div>` : ""}
   </article>`;
+}
+
+function registrationStructuredNodesHtml(nodes, hierarchy, orderById, adapter) {
+  const groups = new Map();
+  const entries = [];
+  nodes.forEach((node) => {
+    const item = node.item;
+    if (!item.structure_group || !["alternatives", "progression"].includes(item.structure_type)) { entries.push({ nodes: [node] }); return; }
+    const key = JSON.stringify([item.product_id, item.category, item.channel, item.structure_type, item.structure_group.trim().toLocaleLowerCase("pt-BR")]);
+    if (!groups.has(key)) { const group = { key, type: item.structure_type, label: item.structure_group, nodes: [] }; groups.set(key, group); entries.push(group); }
+    groups.get(key).nodes.push(node);
+  });
+  return entries.map((entry) => {
+    if (!entry.type) return registrationMindMapTaskHtml(entry.nodes[0], hierarchy, orderById, adapter);
+    if (entry.type === "progression") entry.nodes.sort((a, b) => Number(a.item.structure_order) - Number(b.item.structure_order) || compareLabels(mindMapTitle(adapter, a.item), mindMapTitle(adapter, b.item)));
+    return `<section class="registration-structure-group structure-${entry.type}" data-structure-key="${esc(entry.key)}"><div class="registration-structure-heading"><strong>${esc(entry.label)}</strong><small>${TEMPLATE_STRUCTURE_LABELS[entry.type]}</small></div><div class="registration-structure-options">${entry.nodes.map((node, index) => `${index ? `<span class="registration-structure-connector" aria-label="${entry.type === "alternatives" ? "Ou" : "Progressão reversível"}">${entry.type === "alternatives" ? "OU" : "⇄"}</span>` : ""}<div class="registration-structure-option">${entry.type === "progression" ? `<span class="registration-structure-level">Nível ${esc(node.item.structure_order)}</span>` : ""}${registrationMindMapTaskHtml(node, hierarchy, orderById, adapter)}</div>`).join("")}</div></section>`;
+  }).join("");
 }
 
 function registrationMindMapBuckets(nodes, orderById, level, levels = REGISTRATION_MIND_MAP_LEVELS) {
@@ -14275,7 +14382,7 @@ function registrationMindMapBranchHtml(bucket, parentKey, level, hierarchy, orde
   const levels = adapter.levels || REGISTRATION_MIND_MAP_LEVELS;
   const leaf = level === levels.length - 1;
   const content = leaf
-    ? `<div class="registration-mind-tasks">${bucket.nodes.map((node) => registrationMindMapTaskHtml(node, hierarchy, orderById, adapter)).join("")}</div>`
+    ? `<div class="registration-mind-tasks">${registrationStructuredNodesHtml(bucket.nodes, hierarchy, orderById, adapter)}</div>`
     : registrationMindMapBuckets(bucket.nodes, orderById, level + 1, levels).map((child) => registrationMindMapBranchHtml(child, branchKey, level + 1, hierarchy, orderById, adapter)).join("");
   const head = bucket.empty
     ? '<span class="registration-mind-pass" aria-hidden="true"></span>'
@@ -14318,6 +14425,69 @@ const REGISTRATION_MIND_MAP_USER_ADAPTER = {
 };
 
 const mindMapPendingScroll = new Map();
+let registrationMindMapLayout = "organogram";
+const mindMapLayoutZooms = { organogram: 1, radial: .6 };
+try { registrationMindMapLayout = localStorage.getItem("registrationMindMapLayout") === "radial" ? "radial" : "organogram"; } catch {}
+let mindMapHierarchyLibraryPromise;
+function loadMindMapHierarchyLibrary() {
+  if (window.d3?.hierarchy) return Promise.resolve(window.d3);
+  if (!mindMapHierarchyLibraryPromise) mindMapHierarchyLibraryPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = document.querySelector('script[src*="/legacy/app.js"]') ? "/legacy/vendor/d3-hierarchy.min.js" : "vendor/d3-hierarchy.min.js";
+    script.onload = () => window.d3?.hierarchy ? resolve(window.d3) : reject(new Error("Mapa radial indisponível."));
+    script.onerror = () => reject(new Error("Não foi possível carregar o mapa radial."));
+    document.head.appendChild(script);
+  }).catch((error) => { mindMapHierarchyLibraryPromise = null; throw error; });
+  return mindMapHierarchyLibraryPromise;
+}
+async function layoutRadialMindMap(shell) {
+  const d3 = await loadMindMapHierarchyLibrary();
+  if (!shell.isConnected) return;
+  const canvas = shell.querySelector(".registration-mindmap-canvas");
+  const collect = (container) => [...container.children].flatMap((element) => {
+    if (element.hidden || element.matches("svg,.registration-structure-connector,.registration-structure-level")) return [];
+    if (element.matches(".registration-mind-branch")) {
+      const head = element.querySelector(":scope > .registration-mind-toggle");
+      const children = collect(element.querySelector(":scope > .registration-mind-children"));
+      return head ? [{ element: head, children }] : children;
+    }
+    if (element.matches(".registration-structure-group")) return [{ element: element.querySelector(".registration-structure-heading"), children: collect(element.querySelector(".registration-structure-options")) }];
+    if (element.matches(".registration-mind-task")) return [{ element, children: [...element.querySelectorAll(".registration-mind-subtasks > button")].map((child) => ({ element: child })) }];
+    return collect(element);
+  });
+  let branches = collect(canvas.querySelector(".registration-mindmap-branches"));
+  canvas.querySelectorAll(".radial-map-skip").forEach((element) => element.classList.remove("radial-map-skip"));
+  while (branches.length === 1 && branches[0].element.matches(".registration-mind-toggle")) {
+    branches[0].element.classList.add("radial-map-skip"); branches = branches[0].children;
+  }
+  const tree = d3.hierarchy({ element: canvas.querySelector(".registration-mindmap-root"), children: branches });
+  d3.tree().nodeSize([1, 1])(tree);
+  const nodes = tree.descendants();
+  const min = Math.min(...nodes.map((node) => node.x)), max = Math.max(...nodes.map((node) => node.x));
+  const span = Math.max(2, max - min + 2);
+  nodes.forEach((node) => { node.angle = (node.x - min + 1) / span * Math.PI * 2 - Math.PI / 2; });
+  const ringSize = Math.max(360, ...nodes.map((node) => Math.hypot(node.data.element.offsetWidth, node.data.element.offsetHeight))) + 36;
+  let step = ringSize;
+  for (let depth = 1; depth <= tree.height; depth++) {
+    const ring = nodes.filter((node) => node.depth === depth).sort((a, b) => a.angle - b.angle);
+    if (ring.length < 2) continue;
+    const gap = Math.min(...ring.map((node, index) => (ring[(index + 1) % ring.length].angle - node.angle + Math.PI * 2) % (Math.PI * 2)));
+    step = Math.max(step, ringSize / (2 * Math.sin(gap / 2) * depth));
+  }
+  const radius = step * tree.height + ringSize / 2 + 16;
+  canvas.style.width = canvas.style.height = `${radius * 2}px`;
+  nodes.forEach((node) => {
+    const element = node.data.element;
+    node.px = radius + Math.cos(node.angle) * node.depth * step;
+    node.py = radius + Math.sin(node.angle) * node.depth * step;
+    element.classList.add("radial-map-node");
+    element.style.left = `${node.px - element.offsetWidth / 2}px`;
+    element.style.top = `${node.py - element.offsetHeight / 2}px`;
+  });
+  canvas.radialLinks = tree.links();
+  drawRegistrationMindMapLinks(shell);
+  shell.dataset.radialReady = "true";
+}
 function mindMapExpandAllButtonHtml(allExpanded) {
   const label = allExpanded ? "Recolher todo o mapa" : "Expandir todo o mapa";
   return `<button class="view registration-mind-expand-all" type="button" title="${label}" aria-label="${label}" data-expanded="${allExpanded}">${allExpanded ? "⊟" : "⊞"}</button>`;
@@ -14340,7 +14510,10 @@ function centerMindMap(shell) {
   if (!scroller || !rootNode) return;
   const frame = scroller.getBoundingClientRect();
   const node = rootNode.getBoundingClientRect();
-  if (shell.classList.contains("is-vertical")) {
+  if (shell.classList.contains("is-radial")) {
+    scroller.scrollLeft += (node.left + node.width / 2) - (frame.left + scroller.clientWidth / 2);
+    scroller.scrollTop += (node.top + node.height / 2) - (frame.top + scroller.clientHeight / 2);
+  } else if (shell.classList.contains("is-vertical")) {
     scroller.scrollTop = 0;
     scroller.scrollLeft += (node.left + node.width / 2) - (frame.left + scroller.clientWidth / 2);
   } else {
@@ -14383,18 +14556,23 @@ function registrationMindMapShellHtml(items, adapter, search = "", scopeKey = ad
   mindMapPendingScroll.set(scopeKey, previousScroll ? {
     left: previousScroll.scrollLeft,
     top: previousScroll.scrollTop,
+    radial: previousScroll.closest(".registration-mindmap-shell").classList.contains("is-radial"),
     vertical: previousScroll.closest(".registration-mindmap-shell").classList.contains("is-vertical")
   } : null);
   const anyCollapsed = branches.includes(" is-collapsed\"");
   const fullscreenLabel = fullscreen ? "Sair da tela cheia (Esc)" : "Tela cheia";
-  return { count: nodes.length, html: `<div class="registration-mindmap-shell${adapter.scope === "registration-users" ? " registration-users-map" : ""}${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
+  const radial = registrationMindMapLayout === "radial";
+  const layoutLabel = radial ? "Alternar para organograma" : "Alternar para radial";
+  const layoutControl = `<button class="view registration-mind-layout" type="button" title="${layoutLabel}" aria-label="${layoutLabel}" aria-pressed="${radial}">${window.CRM_NAV_ICONS?.[radial ? "mapOrganogram" : "mapRadial"] || ""}</button><button class="view registration-mind-fit" type="button" title="Ajustar mapa à tela" aria-label="Ajustar mapa à tela">${window.CRM_NAV_ICONS?.flowFit || ""}</button>`;
+  return { count: nodes.length, html: `<div class="registration-mindmap-shell${radial ? " is-radial" : ""}${adapter.scope === "registration-users" ? " registration-users-map" : ""}${vertical ? " is-vertical" : ""}${fullscreen ? " is-fullscreen" : ""}${registrationMindMapHandMode ? " is-hand" : ""}" data-scope="${esc(scopeKey)}">
+    <div class="registration-mind-layout-controls">${layoutControl}</div>
     <div class="registration-mind-controls" role="group" aria-label="Controles do mapa">${mindMapExpandAllButtonHtml(!anyCollapsed)}<button class="view${vertical ? "" : " active"}" type="button" data-orientation="horizontal" title="Mapa na horizontal" aria-label="Mapa na horizontal">⇆</button><button class="view${vertical ? " active" : ""}" type="button" data-orientation="vertical" title="Mapa na vertical" aria-label="Mapa na vertical">⇅</button><button class="view registration-mind-hand${registrationMindMapHandMode ? " active" : ""}" type="button" title="Mãozinha: arraste para navegar" aria-label="Mãozinha: arraste para navegar" aria-pressed="${registrationMindMapHandMode}">✋</button><button class="view registration-mind-zoom" type="button" title="Zoom: Ctrl ou botão do mouse pressionado + rolar a bolinha. Clique para voltar a 100%" aria-label="Zoom ${Math.round(registrationMindMapZoom * 100)}%, clique para voltar a 100%">${Math.round(registrationMindMapZoom * 100)}%</button><button class="view registration-mind-fullscreen" type="button" title="${fullscreenLabel}" aria-label="${fullscreenLabel}">${fullscreen ? "✕" : "⛶"}</button></div>
     <div class="registration-mindmap-scroll"><div class="registration-mindmap-canvas" style="zoom:${registrationMindMapZoom}"><svg class="registration-mind-links" aria-hidden="true"></svg>
     <div class="registration-mindmap-root"><strong>${esc(adapter.rootLabel || "Tarefas")}</strong><span>${nodes.length}</span></div><div class="registration-mindmap-branches">${map}</div>
   </div></div></div>` };
 }
 
-// Aplica no mapa mental os mesmos filtros de coluna da tabela (lidos da tabela recém-montada).
+// Aplica no mapa os mesmos filtros de coluna da tabela (lidos da tabela recém-montada).
 function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER) {
   const state = registrationTableState();
   const table = root.querySelector("table");
@@ -14690,12 +14868,12 @@ function wireRegistrationFlow(root) {
 
 function registrationTaskMindMapHtml(items, adapter = REGISTRATION_MIND_MAP_TEMPLATE_ADAPTER, filters = [], allItems = items) {
   const state = registrationTableState();
-  const flow = state.view === "flow";
-  const map = flow ? registrationFlowShellHtml(items, adapter, state.search, adapter.scope, allItems) : registrationMindMapShellHtml(items, adapter, state.search);
+  const flow = false;
+  const map = registrationMindMapShellHtml(items, adapter, state.search);
   return `<div class="modal-toolbar registration-toolbar">
     <div class="registration-toolbar-left"><span class="registration-toolbar-title">${esc(mainPmCatalogActive() ? REGISTRATION_LABEL[registrationsState.section] : "Cadastros")}</span><span class="muted">${map.count} ${esc(MODULE_COUNT_LABEL[registrationsState.section] || adapter.countLabel || "Tarefas")}</span></div>
     <div class="registration-toolbar-center">${mainPmModeButtonHtml()}<input class="search registration-toolbar-search registration-mind-search" placeholder="Buscar..." value="${esc(state.search || "")}">${!adapter.canAdd || adapter.canAdd() ? `<button class="btn primary plus" id="registration-add" title="${esc(adapter.addTitle || "Adicionar tarefa")}">+</button>` : ""}</div>
-    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: ${flow ? "Fluxo" : "Mapa mental"}">${viewTriggerInner(flow ? "flow" : "mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
+    <div class="registration-toolbar-right"><button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas" disabled>⊞</button><button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Mapa">${viewTriggerInner("mindmap")}</button><button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados (disponível na visualização Tabela)" disabled>⬆⬇</button></div>
   </div>${mindMapFilterStripHtml(filters)}${map.html}`;
 }
 
@@ -14714,7 +14892,14 @@ function drawRegistrationMindMapLinks(root) {
     const rect = element.getBoundingClientRect();
     return { left: (rect.left - base.left) / scale, right: (rect.right - base.left) / scale, y: (rect.top - base.top + rect.height / 2) / scale };
   };
-  const paths = [];
+  const paths = (canvas.radialLinks || []).map(({ source, target }) => `<path class="radial-hierarchy-link" d="M${source.px},${source.py} L${target.px},${target.py}"></path>`);
+  if (canvas.radialLinks) canvas.querySelectorAll(".structure-progression").forEach((group) => {
+    const cards = [...group.querySelectorAll(":scope > .registration-structure-options > .registration-structure-option > .registration-mind-task")];
+    cards.slice(1).forEach((card, index) => {
+      const source = box(cards[index]), target = box(card);
+      paths.push(`<path class="radial-progression-link" d="M${(source.left + source.right) / 2},${source.y} L${(target.left + target.right) / 2},${target.y}" marker-start="url(#registration-mind-arrow)" marker-end="url(#registration-mind-arrow)"></path>`);
+    });
+  });
   visible.forEach((target, targetId) => {
     String(target.dataset.deps || "").split(",").filter(Boolean).forEach((sourceId) => {
       const source = visible.get(sourceId);
@@ -14742,7 +14927,7 @@ function drawRegistrationMindMapLinks(root) {
 }
 
 function redrawAllMindMapLinks() {
-  document.querySelectorAll(".registration-mindmap-shell").forEach((shell) => drawRegistrationMindMapLinks(shell));
+  document.querySelectorAll(".registration-mindmap-shell").forEach((shell) => { drawRegistrationMindMapLinks(shell); if (shell.classList.contains("is-radial")) centerMindMap(shell); });
 }
 
 function setMindMapFullscreen(on, touchBrowser = true) {
@@ -14869,6 +15054,22 @@ function wireMindMapPan(scroller) {
 }
 
 function wireMindMap(root, rerender) {
+  const layoutControls = root.querySelector(".registration-mind-layout-controls");
+  if (layoutControls) { root.querySelector(".registration-mind-controls").prepend(...layoutControls.children); layoutControls.remove(); }
+  root.querySelector(".registration-mind-layout")?.addEventListener("click", () => {
+    mindMapLayoutZooms[registrationMindMapLayout] = registrationMindMapZoom;
+    registrationMindMapLayout = registrationMindMapLayout === "radial" ? "organogram" : "radial";
+    registrationMindMapZoom = mindMapLayoutZooms[registrationMindMapLayout];
+    try { localStorage.setItem("registrationMindMapLayout", registrationMindMapLayout); } catch {}
+    rerender();
+  });
+  root.querySelector(".registration-mind-fit")?.addEventListener("click", () => {
+    const shell = root.querySelector(".registration-mindmap-shell"), canvas = shell.querySelector(".registration-mindmap-canvas"), scroll = shell.querySelector(".registration-mindmap-scroll");
+    registrationMindMapZoom = Math.max(.05, Math.min(1, (scroll.clientWidth - 36) / canvas.offsetWidth, (scroll.clientHeight - 80) / canvas.offsetHeight));
+    canvas.style.zoom = registrationMindMapZoom;
+    root.querySelector(".registration-mind-zoom").textContent = `${Math.round(registrationMindMapZoom * 100)}%`;
+    drawRegistrationMindMapLinks(root); centerMindMap(shell);
+  });
   root.querySelectorAll(".registration-mind-controls [data-orientation]").forEach((button) => button.addEventListener("click", () => {
     if (registrationMindMapOrientation === button.dataset.orientation) return;
     registrationMindMapOrientation = button.dataset.orientation;
@@ -14888,12 +15089,14 @@ function wireMindMap(root, rerender) {
     const children = button.closest(".registration-mind-branch")?.querySelector(":scope > .registration-mind-children");
     if (!children) return;
     setMindMapBranchCollapsed(button, !children.hidden);
+    if (registrationMindMapLayout === "radial") layoutRadialMindMap(root.querySelector(".registration-mindmap-shell")).catch((error) => toast(error.message, true));
     updateMindMapExpandAllButton(root);
     drawRegistrationMindMapLinks(root);
   }));
   root.querySelector(".registration-mind-expand-all")?.addEventListener("click", (event) => {
     const collapse = event.currentTarget.dataset.expanded === "true";
     root.querySelectorAll(".registration-mind-toggle").forEach((button) => setMindMapBranchCollapsed(button, collapse));
+    if (registrationMindMapLayout === "radial") layoutRadialMindMap(root.querySelector(".registration-mindmap-shell")).catch((error) => toast(error.message, true));
     updateMindMapExpandAllButton(root);
     drawRegistrationMindMapLinks(root);
     centerMindMap(root.querySelector(".registration-mindmap-shell"));
@@ -14908,11 +15111,14 @@ function wireMindMap(root, rerender) {
   const shell = root.querySelector(".registration-mindmap-shell");
   const savedScroll = shell ? mindMapPendingScroll.get(shell.dataset.scope) : null;
   if (shell) mindMapPendingScroll.delete(shell.dataset.scope);
-  requestAnimationFrame(() => {
+  requestAnimationFrame(async () => {
+    if (shell?.classList.contains("is-radial")) {
+      try { await layoutRadialMindMap(shell); } catch (error) { toast(error.message, true); return; }
+    }
     drawRegistrationMindMapLinks(root);
     const scroller = shell?.querySelector(".registration-mindmap-scroll");
     if (!scroller) return;
-    if (savedScroll && savedScroll.vertical === shell.classList.contains("is-vertical")) {
+    if (savedScroll && savedScroll.vertical === shell.classList.contains("is-vertical") && savedScroll.radial === shell.classList.contains("is-radial")) {
       scroller.scrollLeft = savedScroll.left;
       scroller.scrollTop = savedScroll.top;
     } else centerMindMap(shell);
@@ -14970,8 +15176,8 @@ function openRegistrationViewMenu() {
   panel.style.top = `${rect.bottom + 5}px`;
   const modes = [
     { id: "table", label: "Tabela", icon: "▦" },
-    { id: "mindmap", label: "Mapa mental", icon: "⌘" },
-    ...(["activities", "goals", "objectives"].includes(registrationsState.section) ? [{ id: "flow", label: "Fluxo", icon: viewIcon("flow") }] : [])
+    { id: "list", label: "Lista", icon: viewIcon("list") },
+    ...(["activities", "goals", "objectives", "users"].includes(registrationsState.section) ? [{ id: "mindmap", label: "Mapa", icon: "⌘" }] : [])
   ];
   panel.innerHTML = modes.map((mode) => `<button class="view-option${state.view === mode.id ? " active" : ""}" data-view="${mode.id}">
     <span class="view-option-icon">${mode.icon}</span><span>${mode.label}</span><span>${state.view === mode.id ? "✓" : ""}</span>
@@ -15280,6 +15486,7 @@ function registrationTableState() {
     registrationsState.tables[registrationsState.section] = { sortKey: null, sortDir: 1, filters: {}, search: "", page: 1, pageSize: 50, view: "table" };
   }
   const state = registrationsState.tables[registrationsState.section];
+  if (state.view === "flow") state.view = "mindmap";
   if (!state.view || state.view === "dashboard") state.view = "table";
   return state;
 }
@@ -15348,6 +15555,7 @@ function wireRegistrationTable() {
   applyRegistrationTableState(table);
   wireSecondaryTableSelection(table, `registrations:${registrationsState.section}`);
   applyRegistrationTableState(table);
+  applyListPresentation(table, registrationTableState().view === "list");
 }
 
 function setupRegistrationToolbar(root, table) {
@@ -15373,9 +15581,7 @@ function setupRegistrationToolbar(root, table) {
     addButton.title = originalLabel ? `Adicionar ${originalLabel.toLocaleLowerCase("pt-BR")}` : "Adicionar";
     center.appendChild(addButton);
   }
-  const viewControl = ["activities", "goals", "objectives", "users"].includes(registrationsState.section)
-    ? `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`
-    : `<button class="btn view-menu-trigger active" type="button" title="Modo de visualização: Tabela">${viewTriggerInner("table")}</button>`;
+  const viewControl = `<button class="btn view-menu-trigger active" id="registration-view-menu-btn" type="button" title="Modo de visualização: ${VIEW_LABELS[tableState.view]}">${viewTriggerInner(tableState.view)}</button>`;
   right.innerHTML = `<button class="btn table-group-btn" type="button" title="Agrupar (indisponível nesta tabela)" disabled>≡</button><button class="btn registration-cols-btn" type="button" title="Selecionar colunas">⊞</button>${viewControl}<button class="view" type="button" disabled title="Matriz" aria-label="Matriz">${viewButtonInner("matrix")}</button>${registrationDashboardButtonHtml()}<button class="btn registration-data-btn" type="button" title="Dados">⬆⬇</button>`;
   toolbar.replaceChildren(left, center, right);
   right.querySelector(".registration-data-btn")?.addEventListener("click", (event) => {
@@ -16530,6 +16736,7 @@ function toolsToolbarHtml(count, addTitle, addId, canAdd = true, searchPlacehold
 }
 
 function wireToolsToolbar(root) {
+  wireSimpleListView(root, `tools:${toolsState.section}`);
   const input = root.querySelector(".tools-search");
   input?.addEventListener("input", (event) => {
     toolsState.search = event.target.value;
@@ -16802,6 +17009,7 @@ function renderSocialSection() {
   root.querySelector(".social-search")?.addEventListener("input", (event) => {
     socialState.search = event.target.value;
   });
+  wireSimpleListView(root, `social:${socialState.section}`);
   root.querySelector(".social-data-btn")?.addEventListener("click", (event) => {
     event.stopPropagation();
     openSocialDataMenu(event.currentTarget);
