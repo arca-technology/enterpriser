@@ -2803,45 +2803,10 @@ function decorateMobileTable(table, primaryIndex) {
   });
 }
 
-let mobilePresentation = "list";
-try { mobilePresentation = localStorage.getItem("crm_mobile_presentation") === "table" ? "table" : "list"; } catch (_) {}
-function syncMobilePresentation() {
-  document.body.classList.toggle("mobile-list-mode", mobilePresentation === "list");
-  const button = document.getElementById("mobile-presentation");
-  if (button) {
-    button.innerHTML = mobilePresentation === "list" ? (window.CRM_NAV_ICONS?.log || viewIcon("schedule")) : viewIcon("table");
-    button.title = mobilePresentation === "list" ? "Mostrar tabela" : "Mostrar lista";
-    button.setAttribute("aria-label", button.title);
-    button.setAttribute("aria-pressed", String(mobilePresentation === "list"));
-  }
-}
 function closeMobileMenu() {
   document.getElementById("mobile-navigation-menu")?.close();
   document.getElementById("mobile-navigation-menu")?.remove();
   document.getElementById("mobile-more")?.setAttribute("aria-expanded", "false");
-}
-function openMobileFilters() {
-  closeMobileMenu();
-  const dialog = document.createElement("dialog");
-  dialog.id = "mobile-navigation-menu";
-  dialog.setAttribute("aria-labelledby", "mobile-menu-title");
-  dialog.innerHTML = `<div class="mobile-menu-heading"><h2 id="mobile-menu-title">Filtrar por coluna</h2><button type="button" class="ico" id="mobile-menu-close" aria-label="Fechar filtros">✕</button></div><div class="mobile-menu-content">${columns(state.tab, cache).map((column) => `<button type="button" class="mobile-menu-item" data-mobile-filter="${esc(column.k)}">${esc(column.h)}</button>`).join("")}</div>`;
-  document.body.appendChild(dialog);
-  dialog.querySelector("#mobile-menu-close").addEventListener("click", closeMobileMenu);
-  const columnsButton = document.createElement("button");
-  columnsButton.type = "button";
-  columnsButton.className = "mobile-menu-item";
-  columnsButton.textContent = "Colunas visíveis";
-  columnsButton.addEventListener("click", () => { closeMobileMenu(); openColumnManager(); });
-  dialog.querySelector(".mobile-menu-content").prepend(columnsButton);
-  dialog.querySelectorAll('[data-mobile-filter]').forEach((button) => button.addEventListener("click", () => {
-    const key = button.dataset.mobileFilter;
-    closeMobileMenu();
-    openColumnFilter(document.getElementById("mobile-filter-btn"), key);
-  }));
-  dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeMobileMenu(); });
-  dialog.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); closeMobileMenu(); } }, true);
-  dialog.showModal();
 }
 function openMobileMenu(deliveryOnly = false) {
   closeMobileMenu();
@@ -2923,7 +2888,6 @@ function syncMobileNavigation() {
   const delivery = Boolean(document.getElementById("project-board-root"));
   const product = document.body.classList.contains("sidebar-product-open");
   const currentTab = product ? productActivityState.tab : state.tab;
-  document.getElementById("mobile-presentation").disabled = state.view !== "table";
   const caption = document.getElementById("mobile-module-caption");
   if (caption) caption.textContent = document.querySelector(`#tabs [data-tab="${currentTab}"] .nav-label`)?.textContent || (currentTab === "home" ? "Visão geral" : "");
   let visibleIndex = 0;
@@ -16298,12 +16262,7 @@ let socialChannelProfiles = (() => {
   catch (e) { return {}; }
 })();
 
-syncMobilePresentation();
-document.getElementById("mobile-presentation")?.addEventListener("click", () => {
-  mobilePresentation = mobilePresentation === "list" ? "table" : "list";
-  try { localStorage.setItem("crm_mobile_presentation", mobilePresentation); } catch (_) {}
-  syncMobilePresentation();
-});
+document.body.classList.add("mobile-list-mode");
 document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEventListener("click", () => {
   if (button.dataset.mobileTab === "projects" && document.getElementById("project-board-root")) openMobileMenu(true);
   else document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`)?.click();
@@ -16320,7 +16279,6 @@ document.getElementById("mobile-module-track")?.addEventListener("keydown", (eve
 });
 window.addEventListener("resize", revealMobileModule, { passive: true });
 document.getElementById("mobile-more")?.addEventListener("click", () => openMobileMenu());
-document.getElementById("mobile-filter-btn")?.addEventListener("click", openMobileFilters);
 const mobileNavigationObserver = new MutationObserver(() => { syncMobileNavigation(); syncToolbarHelp(); });
 ["main", "modal-root"].forEach((id) => { const surface = document.getElementById(id); if (surface) mobileNavigationObserver.observe(surface, { childList: true, subtree: true }); });
 syncMobileNavigation();

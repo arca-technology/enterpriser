@@ -29,7 +29,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.route('**/*', route => route.request().url() === 'http://pm-mobile.localhost/'
       ? route.fulfill({ contentType: 'text/html', body: fixtureHtml }) : route.abort());
     await page.goto('http://pm-mobile.localhost/');
-    await page.evaluate(() => { window.CRM_CONFIG = {}; });
+    await page.evaluate(() => { window.CRM_CONFIG = {}; localStorage.setItem('crm_mobile_presentation', 'table'); });
     for (const file of ['public/legacy/navigation-icons.js', 'vendor/dagre.min.js']) await page.addScriptTag({ content: fs.readFileSync(path.join(root, file), 'utf8') });
     await page.addScriptTag({ content: source });
     await page.evaluate(async () => {
@@ -45,10 +45,41 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     for (const navigation of ['top', 'sidebar']) {
       await page.evaluate(mode => saveNavigationPreference({ mode }), navigation);
       for (const [section, label] of [['activities', 'Tarefas'], ['goals', 'Metas'], ['objectives', 'Objetivos']]) {
+        await page.setViewportSize({ width: 390, height: 844 });
         await page.locator(`#mobile-module-track [data-mobile-tab="${section}"]`).evaluate(button => button.click());
         if (await page.evaluate(() => mainPmCatalogActive())) await page.locator('#main [data-pm-mode]').click();
         assert.equal(await page.evaluate(() => state.view), 'list', 'Mobile execution starts in the actual List view');
         assert.equal(await page.locator('#main table.explicit-list-view').count(), 1);
+        assert.equal(await page.locator('#mobile-presentation,#mobile-filter-btn').count(), 0, 'Retired mobile controls are removed');
+        const executionTools = new Map();
+        for (const width of [320, 360, 390]) {
+          await page.setViewportSize({ width, height: 844 });
+          const boxes = [];
+          for (const id of ['cols-btn', 'view-menu-btn', 'data-btn', 'toolbar-help']) {
+            const button = page.locator(`#${id}`), box = await button.boundingBox();
+            assert.ok(box && box.width >= 44 && box.height >= 44, `${width}/${section}: ${id} is visible and touch-sized`);
+            assert.equal(await button.isEnabled(), true);
+            if (boxes.length) assert.ok(boxes.at(-1).x + boxes.at(-1).width <= box.x, `Columns, View, Data, Help must be in order without overlaps: ${id} ${JSON.stringify({ previous: boxes.at(-1), box })}`);
+            boxes.push(box);
+          }
+          assert.ok(boxes.at(-1).x + boxes.at(-1).width <= width);
+          executionTools.set(width, boxes);
+        }
+        if (navigation === 'top' && section === 'activities') {
+          await page.locator('#cols-btn').click();
+          assert.equal(await page.locator('#cols-dd').isVisible(), true);
+          await page.locator('#cols-dd .column-manager-close').click();
+          await page.locator('#view-menu-btn').click();
+          assert.equal(await page.locator('#view-dd [data-view="list"]').isVisible(), true);
+          await page.locator('#view-dd [data-view="list"]').click();
+          await page.locator('#data-btn').click();
+          assert.equal(await page.locator('#data-dd #csv-active').isVisible(), true);
+          await page.evaluate(() => closeFloaters());
+          await page.locator('#toolbar-help').click();
+          assert.equal(await page.locator('#help-panel').isVisible(), true);
+          await page.locator('#help-close').click();
+          await page.screenshot({ path: path.join(os.tmpdir(), 'pm-mobile-execution-toolbar.png') });
+        }
         const execution = await page.locator('.subbar').boundingBox();
         assert.ok(execution);
         await page.locator('#pm-mode-button').click();
@@ -63,7 +94,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
           await page.locator(`#registration-view-dd [data-view="${view}"]`).click();
           await page.evaluate(() => renderRegistrationsSection());
           assert.equal(await page.evaluate(() => registrationTableState().view), view, 'Rerender preserves a manually selected view');
-          for (const width of [390, 360]) {
+          for (const width of [390, 360, 320]) {
             await page.setViewportSize({ width, height: 844 });
             const toolbar = page.locator('#main .registration-toolbar');
             const title = await toolbar.locator('.registration-toolbar-title').boundingBox();
@@ -73,6 +104,12 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
             const mode = await toolbar.locator('[data-pm-mode]').boundingBox();
             const add = await toolbar.locator('#registration-add').boundingBox();
             assert.ok(title && count && tools && search && mode && add, `${navigation}/${section}/${view}: all toolbar parts visible`);
+            const catalogTools = toolbar.locator('.registration-cols-btn,#registration-view-menu-btn,.registration-data-btn,.module-help-btn');
+            for (let i = 0; view !== 'mindmap' && i < 4; i++) {
+              const box = await catalogTools.nth(i).boundingBox();
+              const expected = executionTools.get(width)[i];
+              assert.ok(box && Math.abs(box.x - expected.x) < 2 && Math.abs(box.width - expected.width) < 2, `${width}/${section}/${view}: execution and catalog controls align`);
+            }
             assert.ok(title.y < count.y && count.y < search.y && tools.y < search.y, 'Title/count/tools above search');
             assert.ok(mode.x + mode.width <= search.x && search.x + search.width <= add.x && add.x + add.width <= width, 'Search row must fit');
             assert.ok(Math.abs((await toolbar.boundingBox()).height - execution.height) <= 8, 'Catalog and execution toolbars must have equal height');
@@ -118,6 +155,6 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.evaluate(() => registrationTableState().view), 'table', 'Desktop catalogs still default to Table');
     assert.equal(await page.evaluate(() => JSON.stringify([loadProductActivities(), loadProductGoals(), loadProductObjectives(), loadProjectTasks()]) === recordSnapshot), true);
     assert.deepEqual(errors, []); assert.deepEqual(writes, []);
-    console.log('Mobile List defaults passed: execution, catalogs, products, delivery sections and main modules; manual Table/Map preserved; desktop Table and delivery dashboard unchanged; 360/390px toolbars, top/sidebar navigation and zero data writes.');
+    console.log('Mobile toolbars passed: matching Columns/View/Data/Help controls, working menus, retired toggles removed, ignored legacy display setting, List defaults, manual views, desktop unchanged, 320/360/390px layouts and zero data writes.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
