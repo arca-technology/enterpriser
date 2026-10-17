@@ -6413,6 +6413,32 @@ function resultVariationSaveBody(section, prefix, current, body, rows) {
   return body;
 }
 
+function addResultClassificationColumns(root, items, product = false) {
+  const table = root.querySelector("table");
+  if (!table) return;
+  const fields = product ? ["category", "channel", "module", "submodule"] : ["module", "submodule"];
+  const labels = { category: "Categoria", channel: "Canal", module: "Módulo", submodule: "Submódulo" };
+  const headers = [...table.tHead.rows[0].cells];
+  const anchor = product ? headers[0] : headers.find((header) => header.textContent.trim() === "Canal");
+  if (!anchor || table.querySelector("th[data-result-column]")) return;
+  const index = anchor.cellIndex;
+  anchor.insertAdjacentHTML("afterend", fields.map((field) => `<th data-result-column="${field}">${labels[field]}</th>`).join(""));
+  const byId = new Map(items.map((item) => [item.id, item]));
+  table.querySelectorAll("tbody tr").forEach((row, rowIndex) => {
+    const empty = row.querySelector("td.empty");
+    if (empty) { empty.colSpan = table.tHead.rows[0].cells.length; return; }
+    const id = row.dataset.id || row.querySelector(".reg-template-edit")?.dataset.id || items[rowIndex]?.id;
+    const item = byId.get(id);
+    if (item) row.cells[index].insertAdjacentHTML("afterend", fields.map((field) => `<td>${esc(item[field] || "—")}</td>`).join(""));
+  });
+}
+
+// Added fields use stable keys so existing positional column preferences keep their meaning.
+function secondaryTableColumnKey(headers, index, prefix) {
+  const field = headers[index].dataset.resultColumn;
+  return field ? `${prefix}_${field}` : `${prefix}${headers.slice(0, index).filter((header) => !header.dataset.resultColumn).length}`;
+}
+
 function decorateResultVariationRows(root, items, product = false) {
   const byId = new Map(items.map((item) => [item.id, item]));
   root.querySelectorAll("tbody tr").forEach((row, index) => {
@@ -6726,9 +6752,10 @@ function wireProductWorkspaceTable() {
   const tableState = productWorkspaceTableState();
   const rows = [...table.querySelectorAll("tbody tr[data-id]")];
   rows.forEach((row, index) => { row.dataset.productOriginalOrder = index; });
-  table.querySelectorAll("thead th").forEach((header, index) => {
+  const headers = [...table.querySelectorAll("thead th")];
+  headers.forEach((header, index) => {
     if (header.classList.contains("noclick")) return;
-    const key = `c${index}`;
+    const key = secondaryTableColumnKey(headers, index, "c");
     header.dataset.productColumn = key; header.dataset.productLabel = header.textContent.trim();
     rows.forEach((row) => { if (row.children[index]) row.children[index].dataset.productColumn = key; });
     header.tabIndex = 0;
@@ -6873,6 +6900,7 @@ function renderProductObjectives() {
     <div class="product-activity-list"><table><thead><tr>
       <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th class="compact-multi-cell">Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
+  addResultClassificationColumns(root, objectives, true);
   decorateResultVariationRows(root, objectives, true);
   document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
@@ -7081,6 +7109,7 @@ function renderProductGoals() {
     <div class="product-activity-list"><table><thead><tr>
     <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th>Prazo sugerido</th><th class="compact-multi-cell">Responsável padrão</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
+  addResultClassificationColumns(root, goals, true);
   decorateResultVariationRows(root, goals, true);
   document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
@@ -8448,6 +8477,8 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
       <td><strong>${esc(resultDisplayName(objective))}</strong></td>
       <td>${esc(objective.category || "—")}</td>
       <td>${esc(objective.channel || "—")}</td>
+      <td>${esc(objective.module || "—")}</td>
+      <td>${esc(objective.submodule || "—")}</td>
       <td>${esc(objective.completion_criteria || "—")}</td>
       <td>${esc(objective.comments || "—")}</td>
       <td>${esc(objective.notes || "—")}</td>
@@ -8460,8 +8491,8 @@ function renderDeliveryObjectives(projectId, tasks, sourceRows = null) {
     </tr>`;
   }).join("");
   return `<div class="task-table-wrap"><table><thead><tr>
-    <th>Objetivo</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="12" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
+    <th>Objetivo</th><th>Categoria</th><th>Canal</th><th data-result-column="module">Módulo</th><th data-result-column="submodule">Submódulo</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th>Progresso das tarefas</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Esta entrega ainda não possui objetivos.</td></tr>'}</tbody></table></div>`;
 }
 
 function deliveryObjectiveDependencyState(objective) {
@@ -8526,7 +8557,7 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     const dependencyState = deliveryGoalDependencyState(goal);
     const dependencyLabel = deliveryGoalDependencyLabel(goal);
     return `<tr data-goal-id="${esc(goal.id)}">
-      <td><strong>${esc(resultDisplayName(goal))}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.metric)}</td>
+      <td><strong>${esc(resultDisplayName(goal))}</strong></td><td>${esc(goal.category || "—")}</td><td>${esc(goal.channel || "—")}</td><td>${esc(goal.module || "—")}</td><td>${esc(goal.submodule || "—")}</td><td>${esc(goal.metric)}</td>
       <td><input class="objective-control delivery-goal-current" type="number" step="any" value="${esc(current)}"></td>
       <td>${esc(targetLabel)}</td><td>${esc(goal.comments || "—")}</td><td>${esc(goal.notes || "—")}</td><td>${progress}%</td><td>${esc(dependencyLabel)}${dependencyState.blocked ? '<div class="muted">Aguardando dependências</div>' : ""}</td>
       <td>${multiPickerHtml(`delivery-goal-assignees-${goal.id}`, assigneePickerOptions(normalizeIdList(goal.assignee_ids, goal.owner_id)), assigneePickerSelection(goal.assignee_ids, goal.owner_id, goal.assign_to_client), "Selecionar responsáveis", false, !canEditOperational("deliveryGoals", goal))}</td>
@@ -8536,8 +8567,8 @@ function renderDeliveryGoals(projectId, sourceRows = null) {
     </tr>`;
   }).join("");
   return `<div class="task-table-shell"><div class="task-table-wrap"><table><thead><tr>
-    <th>Meta</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Atingimento</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
-  </tr></thead><tbody>${rows || '<tr><td colspan="14" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
+    <th>Meta</th><th>Categoria</th><th>Canal</th><th data-result-column="module">Módulo</th><th data-result-column="submodule">Submódulo</th><th>Indicador</th><th>Valor atual</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th>Atingimento</th><th>Depende de</th><th>Responsável</th><th>Prazo</th><th>Status</th>${tableActionsHead()}
+  </tr></thead><tbody>${rows || '<tr><td colspan="16" class="empty">Esta entrega ainda não possui metas.</td></tr>'}</tbody></table></div>
   <div class="table-pagination"><span>${goals.length} meta(s)</span><div><span>Acompanhamento da entrega</span></div></div></div>`;
 }
 
@@ -8850,6 +8881,7 @@ function projectSectionValues(item, tasks = []) {
 }
 
 function projectRowValue(item, key, tasks) {
+  if (key === "d_module" || key === "d_submodule") return String(item[key.slice(2)] || "—");
   const index = Number(String(key || "").slice(1));
   return String(projectSectionValues(item, tasks)[index] ?? "—");
 }
@@ -8859,7 +8891,7 @@ function filterProjectSectionRows(rows, tasks = []) {
   const filters = projectBoardState.filters || {};
   const filtered = rows.filter((item) => {
     const values = projectSectionValues(item, tasks);
-    const matchesSearch = !query || values.some((value) => String(value ?? "").toLocaleLowerCase("pt-BR").includes(query));
+    const matchesSearch = !query || [...values, item.module, item.submodule].some((value) => String(value ?? "").toLocaleLowerCase("pt-BR").includes(query));
     return matchesSearch && Object.entries(filters).every(([key, selected]) =>
       !selected?.size || selected.has(projectRowValue(item, key, tasks))
     );
@@ -8879,7 +8911,7 @@ function projectFilterStripHtml() {
   const labels = PROJECT_TABLE_LABELS[projectBoardState.section] || [];
   const active = Object.entries(filters).filter(([, values]) => values?.size);
   return `<div class="registration-filter-strip"><div class="registration-filter-badges">${active.map(([key, values]) => {
-    const label = labels[Number(key.slice(1))] || key;
+    const label = ({ d_module: "Módulo", d_submodule: "Submódulo" })[key] || labels[Number(key.slice(1))] || key;
     return `<button class="registration-filter-badge project-filter-badge" data-key="${esc(key)}" title="Limpar filtro"><span>${esc(label)}: ${esc([...values].join(", "))}</span><b>×</b></button>`;
   }).join("")}</div><button class="filter-clear-all project-filter-clear-all" type="button"${active.length < 2 ? " hidden" : ""}><span aria-hidden="true">×</span> Limpar tudo</button></div>`;
 }
@@ -9258,6 +9290,9 @@ function exportProjectSectionCSV() {
     h: label,
     csv: (_value, row) => projectSectionValues(row, tasks)[index] ?? ""
   }));
+  if (["objectives", "goals"].includes(section)) columns.splice(3, 0,
+    { k: "module", h: "Módulo", csv: (_value, row) => row.module || "—" },
+    { k: "submodule", h: "Submódulo", csv: (_value, row) => row.submodule || "—" });
   const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
   downloadCSV(columns, rows, `enterpriser_entrega_${section}_${stamp}.csv`);
   toast(`CSV exportado: ${rows.length} linha(s).`);
@@ -9520,8 +9555,8 @@ function projectTableRows(table) {
 
 function projectTableDefinitions(table) {
   return [...table.querySelectorAll("thead th[data-project-column]")]
-    .map((header) => ({ k: header.dataset.projectColumn, h: header.dataset.projectLabel }))
-    .sort((a, b) => Number(a.k.slice(1)) - Number(b.k.slice(1)));
+    .sort((a, b) => Number(a.dataset.columnIndex) - Number(b.dataset.columnIndex))
+    .map((header) => ({ k: header.dataset.projectColumn, h: header.dataset.projectLabel }));
 }
 
 function applyProjectTableColumnPreferences(table) {
@@ -9563,7 +9598,8 @@ function wireProjectTableColumns(table) {
   const headers = [...table.querySelectorAll("thead th")];
   headers.forEach((header, index) => {
     if (header.textContent.trim().toLocaleUpperCase("pt-BR") === "AÇÕES") return;
-    const key = `d${index}`;
+    const key = secondaryTableColumnKey(headers, index, "d");
+    header.dataset.columnIndex = index;
     header.dataset.projectColumn = key;
     header.dataset.projectLabel = header.textContent.trim();
     header.title = "Clique para ordenar. Ctrl+clique para filtrar.";
@@ -10321,7 +10357,12 @@ async function loadRemoteColumnPreferences() {
 }
 
 function orderedColumnDefinitions(definitions, prefs) {
-  const savedOrder = Array.isArray(prefs.__order) ? prefs.__order : [];
+  const savedOrder = Array.isArray(prefs.__order) ? [...prefs.__order] : [];
+  if (savedOrder.length) definitions.forEach((column, index) => {
+    if (!/^[cd]_(category|channel|module|submodule)$/.test(column.k) || savedOrder.includes(column.k)) return;
+    const previous = definitions.slice(0, index).reverse().find((entry) => savedOrder.includes(entry.k));
+    if (previous) savedOrder.splice(savedOrder.indexOf(previous.k) + 1, 0, column.k);
+  });
   const byKey = Object.fromEntries(definitions.map((col) => [col.k, col]));
   return [
     ...savedOrder.map((key) => byKey[key]).filter(Boolean),
@@ -14651,8 +14692,9 @@ function registrationMindMapFilteredItems(root, items, kind, adapter = REGISTRAT
   const table = root.querySelector("table");
   const active = Object.entries(state.filters || {}).filter(([, values]) => values?.size);
   const labels = new Map();
-  [...(table?.querySelectorAll("thead th") || [])].forEach((header, index) => {
-    if (header.textContent.trim().toLocaleUpperCase("pt-BR") !== "AÇÕES") labels.set(`c${index}`, { index, label: header.textContent.trim() });
+  const headers = [...(table?.querySelectorAll("thead th") || [])];
+  headers.forEach((header, index) => {
+    if (header.textContent.trim().toLocaleUpperCase("pt-BR") !== "AÇÕES") labels.set(secondaryTableColumnKey(headers, index, "c"), { index, label: header.textContent.trim() });
   });
   const filters = active.map(([key, values]) => ({ key, values, label: labels.get(key)?.label || "Coluna" }));
   if (!table || !active.length) return [items, adapter, filters, items];
@@ -15470,6 +15512,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("meta", items.length, "Meta", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 12);
+    addResultClassificationColumns(root, items);
     if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "goals", REGISTRATION_MIND_MAP_GOAL_ADAPTER));
   } else {
     const items = loadProductObjectives();
@@ -15486,6 +15529,7 @@ function renderRegistrationsSection() {
       })}</td></tr>`;
     }).join("");
     root.innerHTML = registrationTemplateTable("objetivo", items.length, "Objetivo", "<th>Produto</th><th>Categoria</th><th>Canal</th><th>Critério de conclusão</th><th>Comentários</th><th>Observações</th><th class=\"compact-multi-cell\">Depende de</th><th>Prazo sugerido</th><th class=\"compact-multi-cell\">Responsável padrão</th>", rows, 11);
+    addResultClassificationColumns(root, items);
     if (["mindmap", "flow"].includes(registrationTableState().view)) root.innerHTML = registrationTaskMindMapHtml(...registrationMindMapFilteredItems(root, items, "objectives", REGISTRATION_MIND_MAP_OBJECTIVE_ADAPTER));
   }
   if (["goals", "objectives"].includes(section)) {
@@ -15590,7 +15634,8 @@ function wireRegistrationTable() {
   const headers = [...table.querySelectorAll("thead th")];
   headers.forEach((header, index) => {
     if (header.textContent.trim().toLocaleUpperCase("pt-BR") === "AÇÕES") return;
-    const key = `c${index}`;
+    const key = secondaryTableColumnKey(headers, index, "c");
+    header.dataset.columnIndex = index;
     header.dataset.registrationKey = key;
     header.dataset.registrationLabel = header.textContent.trim();
     registrationTableRows(table, true).forEach((row) => {
@@ -15682,8 +15727,8 @@ function setupRegistrationToolbar(root, table) {
 
 function registrationColumnDefinitions(table) {
   return [...table.querySelectorAll("thead th[data-registration-key]")]
-    .map((header) => ({ k: header.dataset.registrationKey, h: header.dataset.registrationLabel }))
-    .sort((a, b) => Number(a.k.slice(1)) - Number(b.k.slice(1)));
+    .sort((a, b) => Number(a.dataset.columnIndex) - Number(b.dataset.columnIndex))
+    .map((header) => ({ k: header.dataset.registrationKey, h: header.dataset.registrationLabel }));
 }
 
 function exportRegistrationCSV(table, visibleOnly) {
