@@ -1310,11 +1310,22 @@
   .modal-toolbar-actions{display:flex;align-items:center;gap:8px}
   #product-activities-root{display:flex;flex:1 1 auto;min-height:0;flex-direction:column}
   .product-filter-strip[hidden]{display:none}
-  .modal-toolbar.product-workspace-toolbar{grid-template-columns:minmax(90px,1fr) minmax(260px,540px) auto}
+  .modal-toolbar.product-workspace-toolbar{grid-template-columns:minmax(0,1fr) minmax(220px,431px) minmax(0,1fr)}
   .product-workspace-toolbar .registration-toolbar-center .search{width:0;min-width:0;max-width:none;flex:1}
   .product-workspace-toolbar .registration-toolbar-center>button{flex-shrink:0;white-space:nowrap}
   .product-workspace-toolbar .registration-toolbar-right{padding-left:0}
   .product-workspace-toolbar .product-cols-btn{display:inline-flex!important}
+  @media(min-width:1101px){
+    .modal-toolbar.product-workspace-toolbar{grid-template-columns:minmax(0,1fr) clamp(200px,calc(100% - 760px),431px) minmax(0,1fr)}
+    .product-workspace-toolbar .registration-toolbar-center>button{position:absolute;left:calc(100% + 8px)}
+  }
+  @media(min-width:1101px) and (max-width:1799px){
+    .product-workspace-toolbar .registration-toolbar-right button.view{width:38px;flex-basis:38px;padding:0}
+    .product-workspace-toolbar .registration-toolbar-right button.view-menu-trigger{width:54px;flex-basis:54px;padding:0 8px;justify-content:center}
+    .product-workspace-toolbar .registration-toolbar-right .view-label{display:none}
+    .product-workspace-toolbar .registration-toolbar-right .view-svg{display:inline-block}
+    .product-workspace-toolbar .registration-toolbar-right .view-menu-icon{display:inline-flex}
+  }
   .product-mind-view{display:flex;flex:1 1 auto;min-width:0;min-height:0;overflow:hidden}
   .product-mind-view[hidden],#product-activities-root>.product-activity-list[hidden]{display:none}
   @media(max-width:1100px){.modal-toolbar.product-workspace-toolbar{grid-template-columns:minmax(0,1fr) auto;height:auto;min-height:40px;flex:0 0 auto;gap:6px}.product-workspace-toolbar .registration-toolbar-center{grid-column:1/-1;order:-1}.product-workspace-toolbar .registration-toolbar-right{flex-wrap:nowrap;justify-content:flex-end}}

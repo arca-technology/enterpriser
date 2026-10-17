@@ -73,6 +73,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await workspace.locator('.product-mind-edit').count(), 2);
     await workspace.locator('.product-mind-edit[data-id="child"]').click();
     assert.equal(await page.locator('#pa-activity').inputValue(), 'Lancamento');
+    assert.equal(await page.locator('#pa-add-subtask').count(), 0, 'Products only link existing tasks');
     await page.locator('#pa-cancel').click();
     await view('table');
     await workspace.locator('.product-filter-strip .registration-filter-badge').click();
@@ -94,6 +95,7 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     await page.locator('#ready-close').click();
     for (const [section, field] of [['objectives', 'po-name'], ['goals', 'pg-name']]) {
       await page.locator(`[data-product-tab="${section}"]`).click();
+      assert.equal(await workspace.locator('#po-new,#pg-new,.po-clone,.pg-clone').count(), 0);
       assert.equal(await search().inputValue(), '');
       await search().fill(section === 'goals' ? 'Primeira' : 'Cadastrar');
       await view('mindmap');
@@ -106,16 +108,24 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       assert.equal(await search().inputValue(), section === 'goals' ? 'Primeira' : 'Cadastrar');
     }
     await page.locator('[data-product-tab="activities"]').click();
-    for (const width of [1440, 1024, 768, 390]) {
+    assert.equal(await workspace.locator('.pa-clone').count(), 0);
+    for (const width of [1920, 1738, 1650, 1440, 1280, 1101, 1024, 768, 390, 360]) {
       await page.setViewportSize({ width, height: 900 });
       const input = await search().boundingBox(), link = await workspace.locator('#pa-ready').boundingBox();
       const tools = await workspace.locator('.registration-toolbar-right').boundingBox();
       assert.ok(input && link && input.x + input.width <= link.x && Math.abs(input.y - link.y) < 5, `${width}: search and link button must be side by side`);
       assert.ok(tools && tools.x >= 0 && tools.x + tools.width <= width, `${width}: toolbar must fit`);
+      if (width > 1100) {
+        const toolbar = await workspace.locator('.product-workspace-toolbar').boundingBox();
+        assert.ok(Math.abs(input.x + input.width / 2 - toolbar.x - toolbar.width / 2) < 2, `${width}: search input must be centered in the toolbar`);
+        const firstTool = await workspace.locator('.product-cols-btn').boundingBox();
+        assert.ok(link.x + link.width + 6 <= firstTool.x, `${width}: link must not overlap the view controls`);
+      }
       assert.equal(await workspace.locator('.product-cols-btn').isVisible(), true, `${width}: column selector must remain available`);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       if ([1440, 390].includes(width)) await page.screenshot({ path: path.join(os.tmpdir(), `product-workspace-toolbar-${width}.png`) });
     }
+    await page.setViewportSize({ width: 390, height: 900 });
     await workspace.locator('.product-cols-btn').click();
     const manager = await page.locator('#cols-dd').boundingBox();
     assert.ok(manager && manager.x >= 0 && manager.x + manager.width <= 390, 'Mobile column manager must fit the viewport');

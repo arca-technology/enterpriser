@@ -40,6 +40,21 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
       enabled: [...document.querySelectorAll('#app-sidebar .tab:not(:disabled)')].map(button => button.dataset.tab) }));
     assert.equal(layout.x, layout.side); assert.equal(layout.toolbar, layout.workspace);
     assert.deepEqual(layout.enabled, ['objectives', 'goals', 'activities']);
+    for (const width of [1920, 1800, 1738, 1440, 1280, 1101]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const section of ['activities', 'goals', 'objectives']) {
+        await page.locator(`#tabs [data-tab="${section}"]`).click();
+        const rects = await page.evaluate(() => {
+          const toolbar = document.querySelector('.product-workspace-toolbar');
+          const box = element => { const r = element.getBoundingClientRect(); return { x: r.x, width: r.width, right: r.right }; };
+          return { toolbar: box(toolbar), input: box(toolbar.querySelector('.search')), link: box(toolbar.querySelector('.registration-toolbar-center>button')), tools: box(toolbar.querySelector('.product-cols-btn')) };
+        });
+        assert.ok(Math.abs(rects.input.x + rects.input.width / 2 - rects.toolbar.x - rects.toolbar.width / 2) < 2, `${width}/${section}: sidebar search must be centered`);
+        assert.ok(rects.link.right + 6 <= rects.tools.x, `${width}/${section}: link must not overlap view controls: ${JSON.stringify(rects)}`);
+        assert.equal(await page.locator('#po-new,#pg-new,.pa-clone,.pg-clone,.po-clone').count(), 0);
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
     await page.locator('#tabs [data-tab="objectives"]').click();
     assert.equal(await page.evaluate(() => productActivityState.tab), 'objectives');
     assert.equal(await page.locator('#tabs [data-tab="objectives"]').evaluate(button => button.classList.contains('active')), true);
@@ -56,7 +71,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     });
     assert.equal(graph.taskCount, 2); assert.deepEqual(graph.rootTask, [graph.certificate]); assert.deepEqual(graph.goal, [graph.goalId]);
     assert.deepEqual(graph.prerequisite, [graph.configure]); assert.deepEqual(graph.configureDependencies, [graph.certificate]); assert.equal(graph.sourcesUnchanged, true);
-    await page.locator('#tabs [data-tab="goals"]').click(); await page.locator('#pg-new').click();
+    await page.locator('#tabs [data-tab="goals"]').click();
+    assert.equal(await page.locator('#pg-new').count(), 0);
+    await page.evaluate(() => openProductGoalDrawer(loadProductGoals().find(row => row.product_id === 'pr2').id));
     await page.locator('#pg-name').fill('Rascunho preservado'); await page.locator('#pg-cancel').click();
     assert.equal(await page.locator('.ui-confirm-dialog').isVisible(), true);
     assert.equal(await page.locator('#ui-confirm-cancel').evaluate(button => button === document.activeElement), true);
@@ -83,7 +100,9 @@ const source = fs.readFileSync(path.join(root, 'app.js'), 'utf8').replace(/^star
     assert.equal(await page.locator('.modal-header-tabs [data-product-tab]').count(), 3);
     assert.equal(await page.locator('.product-workspace-back').count(), 0);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('[data-product-tab="objectives"]').click(); await page.locator('#po-new').click();
+    await page.locator('[data-product-tab="objectives"]').click();
+    assert.equal(await page.locator('#po-new').count(), 0);
+    await page.evaluate(() => openProductObjectiveDrawer(loadProductObjectives().find(row => row.product_id === 'pr2').id));
     await page.locator('#po-name').fill('Rascunho mobile'); await page.locator('#po-cancel').click();
     assert.equal(await page.locator('.ui-confirm-dialog').isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

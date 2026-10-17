@@ -6773,7 +6773,7 @@ function productWorkspaceTableState() {
 function setupProductWorkspaceToolbar(root, table, tableState) {
   const toolbar = root.querySelector(".modal-toolbar");
   const count = toolbar.querySelector(".muted");
-  const actions = [...toolbar.querySelectorAll("#pa-ready,#po-new,#pg-new,#po-ready,#pg-ready")];
+  const actions = [...toolbar.querySelectorAll("#pa-ready,#po-ready,#pg-ready")];
   toolbar.classList.add("registration-toolbar", "product-workspace-toolbar");
   toolbar.innerHTML = `<div class="registration-toolbar-left"></div>
     <div class="registration-toolbar-center"><input class="search registration-toolbar-search product-workspace-search" aria-label="Buscar ${esc(MODULE_COUNT_LABEL[productActivityState.tab].toLocaleLowerCase("pt-BR"))} do produto" placeholder="Buscar..." value="${esc(tableState.search)}"></div>
@@ -7060,7 +7060,6 @@ function renderProductActivities() {
     <td>${taskReferencesHtml(item)}</td>
     <td class="act table-actions-cell">${tableActionButtons({
       edit: { className: "pa-edit", attrs: { "data-id": item.id }, title: item.parent_template_id ? "Editar subtarefa" : "Editar tarefa" },
-      clone: { className: "pa-clone", attrs: { "data-id": item.id }, title: item.parent_template_id ? "Clonar subtarefa" : "Clonar tarefa" },
       delete: { className: "pa-delete", attrs: { "data-id": item.id }, title: "Desvincular do produto" }
     })}</td></tr>`).join("");
   root.innerHTML = `<div class="modal-toolbar"><span class="muted">${templates.length} tarefa(s) vinculada(s)</span><div class="modal-toolbar-actions"><button class="btn primary" id="pa-ready">Vincular tarefas</button></div></div>
@@ -7073,7 +7072,6 @@ function renderProductActivities() {
     openReadyActivityPicker();
   });
   document.querySelectorAll(".pa-edit").forEach((button) => button.addEventListener("click", () => openProductActivityDrawer(button.dataset.id)));
-  document.querySelectorAll(".pa-clone").forEach((button) => button.addEventListener("click", () => cloneProductActivity(button.dataset.id)));
   document.querySelectorAll(".pa-delete").forEach((button) => button.addEventListener("click", async () => {
     if (!requireCurrentUserPermission("activityTemplates", "delete", "Tarefas")) return;
     if (!window.confirm("Desvincular esta tarefa do produto? Entregas que já receberam a tarefa manterão a cópia existente.")) return;
@@ -7148,21 +7146,18 @@ function renderProductObjectives() {
       <td>${activityCount}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "po-edit", attrs: { "data-id": item.id }, title: "Editar objetivo" },
-        clone: { className: "po-clone", attrs: { "data-id": item.id }, title: "Clonar objetivo" },
         delete: { className: "po-delete", attrs: { "data-id": item.id }, title: "Excluir objetivo" }
       })}</td>
     </tr>`;
   }).join("");
-  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${objectives.length} objetivo(s) do produto</span><button class="btn primary" id="po-ready">Vincular objetivos</button><button class="btn" id="po-new">+ Objetivo</button></div>
+  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${objectives.length} objetivo(s) do produto</span><button class="btn primary" id="po-ready">Vincular objetivos</button></div>
     <div class="product-activity-list"><table><thead><tr>
       <th>Objetivo</th><th>Critério de conclusão</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th class="compact-multi-cell">Responsável padrão</th><th>Prazo sugerido</th><th>Tarefas</th>${tableActionsHead()}
     </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhum objetivo cadastrado para este produto.</td></tr>'}</tbody></table></div>`;
   addResultClassificationColumns(root, objectives, true);
   decorateResultVariationRows(root, objectives, true);
   document.getElementById("po-ready").addEventListener("click", () => openReadyResultPicker("objectives"));
-  document.getElementById("po-new").addEventListener("click", () => openProductObjectiveDrawer());
   document.querySelectorAll(".po-edit").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(button.dataset.id)));
-  document.querySelectorAll(".po-clone").forEach((button) => button.addEventListener("click", () => openProductObjectiveDrawer(null, button.dataset.id)));
   document.querySelectorAll(".po-delete").forEach((button) => button.addEventListener("click", () => deleteProductObjective(button.dataset.id)));
   wireProductWorkspaceTable();
 }
@@ -7355,21 +7350,18 @@ function renderProductGoals() {
       <td class="compact-multi-cell">${owners}</td>
       <td class="act table-actions-cell">${tableActionButtons({
         edit: { className: "pg-edit", attrs: { "data-id": item.id }, title: "Editar meta" },
-        clone: { className: "pg-clone", attrs: { "data-id": item.id }, title: "Clonar meta" },
         delete: { className: "pg-delete", attrs: { "data-id": item.id }, title: "Excluir meta" }
       })}</td>
     </tr>`;
   }).join("");
-  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${goals.length} meta(s) do produto</span><button class="btn primary" id="pg-ready">Vincular metas</button><button class="btn" id="pg-new">+ Meta</button></div>
+  root.innerHTML = `<div class="modal-toolbar"><span class="muted">${goals.length} meta(s) do produto</span><button class="btn primary" id="pg-ready">Vincular metas</button></div>
     <div class="product-activity-list"><table><thead><tr>
     <th>Meta</th><th>Indicador</th><th>Valor-alvo</th><th>Comentários</th><th class="compact-multi-cell">Depende de</th><th>Prazo sugerido</th><th class="compact-multi-cell">Responsável padrão</th>${tableActionsHead()}
   </tr></thead><tbody>${rows || '<tr><td colspan="8" class="empty">Nenhuma meta cadastrada para este produto.</td></tr>'}</tbody></table></div>`;
   addResultClassificationColumns(root, goals, true);
   decorateResultVariationRows(root, goals, true);
   document.getElementById("pg-ready").addEventListener("click", () => openReadyResultPicker("goals"));
-  document.getElementById("pg-new").addEventListener("click", () => openProductGoalDrawer());
   document.querySelectorAll(".pg-edit").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(button.dataset.id)));
-  document.querySelectorAll(".pg-clone").forEach((button) => button.addEventListener("click", () => openProductGoalDrawer(null, button.dataset.id)));
   document.querySelectorAll(".pg-delete").forEach((button) => button.addEventListener("click", () => deleteProductGoal(button.dataset.id)));
   wireProductWorkspaceTable();
 }
@@ -7891,7 +7883,7 @@ async function openProductActivityDrawer(editId = null, cloneSourceId = null, pa
       <div class="field"><label>Documentos de apoio</label>${multiPickerHtml("pa-documents", taskDocumentOptions(), selectedDocuments, "Selecionar documentos")}</div>
       <div class="field"><label>Planilhas de apoio</label>${multiPickerHtml("pa-tables", taskTableOptions(), selectedTables, "Selecionar planilhas")}</div>
     </div>
-    <div class="modal-foot">${editing && !variationParent && !productActivityParentGroupId && !Object.keys(current.variation_axes || {}).length ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
+    <div class="modal-foot">${editing && !document.getElementById("product-activities-root") && !variationParent && !productActivityParentGroupId && !Object.keys(current.variation_axes || {}).length ? '<button class="btn" id="pa-add-subtask">+ Subtarefa</button>' : ""}<button class="btn" id="pa-cancel">Cancelar</button><button class="btn primary" id="pa-save">${current.id ? "Salvar" : cloneSource ? "Criar cópia" : "Criar"}</button></div>
   </aside>`;
   productDrawerHost()?.appendChild(overlay);
   document.getElementById("pa-close").addEventListener("click", closeProductActivityDrawer);
