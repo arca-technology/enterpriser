@@ -1653,18 +1653,10 @@
     .data-table-wrap{min-height:0}
     .table-scroll{overflow:auto}
     .data-table{width:100%;table-layout:fixed}
-    .data-table th[data-k],.data-table td[data-k]{display:none}
     .data-table th,.data-table td{height:42px;padding:7px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .data-table th{font-size:9.5px}
     .data-table td{font-size:11px}
     .data-table [data-k="name"],.data-table [data-k="legal_name"],.data-table [data-k="trade_name"],.data-table [data-k="contact_name"],.data-table [data-k="title"]{font-weight:700}
-    .data-table[data-tab="contacts"] [data-k="name"],.data-table[data-tab="contacts"] [data-k="phone"],.data-table[data-tab="contacts"] [data-k="company_id"],
-    .data-table[data-tab="companies"] [data-k="trade_name"],.data-table[data-tab="companies"] [data-k="phone"],.data-table[data-tab="companies"] [data-k="registration_status"],
-    .data-table[data-tab="conversations"] [data-k="contact_name"],.data-table[data-tab="conversations"] [data-k="source"],.data-table[data-tab="conversations"] [data-k="last_at"],
-    .data-table[data-tab="deals"] [data-k="title"],.data-table[data-tab="deals"] [data-k="status"],.data-table[data-tab="deals"] [data-k="amount"],
-    .data-table[data-tab="projects"] [data-k="name"],.data-table[data-tab="projects"] [data-k="client_name"],.data-table[data-tab="projects"] [data-k="status"],
-    .data-table[data-tab="activities"] [data-k="title"],.data-table[data-tab="activities"] [data-k="due_date"],.data-table[data-tab="activities"] [data-k="status"]{display:table-cell}
-    .data-table th[data-k]:first-of-type,.data-table td[data-k]:first-of-type{width:46%}
     .data-table .sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
     .data-table[data-tab="companies"] .company-sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
     .data-table[data-tab="contacts"] .person-sticky-col{position:static;width:auto;min-width:0;max-width:none;box-shadow:none}
@@ -2201,33 +2193,34 @@ body:not(.light) .user-presence.off-hours::before{background:#94a3b8}
     .activity-form-drawer .product-activity-form{min-height:0}
     .activity-form-drawer .modal-foot .primary{display:inline-flex!important}
     .modal-close-x,.record-actions-trigger{min-width:44px;min-height:44px}
-    .mobile-adaptive-table .action-col{position:static!important;box-shadow:none!important}
-    body.mobile-list-mode .mobile-adaptive-table{display:block;width:100%!important;min-width:0!important;max-width:100%;table-layout:auto}
-    body.mobile-list-mode .mobile-adaptive-table colgroup,body.mobile-list-mode .mobile-adaptive-table thead{display:none}
-    body.mobile-list-mode .mobile-adaptive-table tbody{display:block;width:100%}
-    body.mobile-list-mode .mobile-adaptive-table tr.mobile-record-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:4px 8px;padding:12px;border-bottom:1px solid var(--border);background:var(--panel);width:100%}
-    body.mobile-list-mode .mobile-adaptive-table tr.mobile-record-row:nth-child(even){background:var(--row-alt)}
-    body.mobile-list-mode .mobile-adaptive-table tr[hidden]{display:none!important}
-    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>td{display:none!important;position:static!important;width:auto!important;min-width:0!important;max-width:none!important;height:auto!important;border:0!important;box-shadow:none!important;padding:0!important;white-space:normal!important;text-align:left;overflow-wrap:anywhere}
-    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.mobile-record-title{display:block!important;grid-column:1;grid-row:1;font-size:14px;line-height:1.5;font-weight:700;min-height:44px}
-    body.mobile-list-mode .mobile-record-title strong,body.mobile-list-mode .mobile-record-title .task-name-text{white-space:normal!important}
-    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.mobile-record-detail{display:block!important;grid-column:1;font-size:12px;line-height:1.5;color:var(--muted)}
-    body.mobile-list-mode .mobile-record-detail:before{content:attr(data-mobile-label) ": ";font-size:11px;font-weight:500}
-    body.mobile-list-mode .mobile-record-detail[data-k="phone"]:before,body.mobile-list-mode .mobile-record-detail[data-k="emails"]:before,body.mobile-list-mode .mobile-record-detail[data-k="email"]:before{content:none}
-    body.mobile-list-mode .mobile-record-detail .multi-value{white-space:normal;gap:2px}
-    body.mobile-list-mode .mobile-record-detail select{min-height:44px;max-width:100%}
-    body.mobile-list-mode .mobile-adaptive-table .mobile-record-row>.table-actions-cell{display:flex!important;grid-column:2;grid-row:1/5;align-self:start;justify-content:center}
-    body.mobile-list-mode .variation-hierarchy-table .mobile-record-row:has(>.expand-cell .table-row-expand){grid-template-columns:44px minmax(0,1fr) 44px}
-    body.mobile-list-mode .variation-hierarchy-table .mobile-record-row>.expand-cell:has(.table-row-expand){display:flex!important;grid-column:1;grid-row:1;align-self:start;justify-content:center}
-    body.mobile-list-mode .variation-hierarchy-table .expand-cell .table-row-expand{width:44px;height:44px;flex:0 0 44px}
-    body.mobile-list-mode .variation-hierarchy-table .mobile-record-row:has(>.expand-cell .table-row-expand)>.mobile-record-title,
-    body.mobile-list-mode .variation-hierarchy-table .mobile-record-row:has(>.expand-cell .table-row-expand)>.mobile-record-detail{grid-column:2}
-    body.mobile-list-mode .variation-hierarchy-table .mobile-record-row:has(>.expand-cell .table-row-expand)>.table-actions-cell{grid-column:3}
-    body:not(.mobile-list-mode) .mobile-adaptive-table{width:max-content!important;min-width:100%!important;table-layout:auto}
-    body:not(.mobile-list-mode) .mobile-adaptive-table th[data-k],body:not(.mobile-list-mode) .mobile-adaptive-table td[data-k]{display:table-cell!important;min-width:130px}
-    body:not(.mobile-list-mode) .mobile-adaptive-table th,body:not(.mobile-list-mode) .mobile-adaptive-table td{font-size:12px;white-space:normal;max-width:240px}
-    body:not(.mobile-list-mode) .mobile-adaptive-table .select-head,body:not(.mobile-list-mode) .mobile-adaptive-table .select-cell{display:table-cell!important}
-    body:not(.mobile-list-mode) .variation-hierarchy-table .expand-head,body:not(.mobile-list-mode) .variation-hierarchy-table .expand-cell{display:table-cell!important}
+    .project-data-toolbar{height:auto;min-height:40px;flex:0 0 auto;grid-template-columns:minmax(0,1fr);gap:6px}
+    .project-data-toolbar .registration-toolbar-right{padding-left:0;flex-wrap:wrap;justify-content:flex-start}
+    .mobile-adaptive-table.explicit-list-view .action-col{position:static!important;box-shadow:none!important}
+    .mobile-adaptive-table.explicit-list-view{display:block;width:100%!important;min-width:0!important;max-width:100%;table-layout:auto}
+    .mobile-adaptive-table.explicit-list-view colgroup,.mobile-adaptive-table.explicit-list-view thead{display:none}
+    .mobile-adaptive-table.explicit-list-view tbody{display:block;width:100%}
+    .mobile-adaptive-table.explicit-list-view tr.mobile-record-row{display:grid;grid-template-columns:minmax(0,1fr) 44px;gap:4px 8px;padding:12px;border-bottom:1px solid var(--border);background:var(--panel);width:100%}
+    .mobile-adaptive-table.explicit-list-view tr.mobile-record-row:nth-child(even){background:var(--row-alt)}
+    .mobile-adaptive-table.explicit-list-view tr[hidden]{display:none!important}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-row>td{display:none!important;position:static!important;width:auto!important;min-width:0!important;max-width:none!important;height:auto!important;border:0!important;box-shadow:none!important;padding:0!important;white-space:normal!important;text-align:left;overflow-wrap:anywhere}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-row>.mobile-record-title{display:block!important;grid-column:1;grid-row:1;font-size:14px;line-height:1.5;font-weight:700;min-height:44px}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-title strong,.mobile-adaptive-table.explicit-list-view .mobile-record-title .task-name-text{white-space:normal!important}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-row>.mobile-record-detail{display:block!important;grid-column:1;font-size:12px;line-height:1.5;color:var(--muted)}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-detail:before{content:attr(data-mobile-label) ": ";font-size:11px;font-weight:500}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-detail[data-k="phone"]:before,.mobile-adaptive-table.explicit-list-view .mobile-record-detail[data-k="emails"]:before,.mobile-adaptive-table.explicit-list-view .mobile-record-detail[data-k="email"]:before{content:none}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-detail .multi-value{white-space:normal;gap:2px}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-detail select{min-height:44px;max-width:100%}
+    .mobile-adaptive-table.explicit-list-view .mobile-record-row>.table-actions-cell{display:flex!important;grid-column:2;grid-row:1/5;align-self:start;justify-content:center}
+    .variation-hierarchy-table.explicit-list-view .mobile-record-row:has(>.expand-cell .table-row-expand){grid-template-columns:44px minmax(0,1fr) 44px}
+    .variation-hierarchy-table.explicit-list-view .mobile-record-row>.expand-cell:has(.table-row-expand){display:flex!important;grid-column:1;grid-row:1;align-self:start;justify-content:center}
+    .variation-hierarchy-table.explicit-list-view .expand-cell .table-row-expand{width:44px;height:44px;flex:0 0 44px}
+    .variation-hierarchy-table.explicit-list-view .mobile-record-row:has(>.expand-cell .table-row-expand)>.mobile-record-title,
+    .variation-hierarchy-table.explicit-list-view .mobile-record-row:has(>.expand-cell .table-row-expand)>.mobile-record-detail{grid-column:2}
+    .variation-hierarchy-table.explicit-list-view .mobile-record-row:has(>.expand-cell .table-row-expand)>.table-actions-cell{grid-column:3}
+    .mobile-adaptive-table:not(.explicit-list-view){width:max-content!important;min-width:100%!important;table-layout:auto}
+    .mobile-adaptive-table:not(.explicit-list-view) :is(.select-head,.select-cell,.expand-head,.expand-cell):not([hidden]){display:table-cell!important}
+    .mobile-adaptive-table:not(.explicit-list-view) th[data-k],.mobile-adaptive-table:not(.explicit-list-view) td[data-k]{min-width:130px}
+    .mobile-adaptive-table:not(.explicit-list-view) th,.mobile-adaptive-table:not(.explicit-list-view) td{font-size:12px;white-space:normal;max-width:240px}
   }
   @media(prefers-reduced-motion:reduce){.mobile-adaptive-table tr{transition:none}}
   :is(button,a,input,select,textarea,[tabindex],[contenteditable]):focus-visible{outline:2px solid var(--accent);outline-offset:2px}

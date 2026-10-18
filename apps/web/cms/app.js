@@ -16262,7 +16262,6 @@ let socialChannelProfiles = (() => {
   catch (e) { return {}; }
 })();
 
-document.body.classList.add("mobile-list-mode");
 document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEventListener("click", () => {
   if (button.dataset.mobileTab === "projects" && document.getElementById("project-board-root")) openMobileMenu(true);
   else document.querySelector(`#tabs [data-tab="${button.dataset.mobileTab}"]`)?.click();
